@@ -37,7 +37,7 @@ test("invalid folder changes leave the tree unchanged and recycled folders canno
   const vault = await KeePassVault.createNew(new Uint8Array(32).fill(32));
   const root = vault.getGroups()[0];
   const before = vault.getGroups();
-  for (const name of ["", "   ", "bad\u0000name", "bad\nname"]) {
+  for (const name of ["", "   ", "bad\u0000name", "bad\nname", "bad\u202ename", "x".repeat(256)]) {
     assert.throws(() => vault.createGroup(name), /folder name/);
     assert.throws(() => vault.renameGroup(root.uuid, name), /folder name/);
   }
@@ -58,6 +58,16 @@ test("CSV validates folder names before importing any rows", async () => {
   const before = vault.getGroups();
   const row = { id: "one", title: "One", username: "", password: "p", url: "", notes: "", totpSeed: "", folder: "Valid", selected: true };
   assert.throws(() => applyImportToVault(vault, [row, { ...row, id: "two", title: "Two", folder: "Bad\u0000name" }], { folderMode: "csv_folders" }), /folder name/);
+  assert.deepEqual(vault.getGroups(), before);
+  assert.deepEqual(vault.getEntries(), []);
+});
+
+test("CSV rejects folder paths deeper than the cap before importing any rows", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(34));
+  const before = vault.getGroups();
+  const folder = Array.from({ length: 10_000 }, (_, i) => `f${i}`).join("/");
+  const row = { id: "one", title: "One", username: "", password: "p", url: "", notes: "", totpSeed: "", folder, selected: true };
+  assert.throws(() => applyImportToVault(vault, [row], { folderMode: "csv_folders" }), /folder/);
   assert.deepEqual(vault.getGroups(), before);
   assert.deepEqual(vault.getEntries(), []);
 });

@@ -391,6 +391,9 @@ export function parseAndPreviewCsv(
   };
 }
 
+// Group lookups recurse per tree level; well past any real provider export.
+const MAX_FOLDER_DEPTH = 16;
+
 /**
  * Split a provider folder value into path segments. Bitwarden nests with "/",
  * LastPass with a backslash; both map onto KeePass subgroups.
@@ -443,7 +446,9 @@ export function applyImportToVault(
     if (options.newFolderName?.trim()) folderName(options.newFolderName);
   } else {
     for (const item of pending) {
-      for (const segment of splitFolderPath(item.folder || options.defaultFolderName || "")) folderName(segment);
+      const segments = splitFolderPath(item.folder || options.defaultFolderName || "");
+      if (segments.length > MAX_FOLDER_DEPTH) throw new Error(`Keep folder paths to ${MAX_FOLDER_DEPTH} levels or fewer.`);
+      for (const segment of segments) folderName(segment);
     }
   }
   const existingGroups = vault.getLiveGroups();

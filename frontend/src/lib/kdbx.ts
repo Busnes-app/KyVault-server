@@ -82,9 +82,14 @@ function groupView(group: kdbxweb.KdbxGroup): VaultGroup {
     path: names.join(" / "), depth: names.length - 1 };
 }
 
+const MAX_FOLDER_NAME_LENGTH = 255;
+// C0/C1 controls plus bidi overrides and zero-width characters: names drive rendered paths.
+const FOLDER_NAME_FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+
 export function folderName(name: string): string {
   const trimmed = name.trim();
-  if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) throw new Error("Enter a folder name without control characters.");
+  if (!trimmed || FOLDER_NAME_FORBIDDEN.test(trimmed)) throw new Error("Enter a folder name without control characters.");
+  if (trimmed.length > MAX_FOLDER_NAME_LENGTH) throw new Error(`Enter a folder name of ${MAX_FOLDER_NAME_LENGTH} characters or fewer.`);
   return trimmed;
 }
 
