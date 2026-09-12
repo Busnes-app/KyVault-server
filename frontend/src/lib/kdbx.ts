@@ -68,7 +68,30 @@ export type VaultGroup = {
   name: string;
   parentUuid?: string;
   entriesCount: number;
+  path: string;
+  depth: number;
 };
+
+function groupView(group: kdbxweb.KdbxGroup): VaultGroup {
+  const names: string[] = [];
+  for (let parent: kdbxweb.KdbxGroup | undefined = group; parent; parent = parent.parentGroup) {
+    names.unshift(parent.name || "Folder");
+  }
+  return { uuid: group.uuid.toString(), name: group.name || "Folder",
+    parentUuid: group.parentGroup?.uuid.toString(), entriesCount: group.entries.length,
+    path: names.join(" / "), depth: names.length - 1 };
+}
+
+const MAX_FOLDER_NAME_LENGTH = 255;
+// C0/C1 controls plus bidi overrides and zero-width characters: names drive rendered paths.
+const FOLDER_NAME_FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+
+export function folderName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed || FOLDER_NAME_FORBIDDEN.test(trimmed)) throw new Error("Enter a folder name without control characters.");
+  if (trimmed.length > MAX_FOLDER_NAME_LENGTH) throw new Error(`Enter a folder name of ${MAX_FOLDER_NAME_LENGTH} characters or fewer.`);
+  return trimmed;
+}
 
 function entryFieldText(entry: kdbxweb.KdbxEntry, name: string): string {
   const value = entry.fields.get(name);
@@ -175,18 +198,9 @@ export class KeePassVault {
   public getGroups(): VaultGroup[] {
     const groups: VaultGroup[] = [];
     
-    const traverse = (g: kdbxweb.KdbxGroup, parentUuid?: string) => {
-      const uuid = g.uuid.toString();
-      groups.push({
-        uuid,
-        name: g.name || "Folder",
-        parentUuid,
-        entriesCount: g.entries.length,
-      });
-
-      for (const child of g.groups) {
-        traverse(child, uuid);
-      }
+    const traverse = (g: kdbxweb.KdbxGroup) => {
+      groups.push(groupView(g));
+      for (const child of g.groups) traverse(child);
     };
 
     traverse(this.db.getDefaultGroup());
@@ -493,21 +507,22 @@ export class KeePassVault {
     }
   }
 
-  // Create a group
+  // Also used to construct imported/recycled trees; UI parents come from getLiveGroups().
   public createGroup(name: string, parentUuid?: string): VaultGroup {
-    let parent = this.db.getDefaultGroup();
-    if (parentUuid) {
-      const found = this.findGroup(parentUuid);
-      if (found) parent = found;
-    }
+    const validName = folderName(name);
+    const parent = parentUuid ? this.findGroup(parentUuid) : this.db.getDefaultGroup();
+    if (!parent) throw new Error("This folder is no longer available.");
+    return groupView(this.db.createGroup(parent, validName));
+  }
 
-    const g = this.db.createGroup(parent, name);
-    return {
-      uuid: g.uuid.toString(),
-      name: g.name || name,
-      parentUuid: parent.uuid.toString(),
-      entriesCount: 0,
-    };
+  public renameGroup(uuid: string, name: string): boolean {
+    const validName = folderName(name);
+    const group = this.findGroup(uuid);
+    if (!group || this.recycledGroupIds().has(uuid)) throw new Error("Choose a folder in the live vault.");
+    if (group.name === validName) return false;
+    group.name = validName;
+    group.times.update();
+    return true;
   }
 
   private findEntry(uuid: string): kdbxweb.KdbxEntry | undefined {
