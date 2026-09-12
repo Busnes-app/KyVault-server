@@ -31,7 +31,7 @@ func (c *Client) Claim(ctx context.Context, server, code string) (PairingResult,
 	}
 	r, err := c.ClaimPairing(ctx, server, code, ServiceName, AppName)
 	if err != nil {
-		return PairingResult{}, fmt.Errorf("%w: pairing claim failed", ErrRemote)
+		return PairingResult{}, fmt.Errorf("%w: %s", ErrRemote, AuditSafe(err.Error()))
 	}
 	return PairingResult{Token: r.APIToken, Key: r.Key}, nil
 }
@@ -45,9 +45,6 @@ func (c *Client) Deposit(ctx context.Context, server, token string, raw []byte) 
 	if err := ValidateURL(server, c.allowPrivate); err != nil {
 		return Receipt{}, fmt.Errorf("%w: invalid recovery destination", ErrInvalidURL)
 	}
-	r, err := c.Client.Deposit(ctx, server, token, raw)
-	if err != nil {
-		return Receipt{}, fmt.Errorf("%w: remote deposit failed or receipt did not verify", ErrRemote)
-	}
-	return r, nil
+	// recoveryclient.Deposit already wraps ErrRemote; its own errors carry the cause.
+	return c.Client.Deposit(ctx, server, token, raw)
 }
