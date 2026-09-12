@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,12 +19,13 @@ import (
 
 type fakeRecovery struct {
 	result backup.PairingResult
+	err    error
 	claims int
 }
 
 func (f *fakeRecovery) Claim(context.Context, string, string) (backup.PairingResult, error) {
 	f.claims++
-	return f.result, nil
+	return f.result, f.err
 }
 
 func (f *fakeRecovery) Deposit(context.Context, string, string, []byte) (backup.Receipt, error) {
@@ -227,5 +229,17 @@ func TestPartialBackupAndBusyUnpair(t *testing.T) {
 	<-done
 	if deposit.Code != http.StatusMultiStatus || !bytes.Contains(deposit.Body.Bytes(), []byte("local_path")) || !bytes.Contains(deposit.Body.Bytes(), []byte("warning")) {
 		t.Fatalf("partial: %d %s", deposit.Code, deposit.Body.String())
+	}
+}
+
+// Remote error text is chosen by the KyRecovery peer. It must never steer the response class.
+func TestRemotePairingFailureStaysBadGateway(t *testing.T) {
+	srv := newTestServer(t)
+	_, admin := signedInUser(t, srv, "admin", users.RoleAdmin)
+	srv.recovery = &fakeRecovery{err: fmt.Errorf("%w: pairing claim rejected (400): pairing code must be six digits", backup.ErrRemote)}
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, csrfRequest(t, srv, admin, http.MethodPost, "/api/backup/pair-remote", `{"recoveryUrl":"https://recovery.example","pairingCode":"123456"}`))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("remote failure classified as %d: %s", rec.Code, rec.Body.String())
 	}
 }
