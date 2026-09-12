@@ -113,10 +113,10 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 			s.writeBackupError(w, err)
 		} else if errors.Is(err, fs.ErrExist) {
 			http.Error(w, "already paired to a different recovery key", http.StatusConflict)
-		} else if errors.Is(err, backup.ErrInvalidURL) || strings.Contains(err.Error(), "pairing code must") {
-			http.Error(w, "invalid KyRecovery URL or pairing code", http.StatusBadRequest)
 		} else if errors.Is(err, backup.ErrRemote) {
 			http.Error(w, "KyRecovery pairing failed", http.StatusBadGateway)
+		} else if errors.Is(err, backup.ErrInvalidURL) || strings.Contains(err.Error(), "pairing code must") {
+			http.Error(w, "invalid KyRecovery URL or pairing code", http.StatusBadRequest)
 		} else {
 			http.Error(w, "failed to persist recovery pairing", http.StatusInternalServerError)
 		}
