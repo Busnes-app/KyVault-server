@@ -2,6 +2,8 @@ name: kypassword-server
 
 services:
   kypassword-server:
+    # Pulled by `docker compose pull`; `docker compose up --build` still builds locally.
+    image: ghcr.io/busness-app/kypassword-server:latest
     build:
       context: .
       dockerfile: Dockerfile

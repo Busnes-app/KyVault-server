@@ -119,8 +119,10 @@ the user's, not the directory's.
 - Dependency vulns: `govulncheck ./...` and `npm audit --audit-level=high` in `frontend/`
 
 All of the above run in CI on every push to `master` and every pull request, split
-across four jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
-`security`. Keep the workflow and this list in sync when either changes.
+across five jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
+`security`, `publish`. Keep the workflow and this list in sync when either changes.
+`publish` runs only on a green push to `master` and pushes the image to
+`ghcr.io/busness-app/kypassword-server` as `:latest` and `:<commit sha>`.
 
 `.github/dependabot.yml` opens weekly grouped dependency PRs for Go modules, npm,
 the Dockerfile base images, and the actions themselves. `kdbxweb` and
