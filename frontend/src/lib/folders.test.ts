@@ -71,3 +71,19 @@ test("CSV rejects folder paths deeper than the cap before importing any rows", a
   assert.deepEqual(vault.getGroups(), before);
   assert.deepEqual(vault.getEntries(), []);
 });
+
+test("a folder named with a slash does not capture CSV rows bound for the nested path", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(34));
+  // folderName() permits "/", so this folder is creatable from Add Folder.
+  const flat = vault.createGroup("work/projects");
+  const row = { id: "one", title: "One", username: "", password: "p", url: "", notes: "", totpSeed: "", folder: "work/projects", selected: true };
+
+  applyImportToVault(vault, [row], { folderMode: "csv_folders" });
+
+  const entry = vault.getLiveEntries().find(item => item.title === "One");
+  const landed = vault.getLiveGroups().find(group => group.uuid === entry?.groupUuid);
+  assert.notEqual(landed?.uuid, flat.uuid);
+  assert.equal(landed?.name, "projects");
+  assert.equal(landed?.depth, 2);
+  assert.equal(vault.getLiveGroups().find(group => group.uuid === flat.uuid)?.entriesCount, 0);
+});

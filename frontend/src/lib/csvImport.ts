@@ -454,15 +454,18 @@ export function applyImportToVault(
   const existingGroups = vault.getLiveGroups();
   const rootUuid = existingGroups[0]?.uuid || "";
 
-  // Lowercase folder path ("work/projects") -> group uuid, so repeated segments
-  // across rows reuse one subgroup. getLiveGroups() is pre-order, so parents land first.
+  // Lowercase folder path -> group uuid, so repeated segments across rows reuse one
+  // subgroup. getLiveGroups() is pre-order, so parents land first. Segments are joined on
+  // a character folderName() forbids: a folder may legitimately be named "work/projects",
+  // and joining on "/" would make it collide with the nested path work -> projects.
+  const sep = "\u0000";
   const pathByUuid = new Map<string, string>([[rootUuid, ""]]);
   const groupMap = new Map<string, string>();
   for (const g of existingGroups) {
     if (g.uuid === rootUuid) continue;
     const parentPath = pathByUuid.get(g.parentUuid || "") ?? "";
     const name = g.name.toLowerCase().trim();
-    const path = parentPath ? `${parentPath}/${name}` : name;
+    const path = parentPath ? `${parentPath}${sep}${name}` : name;
     pathByUuid.set(g.uuid, path);
     groupMap.set(path, g.uuid);
   }
@@ -473,7 +476,7 @@ export function applyImportToVault(
     let parentUuid = rootUuid;
     let path = "";
     for (const segment of splitFolderPath(folder)) {
-      path = path ? `${path}/${segment.toLowerCase()}` : segment.toLowerCase();
+      path = path ? `${path}${sep}${segment.toLowerCase()}` : segment.toLowerCase();
       const existing = groupMap.get(path);
       if (existing) {
         parentUuid = existing;
