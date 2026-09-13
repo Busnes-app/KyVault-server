@@ -137,8 +137,12 @@ A published-image install on the rolling tag updates with `docker compose pull &
 the tag only ever moves to an image CI attested. An install pinned to a digest (`KYPASSWORD_IMAGE`
 in `.env`, as the restore runbook sets) gets nothing from `pull`: re-run the pin recipe in
 `docker-compose.yml` with the commit sha you want first, or delete that line to follow the tag again.
-A source install rebuilds with `docker compose up -d` after `git pull` (see `docker-compose.build.yml`).
-Then read on:
+A source install rebuilds with `docker compose up -d` after `git pull` only once `docker-compose.build.yml`
+is in its `COMPOSE_FILE` chain; without it, `up -d` runs the published image instead. Installs from before
+the published image existed have no `COMPOSE_FILE` line at all, so before the first `up -d` on this
+revision run the snippet from `docker-compose.build.yml` once, then confirm the mode with
+`docker compose config --images`: `kypassword-server:local` means source, the `ghcr.io` name means
+published. Then read on:
 
 The audit chain also refuses to start in cases an older version started in, and the
 `AUDIT_KEY` length is now exact. [CHANGELOG.md](CHANGELOG.md) lists each condition and
