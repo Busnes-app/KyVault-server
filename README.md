@@ -133,6 +133,10 @@ there is no local administrator who could fix it from the UI.
 
 ## Upgrading
 
+A published-image install updates with `docker compose pull && docker compose up -d`; the
+tag only ever moves to an image CI attested. A source install rebuilds with `docker compose up -d`
+after `git pull` (see `docker-compose.build.yml`). Then read on:
+
 The audit chain also refuses to start in cases an older version started in, and the
 `AUDIT_KEY` length is now exact. [CHANGELOG.md](CHANGELOG.md) lists each condition and
 what to do about it; read it before upgrading, not at the failed startup.
@@ -261,7 +265,10 @@ your own LAN behind a TLS proxy also needs its name to resolve inside the contai
 the container's resolvers for every lookup.
 
 ```sh
-KYPASSWORD_DNS=192.168.1.1 docker compose -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.lan-dns.yml up -d
+# Append :docker-compose.lan-dns.yml to COMPOSE_FILE in .env first (a published-image install
+# sets COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml). An explicit -f list would
+# drop the build overlay for a source install.
+KYPASSWORD_DNS=192.168.1.1 docker compose up -d --force-recreate
 ```
 
 KyRecovery is a blind store. A capsule contains encrypted vault files and envelopes, history

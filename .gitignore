@@ -27,3 +27,4 @@ frontend/dist/
 
 # Agent worktrees
 .claude/worktrees/
+.env

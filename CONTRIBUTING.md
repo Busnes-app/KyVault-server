@@ -54,8 +54,8 @@ re-litigation in a PR:
 Docker is the only requirement to *run* KyPost:
 
 ```bash
-cp .env.example .env      # set KYPOST_BIND — it has no default, on purpose
-echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml' >> .env   # source build; omit to run the published image
+(umask 077; cp .env.example .env)      # set KYPOST_BIND — it has no default, on purpose
+(umask 077; echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml' >> .env)   # source build; omit to run the published image
 docker compose up -d
 ```
 

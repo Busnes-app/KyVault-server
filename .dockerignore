@@ -11,3 +11,4 @@ config
 *.tmp
 *.log
 kypassword-server
+.env
