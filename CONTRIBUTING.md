@@ -62,7 +62,9 @@ docker compose up -d
 
 Source install (never paste this into a published-image install: the build overlay wins over a
 `KYPASSWORD_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
-new checkout):
+new checkout; an install from before the published image existed has no such line yet, so run
+this block once and confirm with `docker compose config --images`, which must print
+`kypassword-server:local` rather than the `ghcr.io` name):
 
 ```bash
 [ -e .env ] || (umask 077; cp .env.example .env); chmod 600 .env   # an existing .env is kept
