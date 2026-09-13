@@ -123,7 +123,7 @@ across six jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
 `security`, `publish`, `promote`. Keep the workflow and this list in sync when either changes.
 `publish` and `promote` run only on a green push to `master`. `publish` pushes the exact
 image the `docker` job handed over as an artifact (no rebuild) to
-`ghcr.io/busness-app/kypassword-server:<commit sha>`, attests it and verifies the attestation.
+`ghcr.io/busness-app/kypassword-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`.
 `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the
 tag resolves to the attested digest. `docker-compose.yml` names the published image and never
 builds; source installs set `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` in `.env`

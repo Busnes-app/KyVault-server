@@ -265,10 +265,11 @@ your own LAN behind a TLS proxy also needs its name to resolve inside the contai
 the container's resolvers for every lookup.
 
 ```sh
-# Append :docker-compose.lan-dns.yml to COMPOSE_FILE in .env first (a published-image install
-# sets COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml). An explicit -f list would
-# drop the build overlay for a source install.
-KYPASSWORD_DNS=192.168.1.1 docker compose up -d --force-recreate
+# Both live in .env: the overlay joins COMPOSE_FILE (a published-image install uses
+# COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml) and the resolver next to it,
+# since every later compose command needs it once the overlay is in the chain.
+(umask 077; printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> .env); chmod 600 .env
+docker compose up -d --force-recreate
 ```
 
 KyRecovery is a blind store. A capsule contains encrypted vault files and envelopes, history
