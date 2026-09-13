@@ -12,4 +12,4 @@ config
 *.log
 kypassword-server
 .env
-**/.env.*
+**/.env.??????

@@ -28,5 +28,4 @@ frontend/dist/
 # Agent worktrees
 .claude/worktrees/
 .env
-.env.*
-!.env.example
+.env.??????
