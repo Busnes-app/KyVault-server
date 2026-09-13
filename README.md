@@ -133,9 +133,12 @@ there is no local administrator who could fix it from the UI.
 
 ## Upgrading
 
-A published-image install updates with `docker compose pull && docker compose up -d`; the
-tag only ever moves to an image CI attested. A source install rebuilds with `docker compose up -d`
-after `git pull` (see `docker-compose.build.yml`). Then read on:
+A published-image install on the rolling tag updates with `docker compose pull && docker compose up -d`;
+the tag only ever moves to an image CI attested. An install pinned to a digest (`KYPASSWORD_IMAGE`
+in `.env`, as the restore runbook sets) gets nothing from `pull`: re-run the pin recipe in
+`docker-compose.yml` against the new `:latest` first, or delete that line to follow the tag again.
+A source install rebuilds with `docker compose up -d` after `git pull` (see `docker-compose.build.yml`).
+Then read on:
 
 The audit chain also refuses to start in cases an older version started in, and the
 `AUDIT_KEY` length is now exact. [CHANGELOG.md](CHANGELOG.md) lists each condition and

@@ -64,13 +64,15 @@ kypassword-server restore --capsule cap-kypassword-XXXXXXXX.kycap --to ./restore
 ```
 
 For a published-image install, and always on a fresh recovery machine, pin the image to a
-digest you have verified before it reads a single share (`gh` must be logged in):
+digest you have verified before it reads a single share (`gh` must be logged in). The
+chain stops at the first failure, so a failed verify never writes the pin. The pin persists
+in `.env` after the drill: see the README's upgrade note for moving off it.
 
 ```bash
-d=$(docker buildx imagetools inspect ghcr.io/busness-app/kypassword-server:latest --format '{{.Manifest.Digest}}')
-gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
-  --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master
-(umask 077; echo "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" >> .env); chmod 600 .env
+d=$(docker buildx imagetools inspect ghcr.io/busness-app/kypassword-server:latest --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
+       --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
+  && (umask 077; touch .env; sed -i '/^KYPASSWORD_IMAGE=/d' .env; echo "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" >> .env; chmod 600 .env)
 ```
 
 With Docker Compose, from the repository directory, mount the capsule and an empty target
