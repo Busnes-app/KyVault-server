@@ -268,10 +268,11 @@ your own LAN behind a TLS proxy also needs its name to resolve inside the contai
 the container's resolvers for every lookup.
 
 ```sh
-# Both live in .env: the overlay joins COMPOSE_FILE and the resolver sits next to it, since
-# every later compose command needs it once the overlay is in the chain. Pick ONE line:
-(umask 077; printf '\nCOMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> .env); chmod 600 .env                          # published image
-(umask 077; printf '\nCOMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> .env); chmod 600 .env   # source install
+# All of it lives in .env, replaced in place (never appended twice): the overlay joins COMPOSE_FILE,
+# the resolver sit next to it, since every later compose command recreates the
+# container from .env. Pick ONE line:
+(umask 077; t=$(mktemp) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # published image
+(umask 077; t=$(mktemp) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # source install
 docker compose up -d --force-recreate
 ```
 

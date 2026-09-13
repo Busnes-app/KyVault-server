@@ -65,23 +65,28 @@ kypassword-server restore --capsule cap-kypassword-XXXXXXXX.kycap --to ./restore
 
 For a published-image install, and always on a fresh recovery machine, pin the image to a
 digest you have verified before it reads a single share (`gh` must be logged in). The
-chain stops at the first failure and writes the pin whole or not at all. The pin persists
+chain stops at the first failure and replaces `.env` only if the filtered copy was written in
+full, so your secrets are never truncated. The pin persists
 in `.env` after the drill: see the README's upgrade note for moving off it.
 
 ```bash
 d=$(docker buildx imagetools inspect ghcr.io/busness-app/kypassword-server:latest --format '{{.Manifest.Digest}}') \
   && gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
        --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
-  && (umask 077; touch .env; { grep -v '^KYPASSWORD_IMAGE=' .env || true; echo "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d"; } > .env.tmp \
-      && chmod 600 .env.tmp && mv .env.tmp .env) \
+  && (umask 077; t=$(mktemp) && touch .env && { grep -v '^KYPASSWORD_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+      && echo "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" >> "$t" && mv "$t" .env) \
   && grep -qxF "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" .env
 ```
 
-Then refuse to go on unless the image in effect is that pinned digest, or the local build of a
-source install (`docker-compose.build.yml` wins over the pin, which is what a source install wants):
+Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
+effect is exactly that digest. A source install passes on its `kypassword-server:local` build instead,
+since `docker-compose.build.yml` wins over the pin, which is what a source install wants. The
+two refusal messages are distinct on purpose: a broken invocation is not an unpinned image.
 
 ```bash
-docker compose config --images | grep -Eq '@sha256:|:local$' || { echo 'refusing: the image in effect is a floating tag'; false; }
+imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kypassword-server@$d" || printf '%s\n' "$imgs" | grep -qxF 'kypassword-server:local' \
+  || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
 ```
 
 With Docker Compose, from the repository directory, mount the capsule and an empty target
