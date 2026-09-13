@@ -136,7 +136,7 @@ there is no local administrator who could fix it from the UI.
 A published-image install on the rolling tag updates with `docker compose pull && docker compose up -d`;
 the tag only ever moves to an image CI attested. An install pinned to a digest (`KYPASSWORD_IMAGE`
 in `.env`, as the restore runbook sets) gets nothing from `pull`: re-run the pin recipe in
-`docker-compose.yml` against the new `:latest` first, or delete that line to follow the tag again.
+`docker-compose.yml` with the commit sha you want first, or delete that line to follow the tag again.
 A source install rebuilds with `docker compose up -d` after `git pull` (see `docker-compose.build.yml`).
 Then read on:
 
@@ -271,8 +271,8 @@ the container's resolvers for every lookup.
 # All of it lives in .env, replaced in place (never appended twice): the overlay joins COMPOSE_FILE,
 # the resolver sit next to it, since every later compose command recreates the
 # container from .env. Pick ONE line:
-(umask 077; t=$(mktemp) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # published image
-(umask 077; t=$(mktemp) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # source install
+(umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # published image
+(umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # source install
 docker compose up -d --force-recreate
 ```
 
