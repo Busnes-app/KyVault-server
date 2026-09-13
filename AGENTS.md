@@ -121,8 +121,9 @@ the user's, not the directory's.
 All of the above run in CI on every push to `master` and every pull request, split
 across five jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
 `security`, `publish`. Keep the workflow and this list in sync when either changes.
-`publish` runs only on a green push to `master` and pushes the image to
-`ghcr.io/busness-app/kypassword-server` as `:latest` and `:<commit sha>`.
+`publish` runs only on a green push to `master`. It pushes the exact image the `docker`
+job built and handed over as an artifact (no rebuild) to `ghcr.io/busness-app/kypassword-server`
+as `:latest` and `:<commit sha>`, then attests and verifies its provenance.
 
 `.github/dependabot.yml` opens weekly grouped dependency PRs for Go modules, npm,
 the Dockerfile base images, and the actions themselves. `kdbxweb` and
