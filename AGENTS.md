@@ -126,7 +126,9 @@ image the `docker` job handed over as an artifact (no rebuild) to
 `ghcr.io/busness-app/kypassword-server:<commit sha>`, attests it and verifies the attestation.
 `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the
 tag resolves to the attested digest. `docker-compose.yml` names the published image and never
-builds; source builds use `docker-compose.build.yml`, tagged `kypassword-server:local`.
+builds; source installs set `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` in `.env`
+(overlay tags `kypassword-server:local`) so every compose command, `docs/RESTORE.md` included,
+uses the local build.
 
 `.github/dependabot.yml` opens weekly grouped dependency PRs for Go modules, npm,
 the Dockerfile base images, and the actions themselves. `kdbxweb` and
