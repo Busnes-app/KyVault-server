@@ -13,6 +13,15 @@ Nobody can do this alone. KyRecovery cannot open a capsule. One custodian cannot
 that made the backup never could. That is the point, and it is also why you should run this
 procedure once as a drill before you ever need it.
 
+The `docker compose` commands below use the base file alone, which runs the published
+image. Source install: confirm the `COMPOSE_FILE` line in `.env` contains `docker-compose.build.yml`
+before the first command; extra overlays beside it, such as `docker-compose.lan-dns.yml`, are
+fine (the install step in `CONTRIBUTING.md` adds it). Check: `grep '^COMPOSE_FILE=' .env | grep -q
+docker-compose.build.yml && echo ok`. Otherwise a restore silently pulls a different binary than
+the one you built and are running.
+Published install: never restore onto a floating `:latest`; the step before the restore
+command pins and verifies a digest.
+
 ## What a capsule holds
 
 Everything a fresh KyPassword server needs to be the old one, and nothing that opens a user's
@@ -54,6 +63,39 @@ With the binary (from a release, or `go build ./cmd/server`):
 
 ```bash
 kypassword-server restore --capsule cap-kypassword-XXXXXXXX.kycap --to ./restored
+```
+
+For a published-image install, and always on a fresh recovery machine, pin the commit you
+intend to run (normally the one that made the backup, or the current tip) to a digest you have
+verified before it reads a single share (`gh` must be logged in). Name the commit yourself.
+Tags are movable, `:<commit sha>` included, so the chain also checks that the attestation records
+your commit as its source: the guarantee is the commit you named, not whatever the tag points at. The
+chain stops at the first failure and renames a same-directory staging file over `.env` only
+if the filtered copy was written in full, so your secrets are never truncated. The pin persists
+in `.env` after the drill: see the README's upgrade note for moving off it.
+
+```bash
+sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
+d=$(docker buildx imagetools inspect ghcr.io/busness-app/kypassword-server:$sha --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
+       --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
+  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
+       --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
+       --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
+  && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYPASSWORD_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+      && echo "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" >> "$t" && mv "$t" .env) \
+  && grep -qxF "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" .env
+```
+
+Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
+effect is exactly that digest. A source install passes on its `kypassword-server:local` build instead,
+since `docker-compose.build.yml` wins over the pin, which is what a source install wants. The
+two refusal messages are distinct on purpose: a broken invocation is not an unpinned image.
+
+```bash
+imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kypassword-server@$d" || printf '%s\n' "$imgs" | grep -qxF 'kypassword-server:local' \
+  || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
 ```
 
 With Docker Compose, from the repository directory, mount the capsule and an empty target

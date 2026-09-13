@@ -133,6 +133,17 @@ there is no local administrator who could fix it from the UI.
 
 ## Upgrading
 
+A published-image install on the rolling tag updates with `docker compose pull && docker compose up -d`;
+the tag only ever moves to an image CI attested. An install pinned to a digest (`KYPASSWORD_IMAGE`
+in `.env`, as the restore runbook sets) gets nothing from `pull`: re-run the pin recipe in
+`docker-compose.yml` with the commit sha you want first, or delete that line to follow the tag again.
+A source install rebuilds with `docker compose up -d` after `git pull` only once `docker-compose.build.yml`
+is in its `COMPOSE_FILE` chain; without it, `up -d` runs the published image instead. Installs from before
+the published image existed have no `COMPOSE_FILE` line at all, so before the first `up -d` on this
+revision run the snippet from `docker-compose.build.yml` once, then confirm the mode with
+`docker compose config --images`: `kypassword-server:local` means source, the `ghcr.io` name means
+published. Then read on:
+
 The audit chain also refuses to start in cases an older version started in, and the
 `AUDIT_KEY` length is now exact. [CHANGELOG.md](CHANGELOG.md) lists each condition and
 what to do about it; read it before upgrading, not at the failed startup.
@@ -260,8 +271,22 @@ your own LAN behind a TLS proxy also needs its name to resolve inside the contai
 `KYPASSWORD_DNS` and start with the override file, which is kept separate because it replaces
 the container's resolvers for every lookup.
 
-```sh
-KYPASSWORD_DNS=192.168.1.1 docker compose -f docker-compose.yml -f docker-compose.lan-dns.yml up -d --build
+The snippet appends `docker-compose.lan-dns.yml` to whatever `COMPOSE_FILE` chain `.env` already
+holds (build overlay, local override) and leaves the rest of the chain alone; the resolver
+sits next to it: the resolver comes from an exported
+`KYPASSWORD_DNS` (`export KYPASSWORD_DNS=<addr>`; fish: `set -x KYPASSWORD_DNS <addr>`) or, when that is unset, from the `KYPASSWORD_DNS` line
+already in `.env`; there is no default, the block refuses to guess. An exported value overrides
+`.env`, so re-running is a no-op only while `KYPASSWORD_DNS` is unset in your shell. One block for every install type:
+
+```bash
+(umask 077; touch .env \
+  && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-) && cf=${cf:-docker-compose.yml} \
+  && dns=${KYPASSWORD_DNS:-$({ grep '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-)} \
+  && : "${dns:?no resolver chosen: export KYPASSWORD_DNS=<your LAN resolver> (fish: set -x KYPASSWORD_DNS <addr>), then re-run this block}" \
+  && case ":$cf:" in *:docker-compose.lan-dns.yml:*) ;; *) cf="$cf:docker-compose.lan-dns.yml";; esac \
+  && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" \
+  && printf 'COMPOSE_FILE=%s\nKYPASSWORD_DNS=%s\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
+docker compose up -d --force-recreate
 ```
 
 KyRecovery is a blind store. A capsule contains encrypted vault files and envelopes, history

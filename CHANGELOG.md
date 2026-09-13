@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Published image; existing source installs must opt back in
+
+`docker-compose.yml` now names the published, attested image and no longer builds. A source
+install keeps building only if `docker-compose.build.yml` is in its `COMPOSE_FILE` chain. Installs
+from before this change have no `COMPOSE_FILE` line, so `git pull && docker compose up -d` would
+silently switch them to the published image. Before the first `up -d` on this revision, run the
+snippet in `docker-compose.build.yml` once and confirm with `docker compose config --images`
+(`kypassword-server:local` is source; the `ghcr.io` name is published).
+
 The audit chain moved onto the shared `ky-primitives/auditchain` and `ky-primitives/keyfile`
 packages. Read this before upgrading: the audit store now refuses to start in cases the
 previous version started in, and the key length is now exact.
