@@ -273,14 +273,16 @@ the container's resolvers for every lookup.
 
 The snippet appends `docker-compose.lan-dns.yml` to whatever `COMPOSE_FILE` chain `.env` already
 holds (build overlay, local override) and leaves the rest of the chain alone; the resolver
-sits next to it: a resolver you already set in `.env` or passed as
-`KYPASSWORD_DNS=<addr>` on the command line is used; there is no default, the block refuses to guess. Re-running it is a no-op. One block for every install type:
+sits next to it: the resolver comes from an exported
+`KYPASSWORD_DNS` (`export KYPASSWORD_DNS=<addr>`; fish: `set -x KYPASSWORD_DNS <addr>`) or, when that is unset, from the `KYPASSWORD_DNS` line
+already in `.env`; there is no default, the block refuses to guess. An exported value overrides
+`.env`, so re-running is a no-op only while `KYPASSWORD_DNS` is unset in your shell. One block for every install type:
 
 ```bash
 (umask 077; touch .env \
   && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-) && cf=${cf:-docker-compose.yml} \
   && dns=${KYPASSWORD_DNS:-$({ grep '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-)} \
-  && : "${dns:?no resolver chosen: re-run this block prefixed with KYPASSWORD_DNS=<your LAN resolver>}" \
+  && : "${dns:?no resolver chosen: export KYPASSWORD_DNS=<your LAN resolver> (fish: set -x KYPASSWORD_DNS <addr>), then re-run this block}" \
   && case ":$cf:" in *:docker-compose.lan-dns.yml:*) ;; *) cf="$cf:docker-compose.lan-dns.yml";; esac \
   && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" \
   && printf 'COMPOSE_FILE=%s\nKYPASSWORD_DNS=%s\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
