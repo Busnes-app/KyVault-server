@@ -267,12 +267,22 @@ your own LAN behind a TLS proxy also needs its name to resolve inside the contai
 `KYPASSWORD_DNS` and start with the override file, which is kept separate because it replaces
 the container's resolvers for every lookup.
 
-```sh
-# All of it lives in .env, replaced in place (never appended twice): the overlay joins COMPOSE_FILE,
-# the resolver sit next to it, since every later compose command recreates the
-# container from .env. Pick ONE line:
-(umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # published image
-(umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)   # source install
+Everything lives in `.env`, replaced in place (never appended twice): the overlay joins
+`COMPOSE_FILE`, the resolver sit next to it, since every later compose
+command recreates the container from `.env`. Two variants, one block each, so a single
+copy-paste can never run both:
+
+Published image:
+
+```bash
+(umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)
+docker compose up -d --force-recreate
+```
+
+Source install:
+
+```bash
+(umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" && printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml:docker-compose.lan-dns.yml\nKYPASSWORD_DNS=192.168.1.1\n' >> "$t" && mv "$t" .env)
 docker compose up -d --force-recreate
 ```
 
