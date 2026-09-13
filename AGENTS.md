@@ -119,11 +119,14 @@ the user's, not the directory's.
 - Dependency vulns: `govulncheck ./...` and `npm audit --audit-level=high` in `frontend/`
 
 All of the above run in CI on every push to `master` and every pull request, split
-across five jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
-`security`, `publish`. Keep the workflow and this list in sync when either changes.
-`publish` runs only on a green push to `master`. It pushes the exact image the `docker`
-job built and handed over as an artifact (no rebuild) to `ghcr.io/busness-app/kypassword-server`
-as `:latest` and `:<commit sha>`, then attests and verifies its provenance.
+across six jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
+`security`, `publish`, `promote`. Keep the workflow and this list in sync when either changes.
+`publish` and `promote` run only on a green push to `master`. `publish` pushes the exact
+image the `docker` job handed over as an artifact (no rebuild) to
+`ghcr.io/busness-app/kypassword-server:<commit sha>`, attests it and verifies the attestation.
+`promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the
+tag resolves to the attested digest. `docker-compose.yml` names the published image and never
+builds; source builds use `docker-compose.build.yml`, tagged `kypassword-server:local`.
 
 `.github/dependabot.yml` opens weekly grouped dependency PRs for Go modules, npm,
 the Dockerfile base images, and the actions themselves. `kdbxweb` and

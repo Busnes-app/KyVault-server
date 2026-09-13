@@ -261,7 +261,7 @@ your own LAN behind a TLS proxy also needs its name to resolve inside the contai
 the container's resolvers for every lookup.
 
 ```sh
-KYPASSWORD_DNS=192.168.1.1 docker compose -f docker-compose.yml -f docker-compose.lan-dns.yml up -d --build
+KYPASSWORD_DNS=192.168.1.1 docker compose -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.lan-dns.yml up -d
 ```
 
 KyRecovery is a blind store. A capsule contains encrypted vault files and envelopes, history

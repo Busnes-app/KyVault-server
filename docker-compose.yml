@@ -2,9 +2,9 @@ name: kypassword-server
 
 services:
   kypassword-server:
-    # pull_policy missing: `up` uses the local image if present, otherwise pulls from
-    # GHCR, and builds from this checkout only if the pull fails. `up --build` always
-    # builds from source; `pull` moves to the newest published image.
+    # The published, attested image. `pull` moves to the newest one; `up` uses what is
+    # present, otherwise pulls. This file never builds: a source build would occupy this
+    # name with unattested bytes, so it lives in docker-compose.build.yml under a local tag.
     # To run only what CI attested, pin by digest and verify it first:
     #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kypassword-server:<commit sha> --format '{{.Manifest.Digest}}')
     #   gh attestation verify oci://ghcr.io/busness-app/kypassword-server@$d --repo Busness-app/kypassword-server \
@@ -12,9 +12,6 @@ services:
     #   then set image: ghcr.io/busness-app/kypassword-server@$d
     image: ghcr.io/busness-app/kypassword-server:latest
     pull_policy: missing
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: KyPassword-Server
     restart: unless-stopped
     security_opt:

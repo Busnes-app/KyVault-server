@@ -55,7 +55,7 @@ Docker is the only requirement to *run* KyPost:
 
 ```bash
 cp .env.example .env      # set KYPOST_BIND — it has no default, on purpose
-docker compose up --build -d
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
 ```
 
 To work on the code outside the container you need Go 1.26.5+, Node 26.5.0 (see
