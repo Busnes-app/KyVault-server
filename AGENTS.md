@@ -126,7 +126,7 @@ image the `docker` job handed over as an artifact (no rebuild) to
 `ghcr.io/busness-app/kypassword-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`.
 `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the
 tag resolves to the attested digest. `docker-compose.yml` names the published image and never
-builds; source installs set `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` in `.env`
+builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env`
 (overlay tags `kypassword-server:local`) so every compose command, `docs/RESTORE.md` included,
 uses the local build.
 
