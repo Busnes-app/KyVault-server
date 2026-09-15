@@ -1,7 +1,7 @@
 // Local device vault storage for zero-knowledge KeePass vault master keys
 // Enables 1-click SSO unlock on trusted devices without exposing master keys to server.
 
-const DB_NAME = "kyvaults-device-vault";
+const DB_NAME = "kypasswords-device-vault";
 const STORE_NAME = "keys";
 
 function openDatabase(): Promise<IDBDatabase> {

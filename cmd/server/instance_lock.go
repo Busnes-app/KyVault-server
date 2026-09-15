@@ -13,7 +13,7 @@ func acquireInstanceLock(configDir string) (*instanceLock, error) {
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(filepath.Join(configDir, ".kyvault.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	file, err := os.OpenFile(filepath.Join(configDir, ".kypassword.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}

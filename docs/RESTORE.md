@@ -42,7 +42,7 @@ The server never held a master password or a vault key, so a restored server can
 vault either. Users open their vaults with their own passwords, exactly as before.
 
 The restored directory is the live directory in the clear. Treat it like the running server's
-`/kyvault/config`.
+`/kypassword/config`.
 
 ## Before you start
 
@@ -147,7 +147,7 @@ Failures you may see, and what they mean:
 
 | Message | Meaning |
 |---|---|
-| `capsule is for service ... this instance is kyvault` | The file is a capsule from another suite product. Check which service you downloaded |
+| `capsule is for service ... this instance is kyvault` | The file is a capsule from another suite product. Legacy `kypassword` capsules are accepted and reported explicitly; another service name is rejected |
 | `not a recognised capsule container` | The file is not a `.kycap` at all: truncated download or the wrong file |
 | `shamir: need at least 2 shares` | Input ended before k lines were read. Check for a missed line |
 | `shamir: share is not index-hex: checksum "6fax", expected "6fa6"` | One character on a card was mistyped. The checksum tells you which share to re-enter |
@@ -174,7 +174,7 @@ An instance that never had a user has no `vaults` entries; that is not an error.
 ## Step 3: put it in service
 
 The server reads everything from `CONFIG_DIR` and `DATA_DIR`. The compose file maps them to
-the `kyvault_config` and `kyvault_data` volumes. Both must be empty before the copy,
+the `kypassword_config` and `kypassword_data` volumes. Both must be empty before the copy,
 for the same reason Step 1 demands an empty directory: a vault directory for a user who is
 not in the restored `users.json`, or an audit log longer than the restored anchor, is two
 servers mixed into one.
@@ -182,7 +182,7 @@ servers mixed into one.
 ```bash
 docker compose down
 docker compose run --rm --no-deps --entrypoint sh kyvault-server \
-  -c 'ls -A /kyvault/config | wc -l; ls -A /kyvault/data | wc -l'
+  -c 'ls -A /kypassword/config | wc -l; ls -A /kypassword/data | wc -l'
 ```
 
 Both counts must be `0`. If they are not, the old volumes still hold data, and you keep a
@@ -194,7 +194,7 @@ as root, because the image's user cannot write a directory it does not own:
 mkdir -m 700 old-config old-data
 docker compose run --rm --no-deps --user root \
   -v "$PWD/old-config:/outc" -v "$PWD/old-data:/outd" --entrypoint sh kyvault-server \
-  -c 'cp -a /kyvault/config/. /outc/ && cp -a /kyvault/data/. /outd/ && ls -A /outc /outd | wc -l'
+  -c 'cp -a /kypassword/config/. /outc/ && cp -a /kypassword/data/. /outd/ && ls -A /outc /outd | wc -l'
 ```
 
 The command must exit 0. `old-config/` and `old-data/` are now the old live directories in
@@ -206,7 +206,7 @@ Only with the copy confirmed, remove the volumes. This is irreversible:
 ```bash
 docker compose down -v
 docker compose run --rm --no-deps --entrypoint sh kyvault-server \
-  -c 'ls -A /kyvault/config | wc -l; ls -A /kyvault/data | wc -l'
+  -c 'ls -A /kypassword/config | wc -l; ls -A /kypassword/data | wc -l'
 ```
 
 With `0` and `0` confirmed, copy the restored files in and start:
@@ -214,7 +214,7 @@ With `0` and `0` confirmed, copy the restored files in and start:
 ```bash
 docker compose run --rm --no-deps --user root --entrypoint sh \
   -v "$PWD/restored/config:/fromc:ro" -v "$PWD/restored/data:/fromd:ro" kyvault-server \
-  -c 'cp -a /fromc/. /kyvault/config/ && cp -a /fromd/. /kyvault/data/ && chown -R kyvault:kyvault /kyvault/config /kyvault/data'
+  -c 'cp -a /fromc/. /kypassword/config/ && cp -a /fromd/. /kypassword/data/ && chown -R kypassword:kypassword /kypassword/config /kypassword/data'
 docker compose up -d
 ```
 
@@ -281,7 +281,7 @@ history, and the audit log. Anything changed after that moment is undone.
      ```bash
      docker compose down
      docker compose run --rm --no-deps --user root --entrypoint sh kyvault-server \
-       -c 'rm /kyvault/config/pairing.secret && ls -A /kyvault/config'
+       -c 'rm /kypassword/config/pairing.secret && ls -A /kypassword/config'
      docker compose up -d
      ```
 

@@ -26,12 +26,12 @@ import (
 const (
 	ServiceName           = "kyvault"
 	AppName               = "KyVault"
-	legacyServiceName     = "kypassword"
+	LegacyServiceName     = "kypassword"
 	stateFile             = "kyrecovery.json"
 	publicKeyFile         = "recovery.pub"
 	tokenKeyFile          = "recovery-token.key"
 	tokenAdditional       = ServiceName + ":kyrecovery_token"
-	legacyTokenAdditional = legacyServiceName + ":kyrecovery_token"
+	legacyTokenAdditional = LegacyServiceName + ":kyrecovery_token"
 	recoveryKeyLength     = recoverykey.PublicKeyBytes
 )
 

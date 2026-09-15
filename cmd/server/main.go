@@ -22,6 +22,12 @@ import (
 )
 
 func main() {
+	if names := sso.LegacyEnvironment(); len(names) > 0 {
+		for _, name := range names {
+			log.Printf("legacy environment variable %s is unsupported; use %s", name, sso.KyVaultEnvironmentName(name))
+		}
+		log.Fatal("refusing to start with legacy KYPASSWORD_* environment variables")
+	}
 	if handled, err := runMigrationCommand(os.Args[1:], os.Stdout); handled {
 		if err != nil {
 			log.Fatalf("%v", err)

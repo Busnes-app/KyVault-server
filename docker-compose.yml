@@ -1,4 +1,4 @@
-name: kyvault-server
+name: kypassword-server
 
 services:
   kyvault-server:
@@ -14,8 +14,9 @@ services:
     # AND record your commit as its source, or the chain stops. The new .env is staged in this
     # directory and renamed atomically over the old one only if the filtered copy was written
     # in full, so a failed check, an unreadable .env or a short write never replaces your
-    # secrets. Re-run with a newer sha to move; delete the KYVAULT_IMAGE line to follow :latest
-    # again. A source install is unaffected: the build overlay's image wins over this pin.
+    # secrets. Re-run with a newer sha to move; delete the KYVAULT_IMAGE and KYPASSWORD_IMAGE
+    # lines to follow :latest again. A source install is unaffected: the build overlay's image
+    # wins over this pin.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
     #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyvault-server:$sha --format '{{.Manifest.Digest}}') \
     #     && gh attestation verify "oci://ghcr.io/busness-app/kyvault-server@$d" --repo Busness-app/kyvault-server \
@@ -26,9 +27,9 @@ services:
     #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYVAULT_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
     #         && echo "KYVAULT_IMAGE=ghcr.io/busness-app/kyvault-server@$d" >> "$t" && mv "$t" .env) \
     #     && grep -qxF "KYVAULT_IMAGE=ghcr.io/busness-app/kyvault-server@$d" .env
-    image: ${KYVAULT_IMAGE:-ghcr.io/busness-app/kyvault-server:latest}
+    image: ${KYVAULT_IMAGE:-${KYPASSWORD_IMAGE:-ghcr.io/busness-app/kyvault-server:latest}}
     pull_policy: missing
-    container_name: KyVault-Server
+    container_name: KyPassword-Server
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -42,8 +43,8 @@ services:
 
     environment:
       PORT: 5877
-      DATA_DIR: /kyvault/data
-      CONFIG_DIR: /kyvault/config
+      DATA_DIR: /kypassword/data
+      CONFIG_DIR: /kypassword/config
       WEB_DIR: /app/frontend/dist
       KYVAULT_SCIM_TOKEN: ${KYVAULT_SCIM_TOKEN:-}
       RETENTION_DAYS: ${RETENTION_DAYS:-90}
@@ -54,8 +55,8 @@ services:
       KYVAULT_BACKUP_DEPOSIT_INTERVAL: ${KYVAULT_BACKUP_DEPOSIT_INTERVAL:-24h}
 
     volumes:
-      - kyvault_data:/kyvault/data
-      - kyvault_config:/kyvault/config
+      - kypassword_data:/kypassword/data
+      - kypassword_config:/kypassword/config
 
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5877/api/health || exit 1"]
@@ -65,8 +66,8 @@ services:
       start_period: 5s
 
 volumes:
-  kyvault_data:
-  kyvault_config:
+  kypassword_data:
+  kypassword_config:
 
 networks:
   kypost-net:

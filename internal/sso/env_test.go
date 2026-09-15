@@ -1,6 +1,9 @@
 package sso
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func setOIDCEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
@@ -144,4 +147,18 @@ func TestEnvSourcedReportsWhereSettingsCameFrom(t *testing.T) {
 	if !store.EnvSourced() {
 		t.Error("EnvSourced should be true once the environment configures SSO")
 	}
+}
+
+func TestLegacyEnvironmentIsDetectedWithoutReadingValues(t *testing.T) {
+	t.Setenv("KYPASSWORD_BACKUP_DIR", "/old/backups")
+	names := LegacyEnvironment()
+	for _, name := range names {
+		if name == "KYPASSWORD_BACKUP_DIR" {
+			if got := KyVaultEnvironmentName(name); got != "KYVAULT_BACKUP_DIR" {
+				t.Fatalf("KyVaultEnvironmentName(%q) = %q", name, got)
+			}
+			return
+		}
+	}
+	t.Fatalf("LegacyEnvironment() did not report KYPASSWORD_BACKUP_DIR: %s", strings.Join(names, ", "))
 }

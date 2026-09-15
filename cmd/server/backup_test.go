@@ -97,4 +97,15 @@ func TestRestorePreLibraryCapsule(t *testing.T) {
 	if e != nil || string(raw) != "encrypted-kdbx" {
 		t.Fatalf("legacy vault changed: %v", e)
 	}
+	if !strings.Contains(out.String(), "pre-rename KyPassword capsule") {
+		t.Fatal("legacy restore did not report the pre-rename capsule")
+	}
+
+	truncated := filepath.Join(t.TempDir(), "truncated.kycap")
+	if e := os.WriteFile(truncated, []byte("{"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e := runRestore([]string{"--capsule", truncated, "--to", filepath.Join(t.TempDir(), "restored")}, strings.NewReader(strings.Join(shares, "\n")), &out); e == nil || !strings.Contains(e.Error(), "read capsule manifest") {
+		t.Fatalf("truncated capsule error = %v", e)
+	}
 }

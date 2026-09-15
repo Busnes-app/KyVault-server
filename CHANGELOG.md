@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### KyVault rename preserves existing state
+
+The product is now KyVault. Existing Docker project/volume names, container paths, browser
+key stores, locked-draft storage, instance locks, and recovery-token AAD remain stable so an
+upgrade does not strand data or cached key material. Existing `KYPASSWORD_*` variables are
+rejected at startup with the corresponding `KYVAULT_*` replacement; rename them before
+restarting. Existing `KYPASSWORD_IMAGE` digest pins remain readable, but re-run the pinning
+recipe to write the canonical `KYVAULT_IMAGE` name.
+
 ### Published image; existing source installs must opt back in
 
 `docker-compose.yml` now names the published, attested image and no longer builds. A source

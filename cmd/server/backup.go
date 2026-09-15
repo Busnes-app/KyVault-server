@@ -185,11 +185,29 @@ func runRestore(args []string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	var message bytes.Buffer
+	file, err := os.Open(*capsulePath)
+	if err != nil {
+		return fmt.Errorf("read capsule manifest: %w", err)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, capsule.MaxContainerBytes+1))
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("read capsule manifest: %w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("read capsule manifest: %w", closeErr)
+	}
+	if int64(len(raw)) > capsule.MaxContainerBytes {
+		return fmt.Errorf("read capsule manifest: %w", capsule.ErrCapsuleTooLarge)
+	}
+	manifest, err := capsule.ReadUnverifiedManifest(raw)
+	if err != nil {
+		return fmt.Errorf("read capsule manifest: %w", err)
+	}
 	serviceName := backup.ServiceName
-	if raw, readErr := os.ReadFile(*capsulePath); readErr == nil {
-		if manifest, manifestErr := capsule.ReadUnverifiedManifest(raw); manifestErr == nil && manifest.ServiceName == "kypassword" {
-			serviceName = "kypassword"
-		}
+	if manifest.ServiceName == backup.LegacyServiceName {
+		serviceName = backup.LegacyServiceName
+		fmt.Fprintln(out, "Notice: restoring a pre-rename KyPassword capsule.")
 	}
 	if err := recoveryclient.Restore(*capsulePath, *target, serviceName, shares, &message); err != nil {
 		return err

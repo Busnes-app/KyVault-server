@@ -20,21 +20,21 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /kyvault-server ./cmd/
 # Stage 3: Minimal Production Image
 FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata curl \
-    && addgroup -S kyvault && adduser -S kyvault -G kyvault \
-    && mkdir -p /kyvault/data /kyvault/config /app/frontend/dist \
-    && chown -R kyvault:kyvault /kyvault /app
+    && addgroup -S kypassword && adduser -S kypassword -G kypassword \
+    && mkdir -p /kypassword/data /kypassword/config /app/frontend/dist \
+    && chown -R kypassword:kypassword /kypassword /app
 
 WORKDIR /app
 COPY --from=backend-builder /kyvault-server /usr/local/bin/kyvault-server
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
-USER kyvault:kyvault
+USER kypassword:kypassword
 ENV PORT=5877 \
-    DATA_DIR=/kyvault/data \
-    CONFIG_DIR=/kyvault/config \
+    DATA_DIR=/kypassword/data \
+    CONFIG_DIR=/kypassword/config \
     WEB_DIR=/app/frontend/dist
 
-VOLUME ["/kyvault/data", "/kyvault/config"]
+VOLUME ["/kypassword/data", "/kypassword/config"]
 EXPOSE 5877
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

@@ -45,7 +45,7 @@ function isEntryDraft(value: unknown): value is EntryDraft | null {
 // Separate database preserves compatibility with older clients opening the device-key DB.
 export async function draftStore(id: string, operation: "get" | "put" | "delete", value?: LockedDraft): Promise<LockedDraft | undefined> {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("kyvault-locked-drafts", 1);
+    const request = indexedDB.open("kypassword-locked-drafts", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("drafts");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);

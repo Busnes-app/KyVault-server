@@ -49,6 +49,23 @@ func (s *Store) EnvSourced() bool {
 	return ok
 }
 
+// LegacyEnvironment lists old product-prefixed variables without exposing their values.
+// Startup rejects them so a renamed deployment cannot silently use stale configuration.
+func LegacyEnvironment() []string {
+	var names []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "KYPASSWORD_") {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func KyVaultEnvironmentName(name string) string {
+	return strings.Replace(name, "KYPASSWORD_", "KYVAULT_", 1)
+}
+
 func boolFromEnv(key string, fallback bool) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
 	case "":

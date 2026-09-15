@@ -107,7 +107,7 @@ over anything saved in `config/sso.json`. The admin UI will refuse to overwrite 
 | `PAIRING_SECRET` | no | generated into `CONFIG_DIR/pairing.secret` if unset |
 | `AUDIT_KEY` | no | exactly 32 bytes, as 64 hex characters or standard base64; generated into `CONFIG_DIR/audit.key` if unset |
 | `KYVAULT_BACKUP_DEPOSIT_INTERVAL` | no | Backup interval default; `24h`, `0` disables, otherwise whole seconds from `15m` to `8784h`; admin setting overrides it |
-| `KYVAULT_BACKUP_DIR` | no | Absolute local capsule directory; in Docker use `/kyvault/data/backups` inside the mounted volume |
+| `KYVAULT_BACKUP_DIR` | no | Absolute local capsule directory; in Docker use `/kypassword/data/backups` inside the mounted volume |
 | `KYVAULT_BACKUP_KEEP` | no | Local retention count, default `7`, minimum `1` |
 | `KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY` | no | Explicit private/CGNAT HTTPS destination opt-in, default `false`; loopback remains blocked |
 | `KYVAULT_DNS` | no | only with `docker-compose.lan-dns.yml`: the LAN resolver the container uses, for a KyRecovery whose name exists only on your network |
