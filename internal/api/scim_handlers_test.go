@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/scim"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 func scimTestClient(t *testing.T) (*Server, *scim.Client) {

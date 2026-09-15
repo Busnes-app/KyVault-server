@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/kypassword-server/internal/audit"
-	"github.com/Busness-app/kypassword-server/internal/devices"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
-	"github.com/Busness-app/kypassword-server/internal/vault"
+	"github.com/Busness-app/kyvault-server/internal/audit"
+	"github.com/Busness-app/kyvault-server/internal/devices"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 type Collector struct {

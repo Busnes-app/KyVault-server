@@ -12,9 +12,9 @@ import (
 )
 
 func ConfigFromEnv() (Config, error) {
-	c := Config{Directory: os.Getenv("KYPASSWORD_BACKUP_DIR"), Keep: 7, Interval: 24 * time.Hour}
+	c := Config{Directory: os.Getenv("KYVAULT_BACKUP_DIR"), Keep: 7, Interval: 24 * time.Hour}
 	if c.Directory != "" && !filepath.IsAbs(c.Directory) {
-		return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR must be absolute")
+		return c, fmt.Errorf("KYVAULT_BACKUP_DIR must be absolute")
 	}
 	if c.Directory != "" {
 		data := os.Getenv("DATA_DIR")
@@ -27,42 +27,42 @@ func ConfigFromEnv() (Config, error) {
 		}
 		dir, err := resolvedPath(c.Directory)
 		if err != nil {
-			return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR: %w", err)
+			return c, fmt.Errorf("KYVAULT_BACKUP_DIR: %w", err)
 		}
 		for _, root := range []string{config, filepath.Join(data, "vaults"), filepath.Join(data, "audit"), filepath.Join(data, "drill")} {
 			root, err = resolvedPath(root)
 			if err != nil {
-				return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR: %w", err)
+				return c, fmt.Errorf("KYVAULT_BACKUP_DIR: %w", err)
 			}
 			if containsPath(root, dir) || containsPath(dir, root) {
-				return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR overlaps protected directory %s", root)
+				return c, fmt.Errorf("KYVAULT_BACKUP_DIR overlaps protected directory %s", root)
 			}
 		}
 		c.Directory = dir
 	}
-	if v := os.Getenv("KYPASSWORD_BACKUP_KEEP"); v != "" {
+	if v := os.Getenv("KYVAULT_BACKUP_KEEP"); v != "" {
 		n, e := strconv.Atoi(v)
 		if e != nil || n < 1 {
-			return c, fmt.Errorf("KYPASSWORD_BACKUP_KEEP must be at least 1")
+			return c, fmt.Errorf("KYVAULT_BACKUP_KEEP must be at least 1")
 		}
 		c.Keep = n
 	}
-	if v := os.Getenv("KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY"); v != "" {
+	if v := os.Getenv("KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY"); v != "" {
 		b, e := strconv.ParseBool(v)
 		if e != nil {
-			return c, fmt.Errorf("KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY must be a boolean")
+			return c, fmt.Errorf("KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY must be a boolean")
 		}
 		c.AllowPrivate = b
 	}
-	if v := os.Getenv("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL"); v != "" {
+	if v := os.Getenv("KYVAULT_BACKUP_DEPOSIT_INTERVAL"); v != "" {
 		d, e := time.ParseDuration(v)
 		if e != nil {
-			return c, fmt.Errorf("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL: %w", e)
+			return c, fmt.Errorf("KYVAULT_BACKUP_DEPOSIT_INTERVAL: %w", e)
 		}
 		c.Interval = d
 	}
 	if c.Interval != 0 && (c.Interval < recoveryclient.MinInterval || c.Interval > recoveryclient.MaxInterval || c.Interval%time.Second != 0) {
-		return c, fmt.Errorf("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL must be 0 or whole seconds between 15m and 8784h")
+		return c, fmt.Errorf("KYVAULT_BACKUP_DEPOSIT_INTERVAL must be 0 or whole seconds between 15m and 8784h")
 	}
 	return c, nil
 }

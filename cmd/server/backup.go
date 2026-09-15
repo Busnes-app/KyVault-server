@@ -12,14 +12,15 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kypassword-server/internal/audit"
-	"github.com/Busness-app/kypassword-server/internal/backup"
-	"github.com/Busness-app/kypassword-server/internal/devices"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	kysync "github.com/Busness-app/kypassword-server/internal/sync"
-	"github.com/Busness-app/kypassword-server/internal/users"
-	"github.com/Busness-app/kypassword-server/internal/vault"
+	"github.com/Busness-app/kyvault-server/internal/audit"
+	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/devices"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	kysync "github.com/Busness-app/kyvault-server/internal/sync"
+	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 type offlineBackup struct {
@@ -70,7 +71,7 @@ func openOfflineBackup() (*offlineBackup, error) {
 		return fail(err)
 	}
 	state := backup.NewStateStore(configDir)
-	scimToken, err := kysync.LoadSCIMToken(configDir, os.Getenv("KYPASSWORD_SCIM_TOKEN"))
+	scimToken, err := kysync.LoadSCIMToken(configDir, os.Getenv("KYVAULT_SCIM_TOKEN"))
 	if err != nil {
 		return fail(err)
 	}
@@ -184,7 +185,13 @@ func runRestore(args []string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	var message bytes.Buffer
-	if err := recoveryclient.Restore(*capsulePath, *target, backup.ServiceName, shares, &message); err != nil {
+	serviceName := backup.ServiceName
+	if raw, readErr := os.ReadFile(*capsulePath); readErr == nil {
+		if manifest, manifestErr := capsule.ReadUnverifiedManifest(raw); manifestErr == nil && manifest.ServiceName == "kypassword" {
+			serviceName = "kypassword"
+		}
+	}
+	if err := recoveryclient.Restore(*capsulePath, *target, serviceName, shares, &message); err != nil {
 		return err
 	}
 	if err := backup.ValidateRestored(*target); err != nil {

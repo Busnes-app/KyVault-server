@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/kypassword-server/internal/backup"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 func TestExportRestoreCLIWithSyntheticShares(t *testing.T) {
@@ -45,7 +45,7 @@ func TestExportRestoreCLIWithSyntheticShares(t *testing.T) {
 	if e := runRestore([]string{"--capsule", path, "--to", target}, strings.NewReader(input), &out); e != nil {
 		t.Fatal(e)
 	}
-	if !strings.Contains(out.String(), "Restored") || !strings.Contains(out.String(), "kypassword") {
+	if !strings.Contains(out.String(), "Restored") || !strings.Contains(out.String(), "kyvault") {
 		t.Fatal("missing authenticated summary")
 	}
 	for _, name := range []string{"config/users.json", "config/devices.json", "config/sso.json", "config/recovery.pub", "config/audit.key"} {

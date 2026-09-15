@@ -10,11 +10,11 @@ import (
 // signing in through KySignOn, which needs SSO configured first. Reading it from the
 // environment breaks that deadlock.
 const (
-	EnvIssuer        = "KYPASSWORD_OIDC_ISSUER"
-	EnvClientID      = "KYPASSWORD_OIDC_CLIENT_ID"
-	EnvClientSecret  = "KYPASSWORD_OIDC_CLIENT_SECRET"
-	EnvRedirectURI   = "KYPASSWORD_OIDC_REDIRECT_URI"
-	EnvAutoProvision = "KYPASSWORD_OIDC_AUTO_PROVISION"
+	EnvIssuer        = "KYVAULT_OIDC_ISSUER"
+	EnvClientID      = "KYVAULT_OIDC_CLIENT_ID"
+	EnvClientSecret  = "KYVAULT_OIDC_CLIENT_SECRET"
+	EnvRedirectURI   = "KYVAULT_OIDC_REDIRECT_URI"
+	EnvAutoProvision = "KYVAULT_OIDC_AUTO_PROVISION"
 )
 
 // SettingsFromEnv reads the identity provider from the environment. It reports false

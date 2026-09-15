@@ -1,4 +1,4 @@
-// Package backup owns KyPassword disaster-recovery collection, sealing, and deposits.
+// Package backup owns KyVault disaster-recovery collection, sealing, and deposits.
 package backup
 
 import (
@@ -24,13 +24,15 @@ import (
 )
 
 const (
-	ServiceName       = "kypassword"
-	AppName           = "KyPassword"
-	stateFile         = "kyrecovery.json"
-	publicKeyFile     = "recovery.pub"
-	tokenKeyFile      = "recovery-token.key"
-	tokenAdditional   = ServiceName + ":kyrecovery_token"
-	recoveryKeyLength = recoverykey.PublicKeyBytes
+	ServiceName           = "kyvault"
+	AppName               = "KyVault"
+	legacyServiceName     = "kypassword"
+	stateFile             = "kyrecovery.json"
+	publicKeyFile         = "recovery.pub"
+	tokenKeyFile          = "recovery-token.key"
+	tokenAdditional       = ServiceName + ":kyrecovery_token"
+	legacyTokenAdditional = legacyServiceName + ":kyrecovery_token"
+	recoveryKeyLength     = recoverykey.PublicKeyBytes
 )
 
 var (
@@ -320,6 +322,9 @@ func (s *StateStore) openTokenLocked(encoded string) (string, error) {
 		return "", errors.New("backup: invalid sealed token")
 	}
 	plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], []byte(tokenAdditional))
+	if err != nil {
+		plain, err = aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], []byte(legacyTokenAdditional))
+	}
 	return string(plain), err
 }
 

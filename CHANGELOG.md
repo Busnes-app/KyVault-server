@@ -9,7 +9,7 @@ install keeps building only if `docker-compose.build.yml` is in its `COMPOSE_FIL
 from before this change have no `COMPOSE_FILE` line, so `git pull && docker compose up -d` would
 silently switch them to the published image. Before the first `up -d` on this revision, run the
 snippet in `docker-compose.build.yml` once and confirm with `docker compose config --images`
-(`kypassword-server:local` is source; the `ghcr.io` name is published).
+(`kyvault-server:local` is source; the `ghcr.io` name is published).
 
 The audit chain moved onto the shared `ky-primitives/auditchain` and `ky-primitives/keyfile`
 packages. Read this before upgrading: the audit store now refuses to start in cases the

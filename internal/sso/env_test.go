@@ -5,11 +5,11 @@ import "testing"
 func setOIDCEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	for _, k := range []string{
-		"KYPASSWORD_OIDC_ISSUER",
-		"KYPASSWORD_OIDC_CLIENT_ID",
-		"KYPASSWORD_OIDC_CLIENT_SECRET",
-		"KYPASSWORD_OIDC_REDIRECT_URI",
-		"KYPASSWORD_OIDC_AUTO_PROVISION",
+		"KYVAULT_OIDC_ISSUER",
+		"KYVAULT_OIDC_CLIENT_ID",
+		"KYVAULT_OIDC_CLIENT_SECRET",
+		"KYVAULT_OIDC_REDIRECT_URI",
+		"KYVAULT_OIDC_AUTO_PROVISION",
 	} {
 		t.Setenv(k, kv[k])
 	}
@@ -20,11 +20,11 @@ func TestSettingsFromEnvNeedsAllThreeRequiredValues(t *testing.T) {
 	// to disk on some values and the environment on others would give an operator a
 	// configuration neither file describes.
 	full := map[string]string{
-		"KYPASSWORD_OIDC_ISSUER":        "https://signon.example",
-		"KYPASSWORD_OIDC_CLIENT_ID":     "kypassword",
-		"KYPASSWORD_OIDC_CLIENT_SECRET": "s3cret",
+		"KYVAULT_OIDC_ISSUER":        "https://signon.example",
+		"KYVAULT_OIDC_CLIENT_ID":     "kyvault",
+		"KYVAULT_OIDC_CLIENT_SECRET": "s3cret",
 	}
-	for _, missing := range []string{"KYPASSWORD_OIDC_ISSUER", "KYPASSWORD_OIDC_CLIENT_ID", "KYPASSWORD_OIDC_CLIENT_SECRET"} {
+	for _, missing := range []string{"KYVAULT_OIDC_ISSUER", "KYVAULT_OIDC_CLIENT_ID", "KYVAULT_OIDC_CLIENT_SECRET"} {
 		partial := map[string]string{}
 		for k, v := range full {
 			partial[k] = v
@@ -47,9 +47,9 @@ func TestSettingsFromEnvDefaultsAutoProvisionOn(t *testing.T) {
 	// KySignOn is the directory. Someone it authenticates is entitled to a vault, and
 	// with local account creation gone there is no other way to grant one interactively.
 	setOIDCEnv(t, map[string]string{
-		"KYPASSWORD_OIDC_ISSUER":        "https://signon.example",
-		"KYPASSWORD_OIDC_CLIENT_ID":     "kypassword",
-		"KYPASSWORD_OIDC_CLIENT_SECRET": "s3cret",
+		"KYVAULT_OIDC_ISSUER":        "https://signon.example",
+		"KYVAULT_OIDC_CLIENT_ID":     "kyvault",
+		"KYVAULT_OIDC_CLIENT_SECRET": "s3cret",
 	})
 
 	got, ok := SettingsFromEnv()
@@ -62,7 +62,7 @@ func TestSettingsFromEnvDefaultsAutoProvisionOn(t *testing.T) {
 	if !got.AutoProvision {
 		t.Error("AutoProvision should default to true")
 	}
-	if got.IssuerURL != "https://signon.example" || got.ClientID != "kypassword" || got.ClientSecret != "s3cret" {
+	if got.IssuerURL != "https://signon.example" || got.ClientID != "kyvault" || got.ClientSecret != "s3cret" {
 		t.Errorf("unexpected settings: %+v", got)
 	}
 }
@@ -70,17 +70,17 @@ func TestSettingsFromEnvDefaultsAutoProvisionOn(t *testing.T) {
 func TestSettingsFromEnvAutoProvisionCanBeTurnedOff(t *testing.T) {
 	for _, off := range []string{"false", "0", "no", "off", "FALSE"} {
 		setOIDCEnv(t, map[string]string{
-			"KYPASSWORD_OIDC_ISSUER":         "https://signon.example",
-			"KYPASSWORD_OIDC_CLIENT_ID":      "kypassword",
-			"KYPASSWORD_OIDC_CLIENT_SECRET":  "s3cret",
-			"KYPASSWORD_OIDC_AUTO_PROVISION": off,
+			"KYVAULT_OIDC_ISSUER":         "https://signon.example",
+			"KYVAULT_OIDC_CLIENT_ID":      "kyvault",
+			"KYVAULT_OIDC_CLIENT_SECRET":  "s3cret",
+			"KYVAULT_OIDC_AUTO_PROVISION": off,
 		})
 		got, ok := SettingsFromEnv()
 		if !ok {
 			t.Fatalf("%q: SettingsFromEnv should have configured SSO", off)
 		}
 		if got.AutoProvision {
-			t.Errorf("KYPASSWORD_OIDC_AUTO_PROVISION=%q should disable auto-provisioning", off)
+			t.Errorf("KYVAULT_OIDC_AUTO_PROVISION=%q should disable auto-provisioning", off)
 		}
 	}
 }
@@ -107,14 +107,14 @@ func TestLoadPrefersTheEnvironmentOverDisk(t *testing.T) {
 	}
 
 	setOIDCEnv(t, map[string]string{
-		"KYPASSWORD_OIDC_ISSUER":        "https://signon.example",
-		"KYPASSWORD_OIDC_CLIENT_ID":     "kypassword",
-		"KYPASSWORD_OIDC_CLIENT_SECRET": "s3cret",
-		"KYPASSWORD_OIDC_REDIRECT_URI":  "https://vault.example/api/auth/oidc/callback",
+		"KYVAULT_OIDC_ISSUER":        "https://signon.example",
+		"KYVAULT_OIDC_CLIENT_ID":     "kyvault",
+		"KYVAULT_OIDC_CLIENT_SECRET": "s3cret",
+		"KYVAULT_OIDC_REDIRECT_URI":  "https://vault.example/api/auth/oidc/callback",
 	})
 
 	got := store.Load()
-	if got.IssuerURL != "https://signon.example" || got.ClientID != "kypassword" || got.ClientSecret != "s3cret" {
+	if got.IssuerURL != "https://signon.example" || got.ClientID != "kyvault" || got.ClientSecret != "s3cret" {
 		t.Errorf("environment did not take precedence: %+v", got)
 	}
 	if got.RedirectURI != "https://vault.example/api/auth/oidc/callback" {
@@ -137,9 +137,9 @@ func TestEnvSourcedReportsWhereSettingsCameFrom(t *testing.T) {
 	}
 
 	setOIDCEnv(t, map[string]string{
-		"KYPASSWORD_OIDC_ISSUER":        "https://signon.example",
-		"KYPASSWORD_OIDC_CLIENT_ID":     "kypassword",
-		"KYPASSWORD_OIDC_CLIENT_SECRET": "s3cret",
+		"KYVAULT_OIDC_ISSUER":        "https://signon.example",
+		"KYVAULT_OIDC_CLIENT_ID":     "kyvault",
+		"KYVAULT_OIDC_CLIENT_SECRET": "s3cret",
 	})
 	if !store.EnvSourced() {
 		t.Error("EnvSourced should be true once the environment configures SSO")

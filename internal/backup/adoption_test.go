@@ -229,7 +229,7 @@ func TestMalformedRecipeFailsClosed(t *testing.T) {
 	}
 }
 func TestDecryptGuardRejectsProbe(t *testing.T) {
-	if root := os.Getenv("KYPASSWORD_GUARD_PROBE"); root != "" {
+	if root := os.Getenv("KYVAULT_GUARD_PROBE"); root != "" {
 		guardtest.NoDecryptOutside(t, root, nil)
 		return
 	}
@@ -244,7 +244,7 @@ func TestDecryptGuardRejectsProbe(t *testing.T) {
 		}
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestDecryptGuardRejectsProbe$")
-	cmd.Env = append(os.Environ(), "KYPASSWORD_GUARD_PROBE="+dir)
+	cmd.Env = append(os.Environ(), "KYVAULT_GUARD_PROBE="+dir)
 	output, e := cmd.CombinedOutput()
 	if e == nil || !bytes.Contains(output, []byte("capsule.Open")) {
 		t.Fatalf("guard did not detect probe: %v %s", e, output)

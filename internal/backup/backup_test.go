@@ -16,11 +16,11 @@ import (
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/kypassword-server/internal/audit"
-	"github.com/Busness-app/kypassword-server/internal/devices"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
-	"github.com/Busness-app/kypassword-server/internal/vault"
+	"github.com/Busness-app/kyvault-server/internal/audit"
+	"github.com/Busness-app/kyvault-server/internal/devices"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 func generatedKey(t *testing.T) (recoverykey.PrivateKey, RecoveryKey) {
@@ -94,7 +94,7 @@ func testCollector(t *testing.T) Collector {
 		t.Fatal(err)
 	}
 	ssoStore := sso.NewStore(configDir)
-	if err := ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: "https://signon.example", ClientID: "kypassword", ClientSecret: "sealed-inside-capsule"}); err != nil {
+	if err := ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: "https://signon.example", ClientID: "kyvault", ClientSecret: "sealed-inside-capsule"}); err != nil {
 		t.Fatal(err)
 	}
 	return Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: ssoStore,

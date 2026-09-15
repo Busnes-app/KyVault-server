@@ -1,6 +1,6 @@
 export const AUTO_LOCK_MINUTES = [1, 5, 15, 30, 60] as const;
 export type AutoLockMinutes = typeof AUTO_LOCK_MINUTES[number];
-const settingKey = "kypassword.autoLockMinutes";
+const settingKey = "kyvault.autoLockMinutes";
 
 export function parseAutoLockMinutes(value: unknown): AutoLockMinutes {
   for (const minutes of AUTO_LOCK_MINUTES) {

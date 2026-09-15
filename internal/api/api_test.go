@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -232,7 +232,7 @@ func TestSSOCallbackAutoProvisions(t *testing.T) {
 	srv := newTestServer(t)
 	idp := mockIdP(t, map[string]any{"sub": "kysignon-sub-999", "email": "dave@urlxl.com", "preferred_username": "dave", "role": "admin"})
 	srv.oidcHTTP = idp.Client()
-	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); err != nil {
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}); err != nil {
 		t.Fatal(err)
 	}
 	rec := driveSSOCallback(t, srv)

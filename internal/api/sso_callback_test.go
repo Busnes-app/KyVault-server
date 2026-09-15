@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 // mockIdP stands in for KySignOn, returning an id_token carrying exactly the claims given.
@@ -46,7 +46,7 @@ func mockIdP(t *testing.T, claims map[string]any) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "alg": "RS256", "kid": publishedKid, "n": base64.RawURLEncoding.EncodeToString(signingKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(signingKey.E)).Bytes())}}})
 		case "/oauth/token":
 			r.ParseForm()
-			values := map[string]any{"iss": issuer, "aud": "kypassword-app", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": r.Form.Get("code")}
+			values := map[string]any{"iss": issuer, "aud": "kyvault-app", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": r.Form.Get("code")}
 			for k, v := range claims {
 				values[k] = v
 			}
@@ -141,7 +141,7 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 			"email":              "attacker@evil.example",
 		})
 		srv.oidcHTTP = idp.Client()
-		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
+		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app"}); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
 
@@ -177,7 +177,7 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 			"email":              "attacker@evil.example",
 		})
 		srv.oidcHTTP = idp.Client()
-		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
+		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app"}); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
 
@@ -216,7 +216,7 @@ func TestSSOCallbackStillMatchesOnSub(t *testing.T) {
 		"email":              "alice@example.com",
 	})
 	srv.oidcHTTP = idp.Client()
-	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app"}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
