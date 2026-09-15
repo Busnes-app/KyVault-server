@@ -22,6 +22,12 @@ type Identity struct {
 	IssuedAt  time.Time // ID token iat
 }
 
+// Revocable reports whether a logout token could ever name this identity. A session
+// minted without one would outlive every logout, so minting refuses it.
+func (id Identity) Revocable() bool {
+	return id.Issuer != "" && id.ClientID != "" && id.Subject != ""
+}
+
 // LogoutEvent is one accepted logout token, retained through ReplayUntil so a repeat
 // delivery is refused and a login that races it is fenced.
 type LogoutEvent struct {

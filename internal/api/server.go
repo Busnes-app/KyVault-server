@@ -319,6 +319,9 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID str
 	if u, err := s.users.Get(userID); err != nil || !u.Active {
 		return fmt.Errorf("account is inactive")
 	}
+	if !id.Revocable() {
+		return errors.New("session needs a revocable identity")
+	}
 	if s.logouts.Fenced(id, now) {
 		return errLoginFenced
 	}

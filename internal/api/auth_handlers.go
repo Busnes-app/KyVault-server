@@ -279,8 +279,10 @@ func sessionIdentity(c oidcverify.Claims, clientID string, sidRequired bool) (ss
 	}
 	authenticatedAt := c.IssuedAt
 	if raw, ok := c.Raw["auth_time"]; ok {
+		// auth_time precedes iat by definition. A value past it (milliseconds, a clock
+		// running ahead) would read as fresh for the session's whole life.
 		var at int64
-		if json.Unmarshal(raw, &at) != nil || at <= 0 {
+		if json.Unmarshal(raw, &at) != nil || at <= 0 || time.Unix(at, 0).After(c.IssuedAt.Add(time.Minute)) {
 			return id, time.Time{}, errors.New("identity token has an invalid auth_time")
 		}
 		authenticatedAt = time.Unix(at, 0).UTC()

@@ -74,7 +74,7 @@ func TestSharedSCIMClientLifecycle(t *testing.T) {
 	if local.Role != users.RoleAdmin || local.SSOSub != input.ExternalID {
 		t.Fatalf("identity/role: %+v", local)
 	}
-	token, err := srv.startSessionWithToken(created.ID, sso.Identity{Subject: created.ExternalID})
+	token, err := srv.startSessionWithToken(created.ID, sso.Identity{Issuer: "https://kysignon.test", ClientID: "kypassword-app", Subject: created.ExternalID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestSharedSCIMClientLifecycle(t *testing.T) {
 	if _, _, err = srv.devices.RedeemPairing(pairing.PIN, "late device", "test", ""); err == nil {
 		t.Fatal("pairing survived deactivation")
 	}
-	if _, err = srv.startSessionWithToken(created.ID, sso.Identity{Subject: created.ExternalID}); err == nil {
+	if _, err = srv.startSessionWithToken(created.ID, sso.Identity{Issuer: "https://kysignon.test", ClientID: "kypassword-app", Subject: created.ExternalID}); err == nil {
 		t.Fatal("inactive account got a session")
 	}
 	if _, err = client.PatchUser(ctx, created.ID, scim.PatchOperation{Op: "replace", Path: "active", Value: true}); err != nil {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -12,7 +13,13 @@ import (
 )
 
 func (s *Server) handlePairingStart(w http.ResponseWriter, r *http.Request, u users.User) {
-	current, _ := s.currentSession(r)
+	// withAuth resolved the session under its own lock; a logout can land between
+	// that read and this one, and a pairing must not outlive the session it came from.
+	current, ok := s.currentSession(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	origin, err := json.Marshal(current.SSO)
 	if err != nil {
 		http.Error(w, "failed to create pairing session", http.StatusInternalServerError)
@@ -96,6 +103,9 @@ func (s *Server) startSessionWithToken(userID string, id sso.Identity) (string, 
 	defer s.sessMu.Unlock()
 	if u, err := s.users.Get(userID); err != nil || !u.Active {
 		return "", fmt.Errorf("account is inactive")
+	}
+	if !id.Revocable() {
+		return "", errors.New("device session needs a revocable identity")
 	}
 	if s.logouts.Fenced(id, time.Now().UTC()) {
 		return "", errLoginFenced

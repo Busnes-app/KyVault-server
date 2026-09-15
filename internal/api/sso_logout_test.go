@@ -372,8 +372,38 @@ func TestSSOLoginRecordsIssuerAuthTime(t *testing.T) {
 		t.Fatalf("stale auth_time passed the fresh-admin gate: %d", rec.Code)
 	}
 
-	f.idp.set("auth_time", "yesterday")
-	if rec := driveSSOCallback(t, f.srv); rec.Code != http.StatusUnauthorized || hasSessionCookie(rec) {
-		t.Fatalf("malformed auth_time accepted: %d", rec.Code)
+	for name, value := range map[string]any{"string": "yesterday", "milliseconds": time.Now().UnixMilli(), "future": time.Now().Add(2 * time.Minute).Unix()} {
+		f.idp.set("auth_time", value)
+		if rec := driveSSOCallback(t, f.srv); rec.Code != http.StatusUnauthorized || hasSessionCookie(rec) {
+			t.Fatalf("%s auth_time accepted: %d", name, rec.Code)
+		}
+	}
+}
+
+func TestSessionMintingRequiresRevocableIdentity(t *testing.T) {
+	// A session no logout token could name would outlive every logout.
+	f := newLogoutFixture(t, map[string]any{"sub": "alice-sub", "preferred_username": "alice", "sid": "sid-1"})
+	cookie := f.login(t)
+	user, _ := f.srv.users.GetBySSOSub("alice-sub")
+	for name, id := range map[string]sso.Identity{"empty": {}, "no subject": {Issuer: f.idp.URL, ClientID: "kypassword-app"}, "no issuer": {ClientID: "kypassword-app", Subject: "alice-sub"}} {
+		if _, err := f.srv.startSessionWithToken(user.ID, id); err == nil {
+			t.Errorf("%s identity minted an unrevocable device session", name)
+		}
+		if err := f.srv.startSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), user.ID, id, time.Now()); err == nil {
+			t.Errorf("%s identity minted an unrevocable browser session", name)
+		}
+	}
+
+	// A pairing started by a session that is gone by the time the handler runs is refused,
+	// not recorded with an empty identity.
+	f.srv.sessMu.Lock()
+	delete(f.srv.sessions, cookie.Value)
+	f.srv.sessMu.Unlock()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/start", nil)
+	req.AddCookie(cookie)
+	f.srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("pairing start with a removed session = %d, want 401", rec.Code)
 	}
 }
