@@ -33,6 +33,24 @@ yourself adding one, the design has been misread.
   The cookie is an opaque single-use state. Discovery/token transport is HTTPS with no
   redirects; `oidcverify.VerifyWithNonce` verifies issuer/client/signature/nonce before
   claims can create/link accounts or sessions. Userinfo is not an authentication fallback.
+- Every session remembers what KySignOn proved: issuer, client, `sub`, `sid` and the ID
+  token `iat` (`sso.Identity` on `api.Session`). Device sessions inherit the identity of
+  the browser session that started the pairing; a pairing whose browser session has been
+  logged out cannot be redeemed. `AuthenticatedAt` is the token's `auth_time`, falling
+  back to `iat`, never the moment the callback ran. When discovery advertises
+  `backchannel_logout_session_supported`, an ID token without `sid` is refused.
+- `POST /api/auth/oidc/backchannel-logout` receives KySignOn's OIDC Back-Channel Logout
+  tokens (`oidcverify.VerifyLogout`, form-encoded, 64 KiB, no cookie or CSRF, the query
+  string is never read). A `sid` token ends that session and the devices it paired; a
+  `sub`-only token ends every session of the subject issued at or before the token. It
+  ends authentication only: vault ciphertext, envelopes and device registrations stay.
+  Accepted `jti`s are written through to `DATA_DIR/sso-logout.json` and retained through
+  the token's replay bound, so a repeat is 400 after a restart too, and a login whose
+  token predates a retained logout is refused with 403 (`auth.sso_login_fenced`).
+  Admission and revocation share the session lock with session minting, so a login
+  cannot slip between them. That file is not in the sealed capsule: events expire in
+  minutes and a restored process holds no sessions. Rejections are audited within the
+  source's budget as `auth.logout_rejected`; success is `auth.sso_logout` with the `jti`.
 - The master password is not a credential. It unwraps the vault key envelope in the
   browser and is never transmitted. Changing it is a client-side re-wrap against
   `PUT /api/vault/envelopes`.

@@ -76,6 +76,7 @@ func TestSurvivingRoutesStillExist(t *testing.T) {
 		{http.MethodGet, "/auth/sso/login"},
 		{http.MethodGet, "/auth/sso/callback"},
 		{http.MethodPost, "/api/sync/webhook"},
+		{http.MethodPost, "/api/auth/oidc/backchannel-logout"},
 		{http.MethodPost, "/api/devices/pairing/redeem"},
 	} {
 		rec := httptest.NewRecorder()
