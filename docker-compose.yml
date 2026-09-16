@@ -17,7 +17,7 @@ services:
     # secrets. Re-run with a newer sha to move; delete the KYVAULT_IMAGE and KYPASSWORD_IMAGE
     # lines to follow :latest again. A source install is unaffected: the build overlay's image
     # wins over this pin.
-#   Images published before 2026-09-16 were attested under the previous owner, Busness-app; verify those with that owner in the two flags below, and keep the exact match.
+#   Images built before 2026-09-16 cannot be verified by name any more (their owner is no longer held by this project); pin a later commit or build from source with docker-compose.build.yml.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
     #   d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyvault-server:$sha --format '{{.Manifest.Digest}}') \
     #     && gh attestation verify "oci://ghcr.io/busnes-app/kyvault-server@$d" --repo Busnes-app/KyVault-server \
