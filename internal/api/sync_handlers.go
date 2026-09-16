@@ -2,14 +2,14 @@ package api
 
 import (
 	"errors"
-	"github.com/Busness-app/ky-primitives/syncauth"
+	"github.com/Busnes-app/ky-primitives/syncauth"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
-	kysync "github.com/Busness-app/kyvault-server/internal/sync"
-	"github.com/Busness-app/kyvault-server/internal/users"
+	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 // syncSecrets lists the secrets a replication request may be authenticated with, in

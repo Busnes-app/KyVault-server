@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 // destructiveBackupRoutes move or expose backup material. Each needs a KySignOn

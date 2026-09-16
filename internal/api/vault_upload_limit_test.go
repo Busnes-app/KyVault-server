@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 func TestOversizedVaultUploadPreservesCurrentVault(t *testing.T) {

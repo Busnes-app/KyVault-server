@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/auditchain"
+	"github.com/Busnes-app/ky-primitives/auditchain"
 )
 
 func TestAuditLogAndVerify(t *testing.T) {

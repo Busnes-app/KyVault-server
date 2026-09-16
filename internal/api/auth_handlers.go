@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/oidcverify"
-	"github.com/Busness-app/kyvault-server/internal/sso"
-	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/ky-primitives/oidcverify"
+	"github.com/Busnes-app/kyvault-server/internal/sso"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 const ssoCookieName = "kypass_sso_state"

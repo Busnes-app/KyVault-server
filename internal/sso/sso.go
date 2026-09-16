@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/oidcverify"
+	"github.com/Busnes-app/ky-primitives/oidcverify"
 )
 
 // SSOSettings holds the OpenID Connect configuration.

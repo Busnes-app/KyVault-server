@@ -1,6 +1,6 @@
 # Security Policy
 
-Report vulnerabilities through [GitHub Security Advisories](https://github.com/Busness-app/kyvault-server/security/advisories), not a public issue. Include the affected version, impact, and reproduction steps.
+Report vulnerabilities through [GitHub Security Advisories](https://github.com/Busnes-app/kyvault-server/security/advisories), not a public issue. Include the affected version, impact, and reproduction steps.
 
 ## Trust boundaries
 

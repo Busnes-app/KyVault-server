@@ -7,18 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	kysync "github.com/Busness-app/kyvault-server/internal/sync"
+	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
 
-	"github.com/Busness-app/kyvault-server/internal/audit"
-	"github.com/Busness-app/kyvault-server/internal/vault"
+	"github.com/Busnes-app/kyvault-server/internal/audit"
+	"github.com/Busnes-app/kyvault-server/internal/vault"
 )
 
 type Check struct {

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busnes-app/kyvault-server/internal/backup"
 	"testing"
 	"time"
 )

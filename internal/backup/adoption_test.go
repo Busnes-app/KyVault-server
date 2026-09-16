@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/ky-primitives/recoveryclient/guardtest"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/recoveryclient/guardtest"
 )
 
 func TestLegacyPairingSurvivesLibraryWritesAndRestart(t *testing.T) {
@@ -286,7 +286,7 @@ func TestDecryptGuardRejectsProbe(t *testing.T) {
 	for i := 0; i < guardtest.MinFiles; i++ {
 		body := "package probe\n"
 		if i == 0 {
-			body += "import \"github.com/Busness-app/ky-primitives/capsule\"\nfunc bad(){capsule.Open(nil,nil,\"\")}\n"
+			body += "import \"github.com/Busnes-app/ky-primitives/capsule\"\nfunc bad(){capsule.Open(nil,nil,\"\")}\n"
 		}
 		if e := os.WriteFile(filepath.Join(dir, "probe"+strconv.Itoa(i)+".go"), []byte(body), 0600); e != nil {
 			t.Fatal(e)

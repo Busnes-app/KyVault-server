@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Busness-app/ky-primitives/scim"
+	"github.com/Busnes-app/ky-primitives/scim"
 )
 
 // SCIMUser is the subset of a SCIM User resource KyVault acts on.
