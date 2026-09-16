@@ -140,7 +140,11 @@ func runExport(offline *offlineBackup, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	raw, manifest, err := backup.Seal(files, deps, recipe, offline.service.Collector.AppVersion, key)
+	serviceName, err := offline.service.State.ServiceName()
+	if err != nil {
+		return err
+	}
+	raw, manifest, err := backup.SealWithService(files, deps, recipe, offline.service.Collector.AppVersion, key, serviceName)
 	if err != nil {
 		return err
 	}

@@ -97,7 +97,14 @@ func (s *Service) Status() (FullStatus, error) {
 		out.NextAttempt = &next
 	}
 	if s.Config.Directory != "" {
-		out.LocalCopies, err = recoveryclient.ListLocalCopies(s.Config.Directory, ServiceName)
+		serviceName, serviceErr := s.State.ServiceName()
+		if serviceErr != nil {
+			return out, serviceErr
+		}
+		if err = migrateLocalCopies(s.Config.Directory, serviceName); err != nil {
+			return out, err
+		}
+		out.LocalCopies, err = recoveryclient.ListLocalCopies(s.Config.Directory, serviceName)
 		if err != nil {
 			return out, err
 		}
@@ -108,6 +115,46 @@ func (s *Service) Status() (FullStatus, error) {
 	out.LastAttempt = st.LastAttempt
 	out.LastRun = st.LastRun
 	return out, err
+}
+
+func migrateLocalCopies(dir, serviceName string) error {
+	if dir == "" || serviceName != ServiceName || LegacyServiceName == ServiceName {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	oldPrefix, newPrefix := recoveryclient.LocalPrefix(LegacyServiceName), recoveryclient.LocalPrefix(ServiceName)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), oldPrefix) || !strings.HasSuffix(entry.Name(), ".kycap") {
+			continue
+		}
+		target := filepath.Join(dir, newPrefix+strings.TrimPrefix(entry.Name(), oldPrefix))
+		if _, err := os.Stat(target); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		// Link-then-remove gives the migration no overwrite window if another
+		// process creates the destination after the Stat above.
+		if err := os.Link(filepath.Join(dir, entry.Name()), target); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // Resolve existing ancestors too: the backup directory may not exist until the first run.

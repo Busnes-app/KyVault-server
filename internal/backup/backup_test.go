@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/recoveryclient/guardtest"
 	"io/fs"
 	"os"
@@ -40,6 +41,9 @@ func TestPairingSealsTokenAndPinsKey(t *testing.T) {
 	if err := store.StorePairing("https://recovery.example", token, key); err != nil {
 		t.Fatal(err)
 	}
+	if serviceName, err := store.ServiceName(); err != nil || serviceName != ServiceName {
+		t.Fatalf("new pairing service name = %q, %v", serviceName, err)
+	}
 	b, err := os.ReadFile(filepath.Join(dir, stateFile))
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +64,26 @@ func TestPairingSealsTokenAndPinsKey(t *testing.T) {
 	}
 	if _, err := store.LoadPairing(); !errors.Is(err, ErrKeyPinMissing) {
 		t.Fatalf("missing recovery.pub error = %v", err)
+	}
+}
+
+func TestStatusMigratesLegacyLocalCopiesForNewPairing(t *testing.T) {
+	configDir, backupDir := t.TempDir(), t.TempDir()
+	store := NewStateStore(configDir)
+	_, key := generatedKey(t)
+	if err := store.StorePairing("https://recovery.example", "token", key); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(backupDir, recoveryclient.LocalPrefix(LegacyServiceName)+"old.kycap")
+	if err := os.WriteFile(legacy, []byte("capsule"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := (&Service{State: store, Config: Config{Directory: backupDir}}).Status()
+	if err != nil || len(status.LocalCopies) != 1 || status.LocalCopies[0].Name != recoveryclient.LocalPrefix(ServiceName)+"old.kycap" {
+		t.Fatalf("migrated local copies = %+v, %v", status.LocalCopies, err)
+	}
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy copy still exists: %v", err)
 	}
 }
 

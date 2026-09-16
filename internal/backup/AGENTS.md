@@ -13,6 +13,11 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
   `kyvault:kyrecovery_token`. Reads also accept the pre-rename
   `kypassword:kyrecovery_token` AAD so existing deployments survive the product rename;
   new writes always use the KyVault binding. The synthetic legacy fixture pins this contract.
+- Persist the recovery service binding in `serviceName` when pairing. State written before the
+  rename has no field and must continue using `kypassword` for KyRecovery manifests, run
+  validation, and local-copy listing/pruning; new pairings use `kyvault`. When a new pairing
+  follows an explicit unpair, legacy local-copy filenames are migrated using
+  `recoveryclient.LocalPrefix` without overwriting an existing destination.
 - Settings writes are atomic under the state mutex; pairing/pin/unpair hold it across
   library writes. The operation mutex prevents those changes during a backup run; lifecycle operations
   and competing runs return ErrDepositInProgress immediately instead of waiting.

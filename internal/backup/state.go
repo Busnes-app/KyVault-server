@@ -49,6 +49,7 @@ type RecoveryKey = recoveryclient.RecoveryKey
 type Receipt = recoveryclient.Receipt
 
 type persistedState struct {
+	ServiceName   *string     `json:"serviceName,omitempty"`
 	RecoveryURL   *string     `json:"recoveryUrl,omitempty"`
 	SealedToken   *string     `json:"sealedToken,omitempty"`
 	RecoveryKeyID *string     `json:"recoveryKeyId,omitempty"`
@@ -230,6 +231,32 @@ func (s *StateStore) Delete(key string) error {
 	return (lockedSettings{s}).Delete(key)
 }
 
+func (s *StateStore) serviceNameLocked(st persistedState) (string, error) {
+	if st.ServiceName != nil && *st.ServiceName != "" {
+		if *st.ServiceName != ServiceName && *st.ServiceName != LegacyServiceName {
+			return "", fmt.Errorf("invalid backup service name")
+		}
+		return *st.ServiceName, nil
+	}
+	// Pairings created before the KyVault rename are bound to KyRecovery under
+	// the old name. Keep emitting that name until the operator explicitly pairs
+	// the installation again.
+	if st.RecoveryURL != nil || st.SealedToken != nil {
+		return LegacyServiceName, nil
+	}
+	return ServiceName, nil
+}
+
+func (s *StateStore) ServiceName() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadLocked()
+	if err != nil {
+		return "", err
+	}
+	return s.serviceNameLocked(st)
+}
+
 type tokenSealer struct{ s *StateStore }
 
 func (a tokenSealer) Seal(p []byte) (string, error) { return a.s.sealTokenLocked(string(p)) }
@@ -261,6 +288,15 @@ func (s *StateStore) ClaimPairing(ctx context.Context, client RecoveryClient, ur
 func (s *StateStore) storePairing(url, token string, key RecoveryKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	st, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	serviceName := ServiceName
+	st.ServiceName = &serviceName
+	if err := s.saveLocked(st); err != nil {
+		return err
+	}
 	settings := lockedSettings{s}
 	if err := recoveryclient.StoreRecoveryKey(s.dir, settings, key); err != nil {
 		return err
@@ -355,6 +391,9 @@ func (s *StateStore) Status() (Status, error) {
 	defer s.mu.Unlock()
 	st, err := s.loadLocked()
 	if err != nil {
+		return Status{}, err
+	}
+	if _, err := s.serviceNameLocked(st); err != nil {
 		return Status{}, err
 	}
 	status := Status{Paired: valueOf(st.RecoveryURL) != "" && valueOf(st.SealedToken) != "", RecoveryURL: valueOf(st.RecoveryURL),
