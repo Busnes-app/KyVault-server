@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,8 +20,23 @@ import (
 	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
-// mockIdP stands in for KySignOn, returning an id_token carrying exactly the claims given.
+// mockIssuer stands in for KySignOn: discovery, JWKS, the token endpoint, and a
+// logout-token minter signed by the same key.
+type mockIssuer struct {
+	*httptest.Server
+	key, rotated *rsa.PrivateKey
+	mu           sync.Mutex
+	claims       map[string]any
+}
+
+const backchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+
+// mockIdP returns an issuer whose id_token carries exactly the claims given.
 func mockIdP(t *testing.T, claims map[string]any) *httptest.Server {
+	return newMockIssuer(t, claims).Server
+}
+
+func newMockIssuer(t *testing.T, claims map[string]any) *mockIssuer {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -30,9 +46,11 @@ func mockIdP(t *testing.T, claims map[string]any) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	is := &mockIssuer{key: key, rotated: rotated, claims: claims}
+	is.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		issuer := "https://" + r.Host
+		claims := is.snapshot()
 		signingKey := key
 		publishedKid := "test-key"
 		if claims["__rotate"] == true {
@@ -41,7 +59,8 @@ func mockIdP(t *testing.T, claims map[string]any) *httptest.Server {
 		}
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
-			json.NewEncoder(w).Encode(map[string]string{"issuer": issuer, "authorization_endpoint": issuer + "/oauth/authorize", "token_endpoint": issuer + "/oauth/token", "jwks_uri": issuer + "/jwks"})
+			json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/oauth/authorize", "token_endpoint": issuer + "/oauth/token", "jwks_uri": issuer + "/jwks",
+				"backchannel_logout_session_supported": claims["__sid_supported"] == true})
 		case "/jwks":
 			json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "alg": "RS256", "kid": publishedKid, "n": base64.RawURLEncoding.EncodeToString(signingKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(signingKey.E)).Bytes())}}})
 		case "/oauth/token":
@@ -62,24 +81,73 @@ func mockIdP(t *testing.T, claims map[string]any) *httptest.Server {
 			if k, ok := claims["__kid"].(string); ok {
 				kid = k
 			}
-			h, _ := json.Marshal(map[string]string{"alg": alg, "kid": kid})
-			b, _ := json.Marshal(values)
-			raw := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(b)
-			sum := sha256.Sum256([]byte(raw))
-			sig, e := rsa.SignPKCS1v15(rand.Reader, signingKey, crypto.SHA256, sum[:])
-			if e != nil {
-				panic(e)
-			}
+			token := signJWT(signingKey, map[string]any{"alg": alg, "kid": kid}, values)
 			if claims["__bad_signature"] == true {
-				sig[0] ^= 1
+				token = token[:len(token)-2] + "AA"
 			}
-			json.NewEncoder(w).Encode(map[string]any{"id_token": raw + "." + base64.RawURLEncoding.EncodeToString(sig), "access_token": "mock-token", "token_type": "Bearer", "expires_in": 3600})
+			json.NewEncoder(w).Encode(map[string]any{"id_token": token, "access_token": "mock-token", "token_type": "Bearer", "expires_in": 3600})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(idp.Close)
-	return idp
+	t.Cleanup(is.Close)
+	return is
+}
+
+func (is *mockIssuer) snapshot() map[string]any {
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	out := make(map[string]any, len(is.claims))
+	for k, v := range is.claims {
+		out[k] = v
+	}
+	return out
+}
+
+// set changes a claim for later tokens; a nil value removes it.
+func (is *mockIssuer) set(k string, v any) {
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	if v == nil {
+		delete(is.claims, k)
+		return
+	}
+	is.claims[k] = v
+}
+
+// logoutToken mints a logout+jwt for this issuer. overrides replace or, when nil,
+// remove claims; "__typ" and "__key" override the header type and signing key.
+func (is *mockIssuer) logoutToken(overrides map[string]any) string {
+	now := time.Now()
+	values := map[string]any{"iss": is.URL, "aud": "kypassword-app", "iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(), "jti": randomHex(8),
+		"events": map[string]any{backchannelLogoutEvent: map[string]any{}}}
+	header := map[string]any{"alg": "RS256", "kid": "test-key", "typ": "logout+jwt"}
+	key := is.key
+	for k, v := range overrides {
+		switch {
+		case k == "__typ":
+			header["typ"] = v
+		case k == "__key":
+			key = v.(*rsa.PrivateKey)
+		case v == nil:
+			delete(values, k)
+		default:
+			values[k] = v
+		}
+	}
+	return signJWT(key, header, values)
+}
+
+func signJWT(key *rsa.PrivateKey, header, payload map[string]any) string {
+	h, _ := json.Marshal(header)
+	b, _ := json.Marshal(payload)
+	raw := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(b)
+	sum := sha256.Sum256([]byte(raw))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
+	if err != nil {
+		panic(err)
+	}
+	return raw + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 // driveSSOCallback runs a full login: request the redirect, keep the state cookie, then

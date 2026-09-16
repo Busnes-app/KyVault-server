@@ -114,6 +114,9 @@ type OIDCDiscovery struct {
 	TokenEndpoint         string `json:"token_endpoint"`
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
+	// LogoutSessionSupported means the issuer sends sid and may log out one session;
+	// an ID token without sid is then refused rather than left unreachable by logout.
+	LogoutSessionSupported bool `json:"backchannel_logout_session_supported"`
 }
 
 // DiscoverEndpoints queries the OpenID configuration document from issuerURL.

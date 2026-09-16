@@ -11,6 +11,9 @@ Report vulnerabilities through [GitHub Security Advisories](https://github.com/B
   `audit.state` prevents trustworthy verification.
 - Session cookies are `HttpOnly` and `SameSite`; state-changing KyRecovery admin requests also
   require the session's double-submit CSRF token.
+- KySignOn can end sessions here through back-channel logout. Every session carries the
+  issuer, subject and session ID it was issued for, and a logout token ends only those.
+  Logout revokes authentication; it never deletes a vault or a key envelope.
 
 ## KyRecovery
 

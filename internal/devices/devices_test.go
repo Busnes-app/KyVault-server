@@ -15,7 +15,7 @@ func TestDevicesPairingAndRevoke(t *testing.T) {
 	userID := "usr_123"
 
 	// 1. Create pairing session
-	sess, err := store.CreatePairingSession(userID)
+	sess, err := store.CreatePairingSession(userID, "")
 	if err != nil {
 		t.Fatalf("CreatePairingSession failed: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestDevicesPairingAndRevoke(t *testing.T) {
 	}
 
 	// 2. Redeem using PIN
-	dev, err := store.RedeemPairing(sess.PIN, "Chrome Extension", "chrome", "192.168.1.50")
+	dev, _, err := store.RedeemPairing(sess.PIN, "Chrome Extension", "chrome", "192.168.1.50")
 	if err != nil {
 		t.Fatalf("RedeemPairing PIN failed: %v", err)
 	}
@@ -33,13 +33,13 @@ func TestDevicesPairingAndRevoke(t *testing.T) {
 	}
 
 	// Reusing same PIN should fail
-	if _, err := store.RedeemPairing(sess.PIN, "Pixel 8", "android", "127.0.0.1"); err != ErrPairingExpired {
+	if _, _, err := store.RedeemPairing(sess.PIN, "Pixel 8", "android", "127.0.0.1"); err != ErrPairingExpired {
 		t.Errorf("expected ErrPairingExpired on consumed PIN, got: %v", err)
 	}
 
 	// 3. Redeem using QR Secret
-	sess2, _ := store.CreatePairingSession(userID)
-	dev2, err := store.RedeemPairing(sess2.Secret, "Pixel 8 Pro", "android", "10.0.0.5")
+	sess2, _ := store.CreatePairingSession(userID, "")
+	dev2, _, err := store.RedeemPairing(sess2.Secret, "Pixel 8 Pro", "android", "10.0.0.5")
 	if err != nil {
 		t.Fatalf("RedeemPairing Secret failed: %v", err)
 	}
@@ -74,14 +74,14 @@ func TestDevicesPairingAndRevoke(t *testing.T) {
 	}
 
 	// 7. Test expiration
-	sess3, _ := store.CreatePairingSession(userID)
+	sess3, _ := store.CreatePairingSession(userID, "")
 	store.mu.Lock()
 	sOld := store.pairingPINs[sess3.PIN]
 	sOld.ExpiresAt = time.Now().Add(-10 * time.Minute)
 	store.pairingPINs[sess3.PIN] = sOld
 	store.mu.Unlock()
 
-	if _, err := store.RedeemPairing(sess3.PIN, "Old Phone", "android", "1.1.1.1"); err != ErrPairingExpired {
+	if _, _, err := store.RedeemPairing(sess3.PIN, "Old Phone", "android", "1.1.1.1"); err != ErrPairingExpired {
 		t.Errorf("expected ErrPairingExpired on expired PIN, got: %v", err)
 	}
 }

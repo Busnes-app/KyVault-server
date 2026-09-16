@@ -340,5 +340,14 @@ older server or changed SSO configuration must start again. Userinfo can no long
 for a missing or invalid ID token. Verify real SSO login and a signed directory update after
 deployment; local TLS issuer tests are separate from that live proof.
 
+Register `https://<kypassword>/api/auth/oidc/backchannel-logout` as the client's
+back-channel logout URI in KySignOn. A logout token naming a session (`sid`) ends that
+browser session and the devices it paired; one naming only the subject ends every session
+that subject had at the time. Nothing else changes: the vault, its key envelopes and the
+device registrations stay, and the person signs in again through KySignOn. Accepted tokens
+are recorded in `DATA_DIR/sso-logout.json` for the token's replay window so a repeat
+delivery is refused even across a restart; a 200 means the named sessions no longer
+exist on this server, not that the person's other products have signed out.
+
 Local backup directories must not overlap `CONFIG_DIR` or `DATA_DIR/vaults`,
 `DATA_DIR/audit`, or `DATA_DIR/drill` (including symlink aliases). Startup rejects overlaps.
