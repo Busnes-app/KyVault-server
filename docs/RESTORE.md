@@ -219,7 +219,7 @@ docker compose up -d
 ```
 
 The one-off container mounts the same volumes the service uses, so the copy lands where the
-server will read it, owned by the image's `kyvault` user.
+server will read it, owned by the image's `kypassword` user.
 
 Keep the KySignOn settings identical to the old deployment. `KYVAULT_OIDC_ISSUER`,
 `KYVAULT_OIDC_CLIENT_ID` and `KYVAULT_OIDC_CLIENT_SECRET` in `.env` override

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback }
 import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
-import { sealDraft, openDraft, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
+import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
 import {
   generateVaultMasterKey,
@@ -62,7 +62,7 @@ export function App() {
   const memoryDraft = useRef<LockedDraft | undefined>(undefined);
   const [lockNotice, setLockNotice] = useState("");
   const recoveryId = (u: User): string | undefined => {
-    try { return sessionStorage.getItem(`kyvault.draft:${u.id}`) ?? undefined; } catch { return undefined; }
+    try { return draftPointer(sessionStorage, u.id); } catch { return undefined; }
   };
   const [recoveryPending, setRecoveryPending] = useState(false);
   const unsaved = recoveryPending || hasDraft || saveState.kind !== "saved";
@@ -219,7 +219,12 @@ export function App() {
         setRecoveryPending(true);
         if (!await removeDraft(id)) notices.push("Recovered local edits, but could not remove the old encrypted recovery copy from browser storage.");
       }
-      if (local.kind === "available") { try { sessionStorage.removeItem(`kyvault.draft:${u.id}`); } catch {} }
+      if (local.kind === "available") {
+        try {
+          sessionStorage.removeItem(`kyvault.draft:${u.id}`);
+          sessionStorage.removeItem(`kypassword.draft:${u.id}`);
+        } catch {}
+      }
       if (!current()) return;
       memoryDraft.current = undefined;
       setRecoveryPending(local.kind === "unavailable");
@@ -383,7 +388,12 @@ export function App() {
         memoryDraft.current = undefined;
         const id = user ? recoveryId(user) : undefined;
         if (id) await draftStore(id, "delete");
-        if (user) { try { sessionStorage.removeItem(`kyvault.draft:${user.id}`); } catch {} }
+        if (user) {
+          try {
+            sessionStorage.removeItem(`kyvault.draft:${user.id}`);
+            sessionStorage.removeItem(`kypassword.draft:${user.id}`);
+          } catch {}
+        }
       }),
       logout(),
     ]);
