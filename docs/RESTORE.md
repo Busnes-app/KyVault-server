@@ -72,15 +72,15 @@ Tags are movable, `:<commit sha>` included, so the chain also checks that the at
 your commit as its source: the guarantee is the commit you named, not whatever the tag points at. The
 chain stops at the first failure and renames a same-directory staging file over `.env` only
 if the filtered copy was written in full, so your secrets are never truncated. The pin persists
-in `.env` after the drill: see the README's upgrade note for moving off it.
+in `.env` after the drill: see the README's upgrade note for moving off it. Commits built before 2026-09-16 were attested under the previous organisation name, so verify those with the exact `--repo` and `--cert-identity` strings that were in effect when they were built (owner `Busness-app`); keep the exact match rather than switching to `--cert-identity-regex`.
 
 ```bash
 sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
 d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyvault-server:$sha --format '{{.Manifest.Digest}}') \
-  && gh attestation verify "oci://ghcr.io/busnes-app/kyvault-server@$d" --repo Busnes-app/kyvault-server \
-       --cert-identity https://github.com/Busnes-app/kyvault-server/.github/workflows/ci.yml@refs/heads/master \
-  && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyvault-server@$d" --repo Busnes-app/kyvault-server \
-       --cert-identity https://github.com/Busnes-app/kyvault-server/.github/workflows/ci.yml@refs/heads/master \
+  && gh attestation verify "oci://ghcr.io/busnes-app/kyvault-server@$d" --repo Busnes-app/KyVault-server \
+       --cert-identity https://github.com/Busnes-app/KyVault-server/.github/workflows/ci.yml@refs/heads/master \
+  && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyvault-server@$d" --repo Busnes-app/KyVault-server \
+       --cert-identity https://github.com/Busnes-app/KyVault-server/.github/workflows/ci.yml@refs/heads/master \
        --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
   && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYVAULT_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
       && echo "KYVAULT_IMAGE=ghcr.io/busnes-app/kyvault-server@$d" >> "$t" && mv "$t" .env) \

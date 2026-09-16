@@ -19,7 +19,7 @@ password or paper-recovery envelope.
 ## Sources of truth
 
 - Wire contract: `kyrecovery-server/zero_code_pairing_handoff_spec.md` v2.0.0.
-- Shared formats: `github.com/Busnes-app/ky-primitives@v0.4.1`, especially `capsule` and
+- Shared formats: `github.com/Busness-app/ky-primitives@v0.4.1`, especially `capsule` and
   `recoverykey`.
 - Product-side baseline: `ky_server_base/internal/backup`.
 - Hardened non-scaffold adaptation: the decisions in MySlop folder
@@ -118,7 +118,7 @@ not survive a disaster. Temporary `*.tmp` files and backup scratch directories s
 
 Files: `go.mod`, `go.sum`, delete `zero_code_pairing_handoff_spec.md`.
 
-1. Run `go get github.com/Busnes-app/ky-primitives@v0.4.1` and `go mod tidy`; retain Go
+1. Run `go get github.com/Busness-app/ky-primitives@v0.4.1` and `go mod tidy`; retain Go
    `1.26.6`.
 2. Confirm `auditchain` and `keyfile` callers still compile unchanged.
 3. Delete the repository's v1 pairing specification. Documentation added later must link to
