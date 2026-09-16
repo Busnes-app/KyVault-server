@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busnes-app/kyvault-server/internal/sso"
 )
 
 // logoutFixture is a server bound to a mock issuer with one signed-in session.

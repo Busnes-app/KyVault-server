@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Busness-app/kyvault-server/internal/sso"
-	"github.com/Busness-app/kyvault-server/internal/users"
-	"github.com/Busness-app/kyvault-server/internal/vault"
+	"github.com/Busnes-app/kyvault-server/internal/sso"
+	"github.com/Busnes-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/vault"
 )
 
 func (s *Server) handlePairingStart(w http.ResponseWriter, r *http.Request, u users.User) {

@@ -1,4 +1,4 @@
-module github.com/Busness-app/kyvault-server
+module github.com/Busnes-app/kyvault-server
 
 go 1.26.6
 

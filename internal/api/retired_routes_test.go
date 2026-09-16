@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kyvault-server/internal/sso"
-	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/sso"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 func TestRetiredAuthEndpointsAreGone(t *testing.T) {

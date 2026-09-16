@@ -1,8 +1,8 @@
 **Repo:** kyvault-server
-**PR:** #25 — https://github.com/Busness-app/kyvault-server/pull/25
-**PR:** #26 — https://github.com/Busness-app/kyvault-server/pull/26
-**PR:** #24 — https://github.com/Busness-app/kyvault-server/pull/24 (Phase A merged)
-**PR:** #23 — https://github.com/Busness-app/kyvault-server/pull/23 (original plan merged)
+**PR:** #25 — https://github.com/Busnes-app/kyvault-server/pull/25
+**PR:** #26 — https://github.com/Busnes-app/kyvault-server/pull/26
+**PR:** #24 — https://github.com/Busnes-app/kyvault-server/pull/24 (Phase A merged)
+**PR:** #23 — https://github.com/Busnes-app/kyvault-server/pull/23 (original plan merged)
 **Worktree:** /home/yoshi/busness.app/kyvault-server (branch feat/verified-directory-auth)
 
 # Post 289 implementation plan: recoveryclient, then authentication
@@ -235,7 +235,7 @@ implementation process is running in the background.
 
 The plan has now been implemented in two ready PRs:
 
-- PR #25: https://github.com/Busness-app/kyvault-server/pull/25
+- PR #25: https://github.com/Busnes-app/kyvault-server/pull/25
   (`feat/recoveryclient`, code head `115d6048cf0fa2c5766cfd7307000731dca1d9d1`).
   recoveryclient v0.5.1 owns pairing/deposit/sealing and recovery orchestration;
   the adapter preserves the existing disk schema, direct AES-GCM token wrapping,
@@ -243,7 +243,7 @@ The plan has now been implemented in two ready PRs:
   pin/unpair UI, partial-result reporting, drill validation and the private-material
   guard are implemented. Genuine old-code pairing and v0.4.1 capsule fixtures prove
   restart and restore compatibility with synthetic data.
-- PR #26: https://github.com/Busness-app/kyvault-server/pull/26
+- PR #26: https://github.com/Busnes-app/kyvault-server/pull/26
   (`feat/verified-directory-auth`, combined code head
   `29cb1de08dee737cfdb4bd538687384f4848228f`).
   Signed sync requires syncauth verification, preserves retries after failed mutations,

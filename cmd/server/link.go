@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 // Migration subcommands. They exist because the operator cannot sign in to fix an

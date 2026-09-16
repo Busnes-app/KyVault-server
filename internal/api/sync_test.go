@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyvault-server/internal/sso"
-	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/sso"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 // scimUserResource builds the exact payload kysignon-server's UserToSCIMResource emits.

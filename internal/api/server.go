@@ -15,14 +15,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busnes-app/kyvault-server/internal/audit"
+	"github.com/Busnes-app/kyvault-server/internal/backup"
+	"github.com/Busnes-app/kyvault-server/internal/devices"
+	"github.com/Busnes-app/kyvault-server/internal/sso"
+	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
+	"github.com/Busnes-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/vault"
 	"github.com/Busness-app/ky-primitives/oidcverify"
-	"github.com/Busness-app/kyvault-server/internal/audit"
-	"github.com/Busness-app/kyvault-server/internal/backup"
-	"github.com/Busness-app/kyvault-server/internal/devices"
-	"github.com/Busness-app/kyvault-server/internal/sso"
-	kysync "github.com/Busness-app/kyvault-server/internal/sync"
-	"github.com/Busness-app/kyvault-server/internal/users"
-	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 type Session struct {

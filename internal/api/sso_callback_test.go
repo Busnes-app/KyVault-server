@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kyvault-server/internal/sso"
-	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/sso"
+	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
 // mockIssuer stands in for KySignOn: discovery, JWKS, the token endpoint, and a
