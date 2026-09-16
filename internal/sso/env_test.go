@@ -150,6 +150,10 @@ func TestEnvSourcedReportsWhereSettingsCameFrom(t *testing.T) {
 }
 
 func TestLegacyEnvironmentIsDetectedWithoutReadingValues(t *testing.T) {
+	t.Setenv("KYPASSWORD_BACKUP_DIR", "")
+	if names := LegacyEnvironment(); len(names) != 0 {
+		t.Fatalf("empty legacy environment reported: %s", strings.Join(names, ", "))
+	}
 	t.Setenv("KYPASSWORD_BACKUP_DIR", "/old/backups")
 	names := LegacyEnvironment()
 	for _, name := range names {

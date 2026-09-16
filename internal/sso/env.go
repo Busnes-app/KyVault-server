@@ -54,8 +54,8 @@ func (s *Store) EnvSourced() bool {
 func LegacyEnvironment() []string {
 	var names []string
 	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "KYPASSWORD_") {
+		name, value, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "KYPASSWORD_") && value != "" {
 			names = append(names, name)
 		}
 	}
