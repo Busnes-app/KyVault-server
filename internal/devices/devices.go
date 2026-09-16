@@ -38,6 +38,9 @@ type PairingSession struct {
 	UserID    string    `json:"userId"`
 	Secret    string    `json:"secret"` // Token for QR code
 	ExpiresAt time.Time `json:"expiresAt"`
+	// Origin is opaque to this store: the identity of the session that started the
+	// pairing, handed back on redeem so the device session inherits it.
+	Origin string `json:"-"`
 }
 
 // Store manages registered devices and ephemeral pairing codes.
@@ -102,7 +105,7 @@ func (s *Store) saveLocked() error {
 }
 
 // CreatePairingSession generates an ephemeral 90-second PIN and QR secret.
-func (s *Store) CreatePairingSession(userID string) (PairingSession, error) {
+func (s *Store) CreatePairingSession(userID, origin string) (PairingSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -120,6 +123,7 @@ func (s *Store) CreatePairingSession(userID string) (PairingSession, error) {
 		UserID:    userID,
 		Secret:    secret,
 		ExpiresAt: time.Now().UTC().Add(90 * time.Second),
+		Origin:    origin,
 	}
 
 	s.pairingPINs[pin] = session
@@ -128,8 +132,9 @@ func (s *Store) CreatePairingSession(userID string) (PairingSession, error) {
 	return session, nil
 }
 
-// RedeemPairing consumes a PIN or QR secret and registers the new device.
-func (s *Store) RedeemPairing(codeOrPIN, deviceName, platform, ip string) (Device, error) {
+// RedeemPairing consumes a PIN or QR secret and registers the new device, returning
+// the origin recorded when the pairing started.
+func (s *Store) RedeemPairing(codeOrPIN, deviceName, platform, ip string) (Device, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -144,7 +149,7 @@ func (s *Store) RedeemPairing(codeOrPIN, deviceName, platform, ip string) (Devic
 	}
 
 	if !ok || time.Now().UTC().After(session.ExpiresAt) {
-		return Device{}, ErrPairingExpired
+		return Device{}, "", ErrPairingExpired
 	}
 
 	// Delete ephemeral session
@@ -170,10 +175,10 @@ func (s *Store) RedeemPairing(codeOrPIN, deviceName, platform, ip string) (Devic
 	s.devices[deviceID] = device
 	if err := s.saveLocked(); err != nil {
 		delete(s.devices, deviceID)
-		return Device{}, err
+		return Device{}, "", err
 	}
 
-	return device, nil
+	return device, session.Origin, nil
 }
 
 // ListUserDevices returns all devices for a given user.

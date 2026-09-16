@@ -11,6 +11,17 @@ rejected at startup with the corresponding `KYVAULT_*` replacement; rename them 
 restarting. Existing `KYPASSWORD_IMAGE` digest pins remain readable, but re-run the pinning
 recipe to write the canonical `KYVAULT_IMAGE` name.
 
+### KySignOn back-channel logout
+
+Sessions now record the KySignOn identity that produced them, and
+`POST /api/auth/oidc/backchannel-logout` ends the sessions a signed logout token names:
+one browser session and the devices it paired, or every session of a subject. Register the
+URI in KySignOn. Accepted tokens are kept in `DATA_DIR/sso-logout.json` for their replay
+window; that file is operational state, not part of the sealed backup. A session's
+authentication time is now the ID token's `auth_time`, so an old KySignOn session no
+longer counts as a fresh sign-in for the backup routes. Sessions from before this version
+carry no identity and are dropped by the restart that deploys it. `ky-primitives` is v0.7.0.
+
 ### Published image; existing source installs must opt back in
 
 `docker-compose.yml` now names the published, attested image and no longer builds. A source

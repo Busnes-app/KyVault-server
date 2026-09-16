@@ -2,12 +2,12 @@ package api
 
 import (
 	"crypto/rand"
-
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-
+	"strconv"
 	"time"
 
 	"github.com/Busness-app/ky-primitives/oidcverify"
@@ -93,6 +93,12 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	// A caller bounced by withFreshAdmin needs a login whose auth_time is recent; without
+	// max_age the issuer reuses its session and returns the same stale auth_time. The gate
+	// itself still reads the returned auth_time, so the flag is a request, not a proof.
+	if r.URL.Query().Get("reauth") == "true" {
+		q.Set("max_age", strconv.Itoa(int(freshSessionWindow/time.Second)))
+	}
 	authURL.RawQuery = q.Encode()
 
 	s.oidcMu.Lock()
@@ -179,6 +185,12 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid identity claims", http.StatusUnauthorized)
 		return
 	}
+	identity, authenticatedAt, err := sessionIdentity(verified, settings.ClientID, attempt.Discovery.LogoutSessionSupported)
+	if err != nil {
+		s.recordAnonymousRejection(r, "auth.oidc_rejected", clientIP(r), err.Error())
+		http.Error(w, "invalid identity claims", http.StatusUnauthorized)
+		return
+	}
 	if s.ssoStore.Load() != attempt.Settings {
 		http.Error(w, "SSO configuration changed; sign in again", http.StatusBadRequest)
 		return
@@ -244,13 +256,45 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.startSession(w, r, user.ID); err != nil {
+	if err := s.startSession(w, r, user.ID, identity, authenticatedAt); err != nil {
+		if errors.Is(err, errLoginFenced) {
+			s.record(r, "auth.sso_login_fenced", user.ID, "", clientIP(r), "login refused: KySignOn logged this session out")
+			http.Error(w, "signed out by KySignOn; sign in again", http.StatusForbidden)
+			return
+		}
 		http.Error(w, "failed to start session", http.StatusInternalServerError)
 		return
 	}
 
 	s.record(r, "auth.sso_login", user.ID, "", clientIP(r), "signed in via SSO")
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// sessionIdentity is what the session remembers of the ID token. auth_time is when the
+// person actually authenticated; without it, iat is the closest bound the issuer gives.
+func sessionIdentity(c oidcverify.Claims, clientID string, sidRequired bool) (sso.Identity, time.Time, error) {
+	id := sso.Identity{Issuer: c.Issuer, ClientID: clientID, Subject: c.Subject, IssuedAt: c.IssuedAt}
+	if c.IssuedAt.IsZero() {
+		return id, time.Time{}, errors.New("identity token has no issue time")
+	}
+	if raw, ok := c.Raw["sid"]; ok {
+		if json.Unmarshal(raw, &id.SessionID) != nil || id.SessionID == "" {
+			return id, time.Time{}, errors.New("identity token has an invalid session ID")
+		}
+	} else if sidRequired {
+		return id, time.Time{}, errors.New("issuer supports session logout but sent no session ID")
+	}
+	authenticatedAt := c.IssuedAt
+	if raw, ok := c.Raw["auth_time"]; ok {
+		// auth_time precedes iat by definition. A value past it (milliseconds, a clock
+		// running ahead) would read as fresh for the session's whole life.
+		var at int64
+		if json.Unmarshal(raw, &at) != nil || at <= 0 || time.Unix(at, 0).After(c.IssuedAt.Add(time.Minute)) {
+			return id, time.Time{}, errors.New("identity token has an invalid auth_time")
+		}
+		authenticatedAt = time.Unix(at, 0).UTC()
+	}
+	return id, authenticatedAt, nil
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, u users.User) {

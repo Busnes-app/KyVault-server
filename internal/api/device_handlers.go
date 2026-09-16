@@ -2,16 +2,30 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/Busness-app/kyvault-server/internal/sso"
 	"github.com/Busness-app/kyvault-server/internal/users"
 	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 func (s *Server) handlePairingStart(w http.ResponseWriter, r *http.Request, u users.User) {
-	session, err := s.devices.CreatePairingSession(u.ID)
+	// withAuth resolved the session under its own lock; a logout can land between
+	// that read and this one, and a pairing must not outlive the session it came from.
+	current, ok := s.currentSession(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	origin, err := json.Marshal(current.SSO)
+	if err != nil {
+		http.Error(w, "failed to create pairing session", http.StatusInternalServerError)
+		return
+	}
+	session, err := s.devices.CreatePairingSession(u.ID, string(origin))
 	if err != nil {
 		http.Error(w, "failed to create pairing session: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -40,7 +54,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := clientIP(r)
-	dev, err := s.devices.RedeemPairing(req.CodeOrPIN, req.DeviceName, req.Platform, ip)
+	dev, origin, err := s.devices.RedeemPairing(req.CodeOrPIN, req.DeviceName, req.Platform, ip)
 	if err != nil {
 		// Within the source's audit budget: redeem takes no credential, and a wrong
 		// code costs the store nothing until this record. See audit_budget.go.
@@ -49,11 +63,18 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mint only while the directory account is still active.
-	tokBytes, err := s.startSessionWithToken(dev.UserID)
+	// Mint only while the directory account is still active and the browser session
+	// that started the pairing has not been logged out by KySignOn meanwhile.
+	var id sso.Identity
+	if err := json.Unmarshal([]byte(origin), &id); err != nil {
+		_ = s.devices.Revoke(dev.ID)
+		http.Error(w, "invalid pairing origin", http.StatusBadRequest)
+		return
+	}
+	tokBytes, err := s.startSessionWithToken(dev.UserID, id)
 	if err != nil {
 		_ = s.devices.Revoke(dev.ID)
-		http.Error(w, "account is inactive", http.StatusUnauthorized)
+		http.Error(w, "account is inactive or signed out", http.StatusUnauthorized)
 		return
 	}
 
@@ -77,11 +98,17 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) startSessionWithToken(userID string) (string, error) {
+func (s *Server) startSessionWithToken(userID string, id sso.Identity) (string, error) {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
 	if u, err := s.users.Get(userID); err != nil || !u.Active {
 		return "", fmt.Errorf("account is inactive")
+	}
+	if !id.Revocable() {
+		return "", errors.New("device session needs a revocable identity")
+	}
+	if s.logouts.Fenced(id, time.Now().UTC()) {
+		return "", errLoginFenced
 	}
 
 	tokBytes := randomHex(24)
@@ -93,6 +120,7 @@ func (s *Server) startSessionWithToken(userID string) (string, error) {
 		IssuedAt:  now,
 		ExpiresAt: now.Add(90 * 24 * time.Hour), // 90-day device session
 		CSRFToken: csrfBytes,
+		SSO:       id,
 	}
 	return tokBytes, nil
 }

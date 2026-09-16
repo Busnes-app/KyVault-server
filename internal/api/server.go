@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -30,6 +31,7 @@ type Session struct {
 	AuthenticatedAt time.Time
 	ExpiresAt       time.Time
 	CSRFToken       string
+	SSO             sso.Identity
 }
 
 type Server struct {
@@ -38,6 +40,7 @@ type Server struct {
 	devices       *devices.Store
 	audit         *audit.Store
 	ssoStore      *sso.Store
+	logouts       *sso.LogoutLog
 	backupState   *backup.StateStore
 	backupService *backup.Service
 	recovery      backup.RecoveryClient
@@ -64,8 +67,10 @@ type Server struct {
 	oidcPending  map[string]oidcAttempt
 	oidcHTTP     *http.Client
 	oidcVerifier *oidcverify.Verifier
-	syncMu       sync.Mutex
-	syncReceipts map[string]syncReceipt
+	// oidcDiscoveredAt bounds how often a failing logout token may re-run discovery.
+	oidcDiscoveredAt time.Time
+	syncMu           sync.Mutex
+	syncReceipts     map[string]syncReceipt
 }
 
 // Config holds initialization paths and secrets for Server.
@@ -120,6 +125,10 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	ssoSt := sso.NewStore(cfg.ConfigDir)
+	logouts, err := sso.NewLogoutLog(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("init logout log: %w", err)
+	}
 	backupState := backup.NewStateStore(cfg.ConfigDir)
 	recovery := backup.NewClient(cfg.Backup.AllowPrivate)
 	collector := backup.Collector{
@@ -134,6 +143,7 @@ func NewServer(cfg Config) (*Server, error) {
 		devices:       dStore,
 		audit:         aStore,
 		ssoStore:      ssoSt,
+		logouts:       logouts,
 		backupState:   backupState,
 		recovery:      recovery,
 		pairingSecret: cfg.PairingSecret,
@@ -164,6 +174,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/auth/oidc/callback", s.handleSSOCallback)
 	mux.HandleFunc("GET /auth/oidc/callback", s.handleSSOCallback)
 	mux.HandleFunc("GET /auth/sso/callback", s.handleSSOCallback)
+	mux.HandleFunc("POST /api/auth/oidc/backchannel-logout", s.handleBackchannelLogout) // issuer-facing
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 
 	// Self & Session. Changing the master password is a client-side re-wrap of the vault
@@ -282,8 +293,12 @@ func clientIP(r *http.Request) string {
 	return strings.Split(r.RemoteAddr, ":")[0]
 }
 
-// startSession issues session token & CSRF token cookies.
-func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID string) error {
+// errLoginFenced means a logout for this identity arrived while the login was in flight.
+var errLoginFenced = errors.New("login superseded by a KySignOn logout")
+
+// startSession issues session token & CSRF token cookies. authenticatedAt is the
+// issuer's auth_time, the moment the person actually authenticated, not now.
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID string, id sso.Identity, authenticatedAt time.Time) error {
 	tokBytes := make([]byte, 24)
 	if _, err := rand.Read(tokBytes); err != nil {
 		return err
@@ -297,19 +312,27 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID str
 	csrfToken := hex.EncodeToString(csrfBytes)
 
 	now := time.Now().UTC()
+	// Fence check and insert share the lock with applySSOLogout, so a logout cannot
+	// slip between them and leave a session it should have ended.
 	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
 	if u, err := s.users.Get(userID); err != nil || !u.Active {
-		s.sessMu.Unlock()
 		return fmt.Errorf("account is inactive")
+	}
+	if !id.Revocable() {
+		return errors.New("session needs a revocable identity")
+	}
+	if s.logouts.Fenced(id, now) {
+		return errLoginFenced
 	}
 	s.sessions[token] = Session{
 		UserID:          userID,
 		IssuedAt:        now,
-		AuthenticatedAt: now,
+		AuthenticatedAt: authenticatedAt,
 		ExpiresAt:       now.Add(24 * time.Hour),
 		CSRFToken:       csrfToken,
+		SSO:             id,
 	}
-	s.sessMu.Unlock()
 
 	secure := isRequestSecure(r)
 	http.SetCookie(w, &http.Cookie{

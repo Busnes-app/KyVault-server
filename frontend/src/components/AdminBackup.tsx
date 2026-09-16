@@ -137,7 +137,7 @@ export function AdminBackup() {
       {error ? (
         <div role="alert" className="field-card" style={{ color: "var(--danger)", marginBottom: "1rem" }}>
           {error}
-          {error.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login">Sign in again</a></> : null}
+          {error.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login?reauth=true">Sign in again</a></> : null}
         </div>
       ) : null}
 

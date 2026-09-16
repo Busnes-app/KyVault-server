@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/kyvault-server/internal/sso"
 	"github.com/Busness-app/kyvault-server/internal/users"
@@ -69,7 +70,8 @@ func signedInUser(t *testing.T, srv *Server, username string, role users.Role) (
 	}
 
 	rec := httptest.NewRecorder()
-	if err := srv.startSession(rec, httptest.NewRequest(http.MethodGet, "/", nil), u.ID); err != nil {
+	id := sso.Identity{Issuer: "https://kysignon.test", ClientID: "kyvault-app", Subject: u.SSOSub, SessionID: "sid-" + username, IssuedAt: time.Now().UTC()}
+	if err := srv.startSession(rec, httptest.NewRequest(http.MethodGet, "/", nil), u.ID, id, time.Now().UTC()); err != nil {
 		t.Fatalf("startSession: %v", err)
 	}
 	for _, c := range rec.Result().Cookies() {
