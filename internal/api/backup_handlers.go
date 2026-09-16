@@ -71,7 +71,12 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request, u u
 		http.Error(w, "failed to collect backup", http.StatusInternalServerError)
 		return
 	}
-	raw, manifest, err := backup.Seal(files, deps, recipe, s.backupService.Collector.AppVersion, key)
+	serviceName, err := s.backupState.ServiceName()
+	if err != nil {
+		s.writeBackupError(w, err)
+		return
+	}
+	raw, manifest, err := backup.SealWithService(files, deps, recipe, s.backupService.Collector.AppVersion, key, serviceName)
 	if err != nil {
 		s.writeBackupError(w, err)
 		return

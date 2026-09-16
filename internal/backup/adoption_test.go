@@ -107,6 +107,27 @@ func TestLegacyPairingSurvivesLibraryWritesAndRestart(t *testing.T) {
 	}
 }
 
+func TestFailedRePairDoesNotChangeLegacyServiceBinding(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{stateFile, publicKeyFile, tokenKeyFile} {
+		b, err := os.ReadFile(filepath.Join("testdata/legacy-pairing", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := NewStateStore(dir)
+	_, differentKey := generatedKey(t)
+	if err := store.StorePairing("https://recovery.example", "new-token", differentKey); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("re-pair error = %v", err)
+	}
+	if serviceName, err := store.ServiceName(); err != nil || serviceName != LegacyServiceName {
+		t.Fatalf("service binding after failed re-pair = %q, %v", serviceName, err)
+	}
+}
+
 type recordingDepositor struct {
 	raw  []byte
 	fail bool

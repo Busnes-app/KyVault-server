@@ -288,6 +288,17 @@ func (s *StateStore) ClaimPairing(ctx context.Context, client RecoveryClient, ur
 func (s *StateStore) storePairing(url, token string, key RecoveryKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previous, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	settings := lockedSettings{s}
+	if err := recoveryclient.StoreRecoveryKey(s.dir, settings, key); err != nil {
+		return err
+	}
+	if err := recoveryclient.StorePairing(settings, tokenSealer{s}, url, token); err != nil {
+		return err
+	}
 	st, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -295,13 +306,10 @@ func (s *StateStore) storePairing(url, token string, key RecoveryKey) error {
 	serviceName := ServiceName
 	st.ServiceName = &serviceName
 	if err := s.saveLocked(st); err != nil {
-		return err
+		st.ServiceName = previous.ServiceName
+		return errors.Join(err, s.saveLocked(st))
 	}
-	settings := lockedSettings{s}
-	if err := recoveryclient.StoreRecoveryKey(s.dir, settings, key); err != nil {
-		return err
-	}
-	return recoveryclient.StorePairing(settings, tokenSealer{s}, url, token)
+	return nil
 }
 func (s *StateStore) Pin(key RecoveryKey) error {
 	if !s.operationMu.TryLock() {
