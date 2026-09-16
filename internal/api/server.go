@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/oidcverify"
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/backup"
 	"github.com/Busnes-app/kyvault-server/internal/devices"
@@ -22,7 +23,6 @@ import (
 	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 	"github.com/Busnes-app/kyvault-server/internal/vault"
-	"github.com/Busness-app/ky-primitives/oidcverify"
 )
 
 type Session struct {

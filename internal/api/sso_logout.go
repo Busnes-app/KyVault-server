@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/oidcverify"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
-	"github.com/Busness-app/ky-primitives/oidcverify"
 )
 
 // logoutBodyLimit bounds a back-channel logout request; a logout token is a few hundred bytes.

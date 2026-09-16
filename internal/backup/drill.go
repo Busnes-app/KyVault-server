@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/capsule"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
 
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/vault"

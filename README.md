@@ -234,7 +234,7 @@ GET/list so reconciliation can see that access. Failed SCIM authentication is re
 the existing bounded anonymous-rejection audit path, without credential values.
 Sign-in continues through KySignOn only.
 
-The shared `github.com/Busness-app/ky-primitives/scim` v0.6.0 client is verified against this
+The shared `github.com/Busnes-app/ky-primitives/scim` v0.6.0 client is verified against this
 receiver over TLS. The existing **signed webhook** is a separate supported interface:
 keep existing KySignOn `kyvault` connections on `/api/sync/webhook`. Moving one to
 standard SCIM requires a sender using bearer authentication and server-returned IDs;
@@ -309,7 +309,7 @@ procedure, from picking the capsule to deciding what to trust afterwards, is
 admin page while it is running.
 
 The wire protocol is documented in the KyRecovery repository; the shared formats come from
-`github.com/Busness-app/ky-primitives`.
+`github.com/Busnes-app/ky-primitives`.
 
 ## Building and running
 

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Busness-app/ky-primitives/auditchain"
+	"github.com/Busnes-app/ky-primitives/auditchain"
 )
 
 // chainOf reads the log back, oldest first, as shared-package records.

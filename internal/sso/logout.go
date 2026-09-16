@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/oidcverify"
+	"github.com/Busnes-app/ky-primitives/oidcverify"
 )
 
 // Identity is what a KySignOn login proved, kept on every session it produced so a

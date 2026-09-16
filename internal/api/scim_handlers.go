@@ -14,9 +14,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Busnes-app/ky-primitives/scim"
 	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
 	"github.com/Busnes-app/kyvault-server/internal/users"
-	"github.com/Busness-app/ky-primitives/scim"
 )
 
 func writeSCIM(w http.ResponseWriter, status int, value any) {

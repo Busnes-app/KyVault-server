@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/recoveryclient"
+	"github.com/Busnes-app/ky-primitives/recoveryclient"
 )
 
 func ConfigFromEnv() (Config, error) {

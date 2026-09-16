@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/syncauth"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
-	"github.com/Busness-app/ky-primitives/syncauth"
 )
 
 func TestOIDCCallbackRejectsUnverifiedClaims(t *testing.T) {

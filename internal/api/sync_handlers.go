@@ -2,7 +2,7 @@ package api
 
 import (
 	"errors"
-	"github.com/Busness-app/ky-primitives/syncauth"
+	"github.com/Busnes-app/ky-primitives/syncauth"
 	"io"
 	"net/http"
 	"strconv"
