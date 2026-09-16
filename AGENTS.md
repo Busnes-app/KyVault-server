@@ -37,7 +37,10 @@ yourself adding one, the design has been misread.
   token `iat` (`sso.Identity` on `api.Session`). Device sessions inherit the identity of
   the browser session that started the pairing; a pairing whose browser session has been
   logged out cannot be redeemed. `AuthenticatedAt` is the token's `auth_time`, falling
-  back to `iat`, never the moment the callback ran. When discovery advertises
+  back to `iat`, never the moment the callback ran; a value later than `iat` plus a minute
+  is refused. `GET /api/auth/oidc/login?reauth=true` adds `max_age` equal to
+  `freshSessionWindow` so a session bounced by `withFreshAdmin` can come back fresh; the
+  gate still reads only the returned `auth_time`. The backup UI's "Sign in again" uses it. When discovery advertises
   `backchannel_logout_session_supported`, an ID token without `sid` is refused.
 - `POST /api/auth/oidc/backchannel-logout` receives KySignOn's OIDC Back-Channel Logout
   tokens (`oidcverify.VerifyLogout`, form-encoded, 64 KiB, no cookie or CSRF, the query

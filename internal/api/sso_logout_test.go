@@ -407,3 +407,38 @@ func TestSessionMintingRequiresRevocableIdentity(t *testing.T) {
 		t.Fatalf("pairing start with a removed session = %d, want 401", rec.Code)
 	}
 }
+
+func TestFreshAdminGateIsSatisfiableByReauthentication(t *testing.T) {
+	// A stale auth_time locks the backup routes; the way back in must ask the issuer to
+	// authenticate again, or it hands back the same stale time forever.
+	f := newLogoutFixture(t, map[string]any{"sub": "admin-sub", "preferred_username": "admin", "role": "admin", "sid": "sid-1", "auth_time": time.Now().Add(-time.Hour).Unix()})
+	cookie := f.login(t)
+	route := destructiveBackupRoutes[0]
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, csrfRequest(t, f.srv, cookie, route.method, route.path, `{}`))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stale session passed the gate: %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/auth/oidc/login", nil))
+	plain, _ := url.Parse(rec.Header().Get("Location"))
+	if plain.Query().Has("max_age") {
+		t.Error("an ordinary login must not force re-authentication")
+	}
+	rec = httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/auth/oidc/login?reauth=true", nil))
+	reauth, _ := url.Parse(rec.Header().Get("Location"))
+	if reauth.Query().Get("max_age") != "600" {
+		t.Fatalf("reauth login max_age = %q, want 600", reauth.Query().Get("max_age"))
+	}
+
+	// The issuer honours max_age with a fresh auth_time; the gate opens on that alone.
+	f.idp.set("auth_time", time.Now().Unix())
+	fresh := f.login(t)
+	rec = httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, csrfRequest(t, f.srv, fresh, route.method, route.path, `{}`))
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("fresh auth_time still gated: %d", rec.Code)
+	}
+}

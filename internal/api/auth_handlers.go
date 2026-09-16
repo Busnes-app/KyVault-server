@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/Busness-app/ky-primitives/oidcverify"
@@ -92,6 +93,12 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	// A caller bounced by withFreshAdmin needs a login whose auth_time is recent; without
+	// max_age the issuer reuses its session and returns the same stale auth_time. The gate
+	// itself still reads the returned auth_time, so the flag is a request, not a proof.
+	if r.URL.Query().Get("reauth") == "true" {
+		q.Set("max_age", strconv.Itoa(int(freshSessionWindow/time.Second)))
+	}
 	authURL.RawQuery = q.Encode()
 
 	s.oidcMu.Lock()
