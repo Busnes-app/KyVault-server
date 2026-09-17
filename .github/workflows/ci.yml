@@ -31,7 +31,7 @@ jobs:
           mapfile -t all < <(git ls-files 'docker-compose*.yml' '*.md')
           bad=$(grep -in 'busness-app' README.md | grep -vE '^[0-9]+:## Upgrading from ghcr\.io/busness-app$' | grep -vE '^[0-9]+:The GitHub organisation was renamed on 2026-09-16 and the image now lives at ' || true); [ -z "$bad" ] || { echo "retired owner outside the README warning lines:"; echo "$bad"; exit 1; }
           bad=$(grep -il 'busness-app' "${all[@]}" | grep -vx README.md | xargs -r grep -L 'Retired owner:' || true); [ -z "$bad" ] || { echo "retired owner named without the retirement annotation in:"; echo "$bad"; exit 1; }
-          bad=$(grep -nE 'github\.com/busness-app|(go get|go mod edit -replace|^module )[^\n]*busness-app' -i "${all[@]}" || true); [ -z "$bad" ] || { echo "fetchable coordinate under the retired owner:"; echo "$bad"; exit 1; }
+          bad=$(grep -nE 'github\.com/busness-app|(go get|go mod edit -replace|^module ).*busness-app' -i "${all[@]}" || true); [ -z "$bad" ] || { echo "fetchable coordinate under the retired owner:"; echo "$bad"; exit 1; }
           # operator-facing files: every compose file and every non-historical doc
           mapfile -t files < <(printf '%s\n' "${all[@]}" | grep -v '^docs/superpowers/')
           [ "${#files[@]}" -ge 2 ] || { echo "no compose/doc files found"; exit 1; }
@@ -43,9 +43,8 @@ jobs:
           seen=$(grep -ohE 'ghcr\.io/[A-Za-z0-9._/-]+' "${all[@]}" | sort -u || true)
           [ -n "$seen" ] || { echo "no image coordinate found"; exit 1; }
           bad=$(printf '%s\n' "$seen" | grep -vxF -e "$img" -e "ghcr.io/busness-app" || true); [ -z "$bad" ] || { echo "image coordinate outside $img:"; echo "$bad"; exit 1; }
-          # each file that mentions either attestation flag must mention both; a value in another
-          # file does not excuse a file with an incomplete recipe
-          for f in docker-compose.yml $( [ -f docs/RESTORE.md ] && echo docs/RESTORE.md ); do
+          # every compose file and non-historical doc that mentions either attestation flag must mention both
+          for f in "${files[@]}"; do
             if [ "$f" = docker-compose.yml ] || grep -qE -- '--(repo|cert-identity(-regex)?)(=|[[:space:]]+)' "$f"; then
               grep -qE -- '--repo(=|[[:space:]]+)' "$f" && grep -qE -- '--cert-identity(=|[[:space:]]+)' "$f" || { echo "$f lacks --repo or --cert-identity"; exit 1; }
             fi
