@@ -43,9 +43,10 @@ jobs:
           seen=$(grep -ohE 'ghcr\.io/[A-Za-z0-9._/-]+' "${all[@]}" | sort -u || true)
           [ -n "$seen" ] || { echo "no image coordinate found"; exit 1; }
           bad=$(printf '%s\n' "$seen" | grep -vxF -e "$img" -e "ghcr.io/busness-app" || true); [ -z "$bad" ] || { echo "image coordinate outside $img:"; echo "$bad"; exit 1; }
-          # the pin block itself must carry both flags; a value elsewhere does not excuse it
+          # each file that mentions either attestation flag must mention both; a value in another
+          # file does not excuse a file with an incomplete recipe
           for f in docker-compose.yml $( [ -f docs/RESTORE.md ] && echo docs/RESTORE.md ); do
-            if [ "$f" = docker-compose.yml ] || grep -qE -- '--(repo|cert-identity)(=|[[:space:]]+)' "$f"; then
+            if [ "$f" = docker-compose.yml ] || grep -qE -- '--(repo|cert-identity(-regex)?)(=|[[:space:]]+)' "$f"; then
               grep -qE -- '--repo(=|[[:space:]]+)' "$f" && grep -qE -- '--cert-identity(=|[[:space:]]+)' "$f" || { echo "$f lacks --repo or --cert-identity"; exit 1; }
             fi
           done
@@ -54,7 +55,7 @@ jobs:
           repos=$(grep -ohE -- '(^|[[:space:]])(--repo|-R)(=|[[:space:]]+)[^[:space:]]+/[^[:space:]]+' "${all[@]}" | sed -E 's/^[[:space:]]*(--repo|-R)(=|[[:space:]]+)//' | sort -u || true)
           [ -n "$repos" ] || { echo "no --repo found"; exit 1; }
           bad=$(printf '%s\n' "$repos" | grep -vxF "$GITHUB_REPOSITORY" || true); [ -z "$bad" ] || { echo "--repo outside $GITHUB_REPOSITORY:"; echo "$bad"; exit 1; }
-          certs=$(grep -ohE -- '(^|[[:space:]])--cert-identity(=|[[:space:]]+)[^[:space:]]+' "${all[@]}" | sed -E 's/^[[:space:]]*--cert-identity(=|[[:space:]]+)//' | sort -u || true)
+          certs=$(grep -ohE -- '(^|[[:space:]])--cert-identity(-regex)?(=|[[:space:]]+)[^[:space:]]+' "${all[@]}" | sed -E 's/^[[:space:]]*--cert-identity(-regex)?(=|[[:space:]]+)//' | sort -u || true)
           [ -n "$certs" ] || { echo "no --cert-identity found"; exit 1; }
           bad=$(printf '%s\n' "$certs" | grep -vxF "$ident" || true); [ -z "$bad" ] || { echo "--cert-identity outside $ident:"; echo "$bad"; exit 1; }
           # README may only point at docs that exist
