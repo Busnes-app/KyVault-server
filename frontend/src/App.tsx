@@ -1,3 +1,4 @@
+import { ThemeSwitcher } from './components/ThemeSwitcher';
 import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
@@ -429,6 +430,7 @@ export function App() {
           <span>KyVault</span>
         </a>
 
+        <ThemeSwitcher />
         <div className="nav-links">
           <button
             className={`nav-link-btn ${navTab === "vault" ? "active" : ""}`}

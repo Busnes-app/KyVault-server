@@ -145,7 +145,7 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
                 <div
                   key={h.id}
                   style={{
-                    background: "#0d0f14",
+                    background: "var(--bg)",
                     border: "1px solid var(--line)",
                     borderRadius: "6px",
                     padding: "0.75rem 1rem",
@@ -185,7 +185,7 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
               <div
                 key={c.id}
                 style={{
-                  background: "#0d0f14",
+                  background: "var(--bg)",
                   border: "1px solid rgba(245, 158, 11, 0.3)",
                   borderRadius: "6px",
                   padding: "0.75rem 1rem",
