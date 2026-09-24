@@ -91,7 +91,7 @@ export function DevicePairingModal({ onClose }: Props) {
                 style={{
                   display: "inline-block",
                   padding: "0.5rem",
-                  background: "#0d0f14",
+                  background: "var(--bg)",
                   border: "1px solid var(--line)",
                   borderRadius: "8px",
                   marginBottom: "1rem",
@@ -107,7 +107,7 @@ export function DevicePairingModal({ onClose }: Props) {
                 alignItems: "center",
                 justifyContent: "center",
                 gap: "1rem",
-                background: "#0d0f14",
+                background: "var(--bg)",
                 border: "1px solid var(--line)",
                 padding: "0.75rem 1.5rem",
                 borderRadius: "8px",

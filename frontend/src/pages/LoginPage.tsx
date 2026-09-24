@@ -1,3 +1,4 @@
+import { ThemeSwitcher } from '../components/ThemeSwitcher';
 import React, { useState, useEffect } from "react";
 import { getJSON } from "../lib/api";
 import { ShieldCheck, Lock, AlertTriangle } from "lucide-react";
@@ -18,6 +19,7 @@ export function LoginPage() {
   return (
     <div className="auth-container">
       <div className="auth-box">
+        <div className="auth-theme"><ThemeSwitcher /></div>
         <div className="auth-header">
           <img src="/logo.png" alt="KyVault" />
           <h1>KyVault</h1>
