@@ -15,6 +15,7 @@ import {
 } from "./lib/vaultCrypto";
 import { checkMasterPassword } from "./lib/masterPassword";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
+import { useRoute } from "./lib/route";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
 import { SecuritySettings } from "./pages/SecuritySettings";
@@ -51,7 +52,8 @@ export function App() {
   const dialogs = useDialogs();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [navTab, setNavTab] = useState<"vault" | "security" | "admin">("vault");
+  const [route, navigate] = useRoute();
+  const navTab = route.tab;
 
   // Vault state
   const [vault, setVault] = useState<KeePassVault | null>(null);
@@ -128,6 +130,10 @@ export function App() {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (!loading && route.tab === "admin" && user?.role !== "admin") navigate({ tab: "vault" });
+  }, [loading, route.tab, user?.role]);
 
   useEffect(() => {
     if (!user) return;
@@ -449,20 +455,20 @@ export function App() {
         <div className="nav-links">
           <button
             className={`nav-link-btn ${navTab === "vault" ? "active" : ""}`}
-            onClick={() => setNavTab("vault")}
+            onClick={() => navigate({ tab: "vault" })}
           >
             <Shield size={16} /> Vault
           </button>
           <button
             className={`nav-link-btn ${navTab === "security" ? "active" : ""}`}
-            onClick={() => setNavTab("security")}
+            onClick={() => navigate({ tab: "security" })}
           >
             <KeyRound size={16} /> Security
           </button>
           {user.role === "admin" ? (
             <button
               className={`nav-link-btn ${navTab === "admin" ? "active" : ""}`}
-              onClick={() => setNavTab("admin")}
+              onClick={() => navigate({ tab: "admin", admin: "sso" })}
             >
               <Settings size={16} /> Admin
             </button>
@@ -498,10 +504,12 @@ export function App() {
           hidden={navTab !== "vault"}
           onExport={handleExportKdbx}
           onReload={() => initVault(user)}
+          route={route}
+          navigate={navigate}
         />
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (
-        <AdminPanel currentUserId={user.id} />
+        <AdminPanel currentUserId={user.id} route={route} navigate={navigate} />
       ) : vault ? (
         navTab === "security" ? <SecuritySettings
           user={user}

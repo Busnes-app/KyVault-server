@@ -434,3 +434,5 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/format.ts`: `formatInterval` (Off, minutes, Hourly, hours, Daily, days) and `formatWhen` (never renders Invalid Date). `format.test.ts` covers both.
 
 - `frontend/src/lib/clipboard.ts`: every copy goes through `copyText`; passwords, TOTP codes and generated passwords are cleared after 30 seconds if the clipboard still holds them (or, where reading is refused, if nothing newer was copied through the helper). The timed clear is best effort: browsers may refuse clipboard access from a timer, and the UI says so. `clipboard.test.ts` covers both.
+
+- `frontend/src/lib/route.ts`: hash routes `#/vault[/entryUuid]`, `#/security`, `#/admin/{sso|users|audit|backup}` drive the top tabs, admin tabs and the selected entry; unknown routes fall back to the vault; a non-admin on an admin route is redirected. `route.test.ts` covers parsing and formatting.

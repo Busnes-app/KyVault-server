@@ -13,6 +13,7 @@ import { EntryHistoryModal } from "../components/EntryHistoryModal";
 import { EntryAttachments } from "../components/EntryAttachments";
 import { CsvImportModal } from "../components/CsvImportModal";
 import { useDialogs } from "../components/DialogHost";
+import type { Route } from "../lib/route";
 import {
   Folder,
   Plus,
@@ -48,9 +49,11 @@ type Props = {
   onSave: (options?: { overwrite?: boolean }) => Promise<void>;
   onExport: () => void;
   onReload: () => Promise<void>;
+  route: Route;
+  navigate: (next: Route) => void;
 };
 
-export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft }: Props) {
+export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate }: Props) {
   const dialogs = useDialogs();
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
@@ -124,6 +127,20 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     confirmLabel: "Discard",
     danger: true,
   });
+
+  // The editor stays mounted across tabs, so ignore route changes while another tab is active.
+  useEffect(() => {
+    if (route.tab !== "vault" || route.entry === selectedEntryUuid) return;
+    if (route.entry && !entries.some((e) => e.uuid === route.entry)) return;
+    (async () => {
+      if (await canChangeEntry()) {
+        setIsEditing(false);
+        setSelectedEntryUuid(route.entry ?? null);
+      } else {
+        navigate({ tab: "vault", entry: selectedEntryUuid ?? undefined });
+      }
+    })();
+  }, [route.tab, route.entry, entries, selectedEntryUuid]);
 
   // Load selected entry into editor
   const loadEditor = () => {
@@ -214,6 +231,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     refreshVaultData();
     if (selectedGroupUuid === "recycle") setSelectedGroupUuid("all");
     setSelectedEntryUuid(newEntry.uuid);
+    navigate({ tab: "vault", entry: newEntry.uuid });
     setIsEditing(true);
   };
 
@@ -232,6 +250,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     vault.deleteEntry(selectedEntryUuid);
     onChanged();
     setSelectedEntryUuid(null);
+    navigate({ tab: "vault", entry: undefined });
     refreshVaultData();
   };
 
@@ -329,7 +348,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         </div>
 
         <button type="button" className={`group-item ${selectedGroupUuid === "recycle" ? "active" : ""}`}
-          onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); } }}>
+          onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); navigate({ tab: "vault", entry: undefined }); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); } }}>
           <span style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}><Trash2 size={16} /> Recycle Bin</span>
           <span>{recycledIds.size}</span>
         </button>
@@ -511,7 +530,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); } }}
+                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); } }}
               >
                 <div className="entry-title">
                   <span>{e.title || "Untitled"}</span>
@@ -860,6 +879,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             setSelectedGroupUuid("all");
             setShowReusedPasswords(false);
             setSelectedEntryUuid(uuid);
+            navigate({ tab: "vault", entry: uuid });
           } }}
           onClose={() => setShowHistory(false)}
           onRestored={async () => {
