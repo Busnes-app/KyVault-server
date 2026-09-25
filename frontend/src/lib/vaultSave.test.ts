@@ -56,7 +56,8 @@ test("edits during upload are serialized with the acknowledged version and remai
   assert.equal(Buffer.from(uploads[1]).includes(Buffer.from("secret-two")), false);
 });
 
-for (const failure of ["conflict", "server", "network", "unconfirmed"] as const) {
+// "conflict" is covered separately below: a 409 now requires overwrite or reload, not a plain retry.
+for (const failure of ["server", "network", "unconfirmed"] as const) {
   test(`${failure} keeps edits unsaved until an explicit successful retry`, async (t) => {
     browserCookie(t);
     const vault = await KeePassVault.createNew(new Uint8Array(32).fill(9));
@@ -68,7 +69,7 @@ for (const failure of ["conflict", "server", "network", "unconfirmed"] as const)
       if (!fail) return Response.json({ metadata: { version: 3 } });
       if (failure === "network") throw new TypeError("Network unavailable");
       if (failure === "unconfirmed") return Response.json({ ok: true });
-      return new Response("failed", { status: failure === "conflict" ? 409 : 500 });
+      return new Response("failed", { status: 500 });
     });
     const done = settled(queue);
     queue.changed();
@@ -204,4 +205,54 @@ test("a checkpoint queued before locking finishes encrypted, but a locked queue 
   assert.equal(restored.getSnapshot().kind, "error");
   assert.equal(restored.getSnapshot().version, 8);
   restored.discard();
+});
+
+test("a conflict is flagged and overwrite uploads with the server's current version", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(5));
+  const queue = new VaultSaveQueue(vault, 2);
+  const seen: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options: RequestInit = {}) => {
+    const path = String(url);
+    if (path.endsWith("/api/vault/metadata")) return Response.json({ version: 7 });
+    seen.push(new Headers(options.headers).get("If-Match") ?? "");
+    return seen.length === 1 ? new Response("conflict", { status: 409 }) : Response.json({ metadata: { version: 8 } });
+  });
+  const done = settled(queue);
+  queue.changed();
+  void queue.save();
+  const result = await done;
+  assert.equal(result.kind, "error");
+  assert.equal(result.kind === "error" && result.conflict, true);
+  await queue.save();
+  assert.equal(queue.getSnapshot().kind, "error", "plain retry must not overwrite");
+  await queue.save({ overwrite: true });
+  assert.deepEqual(queue.getSnapshot(), { kind: "saved", version: 8 });
+  assert.deepEqual(seen, ['"2"', '"7"']);
+});
+
+test("a network failure retries once when the browser comes back online", async (t) => {
+  browserCookie(t);
+  const listeners: Array<() => void> = [];
+  Object.defineProperty(globalThis, "window", { configurable: true, value: {
+    addEventListener: (type: string, fn: () => void) => { if (type === "online") listeners.push(fn); },
+    removeEventListener: () => {},
+  } });
+  t.after(() => { Reflect.deleteProperty(globalThis, "window"); });
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(6));
+  const queue = new VaultSaveQueue(vault, 1);
+  let attempts = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    attempts++;
+    if (attempts === 1) throw new TypeError("Network unavailable");
+    return Response.json({ metadata: { version: 2 } });
+  });
+  const failed = settled(queue);
+  queue.changed();
+  void queue.save();
+  assert.equal((await failed).kind, "error");
+  assert.equal(listeners.length, 1);
+  const recovered = settled(queue);
+  listeners[0]();
+  assert.deepEqual(await recovered, { kind: "saved", version: 2 });
 });

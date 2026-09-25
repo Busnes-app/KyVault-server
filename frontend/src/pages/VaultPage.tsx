@@ -43,7 +43,7 @@ type Props = {
   onDraftChange: (draft: EntryDraft | null) => void;
   initialDraft?: EntryDraft | null;
   hidden: boolean;
-  onSave: () => Promise<void>;
+  onSave: (options?: { overwrite?: boolean }) => Promise<void>;
   onExport: () => void;
   onReload: () => Promise<void>;
 };
@@ -449,7 +449,19 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             {saveState.kind === "error" ? (
               <>
                 <p style={{ color: "var(--danger)" }}>Unsaved edits: {saveState.message}</p>
-                <button className="btn btn-primary btn-sm" onClick={() => void onSave()}>Retry Save</button>
+                {saveState.conflict ? (
+                  <>
+                    <button className="btn btn-danger btn-sm" onClick={() => void onSave({ overwrite: true })}>Overwrite server copy</button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => { if (confirm("Discard the unsaved edits in this tab and reload the server copy?")) void onReload(); }}
+                    >
+                      Reload server copy
+                    </button>
+                  </>
+                ) : (
+                  <button className="btn btn-primary btn-sm" onClick={() => void onSave()}>Retry Save</button>
+                )}
               </>
             ) : <span>{saving ? "Saving…" : draftDirty ? "Applied changes saved" : "All changes saved"}</span>}
             {draftDirty ? <p>Entry edits have not been applied.</p> : null}

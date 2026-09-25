@@ -309,8 +309,11 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Applied edits, entry/folder creation, deletion, and CSV import enqueue saves after 1.5 seconds
   of idle time. Explicit retry flushes immediately. Serialize
   KDBX exports and uploads; each success acknowledges only its starting edit revision and
-  advances the version for the next upload. Failures (including 409) remain unsaved and
-  require explicit retry. Uploads use the shared CSRF request helper. `App.tsx` retains
+  advances the version for the next upload. Failures remain unsaved. A network failure
+  retries once when the browser reports online. A 409 is flagged as a conflict: Retry does
+  nothing, Overwrite server copy re-reads the server version and uploads over it (the
+  server copy stays in history), Reload server copy discards local edits. Uploads use the
+  shared CSRF request helper. `App.tsx` retains
   the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
   rollback. Lock/logout/forget always allow the user to confirm discarding unsaved or in-flight
   edits; saving cannot refuse those actions. Closing/replacing the queue cancels its timer,
