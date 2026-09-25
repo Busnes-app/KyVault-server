@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { KeePassVault, VaultEntry, VaultGroup } from "../lib/kdbx";
 import type { EntryDraft } from "../lib/lockedDraft";
 import type { SaveState } from "../lib/vaultSave";
+import { createFromDraft, type NewEntryDraft } from "../lib/newEntryDraft";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { generateTOTP } from "../lib/totp";
 import { safeHref } from "../lib/safeHref";
@@ -64,6 +65,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [recycledIds, setRecycledIds] = useState<Set<string>>(new Set());
   const [entries, setEntries] = useState<VaultEntry[]>([]);
   const [selectedEntryUuid, setSelectedEntryUuid] = useState<string | null>(initialDraft?.uuid ?? null);
+  const [newDraft, setNewDraft] = useState<NewEntryDraft | null>(null);
   const pendingDraft = useRef(initialDraft);
   const [searchQuery, setSearchQuery] = useState("");
   const [showReusedPasswords, setShowReusedPasswords] = useState(false);
@@ -115,12 +117,19 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     return entries.find((e) => e.uuid === selectedEntryUuid) || null;
   }, [entries, selectedEntryUuid]);
 
-  const draftDirty = isEditing && selectedEntry !== null && (
-    editTitle !== selectedEntry.title || editUsername !== selectedEntry.username ||
-    editPassword !== selectedEntry.password || editUrl !== selectedEntry.url ||
-    editNotes !== selectedEntry.notes || editTotp !== (selectedEntry.totpSeed || "") ||
-    editGroupUuid !== selectedEntry.groupUuid
+  const draftDirty = isEditing && (
+    newDraft
+      ? Boolean(editTitle || editUsername || editPassword || editUrl || editNotes || editTotp)
+      : selectedEntry !== null && (
+          editTitle !== selectedEntry.title || editUsername !== selectedEntry.username ||
+          editPassword !== selectedEntry.password || editUrl !== selectedEntry.url ||
+          editNotes !== selectedEntry.notes || editTotp !== (selectedEntry.totpSeed || "") ||
+          editGroupUuid !== selectedEntry.groupUuid
+        )
   );
+  // A never-applied new entry has no uuid, so the auto-lock checkpoint (which is keyed by
+  // uuid) can't hold it; its fields are lost on auto-lock, which is accepted since nothing
+  // was created yet. draftDirty stays true so canChangeEntry still asks before discarding it.
   useEffect(() => { onDraftChange(draftDirty && selectedEntryUuid ? {
     uuid: selectedEntryUuid, title: editTitle, username: editUsername, password: editPassword,
     url: editUrl, notes: editNotes, totpSeed: editTotp, groupUuid: editGroupUuid,
@@ -134,6 +143,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
   // The editor stays mounted across tabs, so ignore route changes while another tab is active.
   useEffect(() => {
+    if (newDraft) return; // draft has no route entry; do not let this effect close it
     if (route.tab !== "vault" || route.entry === selectedEntryUuid) return;
     if (route.entry && !entries.some((e) => e.uuid === route.entry)) return;
     if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault" }); return; }
@@ -146,7 +156,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         navigate({ tab: "vault", entry: selectedEntryUuid ?? undefined });
       }
     })();
-  }, [route.tab, route.entry, entries, recycledIds, selectedEntryUuid]);
+  }, [route.tab, route.entry, entries, recycledIds, selectedEntryUuid, newDraft]);
 
   // Load selected entry into editor
   const loadEditor = () => {
@@ -206,6 +216,19 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   };
 
   const handleSaveEntry = () => {
+    if (newDraft) {
+      const entry = createFromDraft(vault, newDraft, {
+        title: editTitle, username: editUsername, password: editPassword,
+        url: editUrl, notes: editNotes, totpSeed: editTotp,
+      });
+      onChanged();
+      refreshVaultData();
+      setNewDraft(null);
+      setIsEditing(false);
+      setSelectedEntryUuid(entry.uuid);
+      navigate({ tab: "vault", entry: entry.uuid });
+      return;
+    }
     if (!selectedEntryUuid) return;
     const changed = vault.updateEntry({
       uuid: selectedEntryUuid,
@@ -223,22 +246,30 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     refreshVaultData();
   };
 
+  const handleCancelEdit = () => {
+    if (newDraft) {
+      setNewDraft(null);
+      setIsEditing(false);
+      setPane("list");
+      return;
+    }
+    loadEditor();
+    setIsEditing(false);
+  };
+
+  // The vault stays untouched until Apply creates the entry, so Cancel leaves no entry
+  // and no save revision behind.
   const handleCreateNewEntry = async () => {
     if (!await canChangeEntry()) return;
-    const newEntry = vault.createEntry({
-      title: "New Account",
-      username: "",
-      password: "",
-      url: "",
-      notes: "",
-      groupUuid: selectedGroupUuid === "all" || selectedGroupUuid === "recycle" ? groups[0]?.uuid || "" : selectedGroupUuid,
-    });
-    onChanged();
-    refreshVaultData();
+    const groupUuid = selectedGroupUuid === "all" || selectedGroupUuid === "recycle" ? groups[0]?.uuid || "" : selectedGroupUuid;
     if (selectedGroupUuid === "recycle") setSelectedGroupUuid("all");
-    setSelectedEntryUuid(newEntry.uuid);
-    navigate({ tab: "vault", entry: newEntry.uuid });
+    setSelectedEntryUuid(null);
+    setNewDraft({ groupUuid });
+    navigate({ tab: "vault" });
     setPane("detail");
+    setEditTitle(""); setEditUsername(""); setEditPassword(""); setEditUrl(""); setEditNotes(""); setEditTotp("");
+    setEditGroupUuid(groupUuid);
+    setRevealPassword(false);
     setIsEditing(true);
   };
 
@@ -273,6 +304,26 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     } catch (error) {
       await dialogs.notify({ title: "Entry not restored", message: error instanceof Error ? error.message : "Unable to restore entry." });
     }
+  };
+
+  // Folders drive the selection: switching folders clears an open entry (or draft) that
+  // does not belong to the newly chosen folder, so the detail pane never shows a stale entry.
+  const selectFolder = async (uuid: string) => {
+    if (!await canChangeEntry()) return;
+    setIsEditing(false);
+    setNewDraft(null);
+    const inFolder = selectedEntry ? (
+      uuid === "recycle" ? recycledIds.has(selectedEntry.uuid) :
+      uuid === "all" ? !recycledIds.has(selectedEntry.uuid) :
+      !recycledIds.has(selectedEntry.uuid) && selectedEntry.groupUuid === uuid
+    ) : true;
+    if (!inFolder) {
+      setSelectedEntryUuid(null);
+      navigate({ tab: "vault", entry: undefined });
+    }
+    setSelectedGroupUuid(uuid);
+    if (uuid === "recycle") setShowReusedPasswords(false);
+    setPane("list");
   };
 
   const selectedFolder = groups.find(group => group.uuid === selectedGroupUuid);
@@ -348,9 +399,10 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           </div>
         </div>
 
-        <div
+        <button type="button"
           className={`group-item ${selectedGroupUuid === "all" ? "active" : ""}`}
-          onClick={() => { setSelectedGroupUuid("all"); setPane("list"); }}
+          aria-pressed={selectedGroupUuid === "all"}
+          onClick={() => void selectFolder("all")}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Shield size={16} />
@@ -359,10 +411,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           <span className="font-mono" style={{ fontSize: "0.75rem" }}>
             {entries.length - recycledIds.size}
           </span>
-        </div>
+        </button>
 
         <button type="button" className={`group-item ${selectedGroupUuid === "recycle" ? "active" : ""}`}
-          onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); navigate({ tab: "vault", entry: undefined }); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); setPane("list"); } }}>
+          aria-pressed={selectedGroupUuid === "recycle"}
+          onClick={() => void selectFolder("recycle")}>
           <span style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}><Trash2 size={16} /> Recycle Bin</span>
           <span>{recycledIds.size}</span>
         </button>
@@ -376,7 +429,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             title={g.path}
             aria-label={g.path} aria-pressed={selectedGroupUuid === g.uuid}
             style={{ paddingLeft: `${1 + Math.min(g.depth, 6) * 0.75}rem` }}
-            onClick={() => { setSelectedGroupUuid(g.uuid); setPane("list"); }}
+            onClick={() => void selectFolder(g.uuid)}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <Folder size={16} />
@@ -548,7 +601,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); setPane("detail"); } }}
+                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setNewDraft(null); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); setPane("detail"); } }}
               >
                 <div className="entry-title">
                   <span>{e.title || "Untitled"}</span>
@@ -566,7 +619,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
       {/* 3. Detail & Editor Pane */}
       <main className="vault-detail-pane">
-        {selectedEntry ? (
+        {selectedEntry || newDraft ? (
           <div>
             <div className="detail-header">
               <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Back to list"
@@ -574,20 +627,20 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 <ChevronLeft size={16} />
               </button>
               <div>
-                <h2>{isEditing ? "Edit Entry" : selectedEntry.title || "Untitled"}</h2>
-                <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>
+                <h2>{newDraft ? "New entry" : isEditing ? "Edit Entry" : selectedEntry!.title || "Untitled"}</h2>
+                {selectedEntry ? <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>
                   Last modified: {new Date(selectedEntry.updatedAt).toLocaleString()}
-                </span>
+                </span> : null}
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
-                {!isEditing ? <button className="btn btn-secondary" onClick={() => setShowEntryHistory(true)}>
+                {!isEditing && selectedEntry ? <button className="btn btn-secondary" onClick={() => setShowEntryHistory(true)}>
                   <History size={16} /> Entry History
                 </button> : null}
-                {recycledIds.has(selectedEntry.uuid) ? (
+                {selectedEntry && recycledIds.has(selectedEntry.uuid) ? (
                   <button className="btn btn-primary" onClick={handleRestoreEntry}>Restore to vault</button>
                 ) : isEditing ? (
                   <>
-                    <button className="btn btn-secondary" onClick={() => { loadEditor(); setIsEditing(false); }}>
+                    <button className="btn btn-secondary" onClick={handleCancelEdit}>
                       Cancel
                     </button>
                     <button className="btn btn-primary" onClick={handleSaveEntry}>
@@ -619,7 +672,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     onChange={(e) => setEditTitle(e.target.value)}
                   />
                 ) : (
-                  <div style={{ fontSize: "1.1rem", fontWeight: 600 }}>{selectedEntry.title}</div>
+                  <div style={{ fontSize: "1.1rem", fontWeight: 600 }}>{selectedEntry!.title}</div>
                 )}
               </div>
 
@@ -653,11 +706,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 />
               ) : (
                 <div className="field-row">
-                  <span className="font-mono">{selectedEntry.username || "—"}</span>
-                  {selectedEntry.username ? (
+                  <span className="font-mono">{selectedEntry!.username || "—"}</span>
+                  {selectedEntry!.username ? (
                     <button
                       className="btn btn-quiet btn-sm"
-                      onClick={() => copyToClipboard(selectedEntry.username, "user")}
+                      onClick={() => copyToClipboard(selectedEntry!.username, "user")}
                       title="Copy Username"
                     >
                       {copiedField === "user" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
@@ -702,7 +755,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               ) : (
                 <div className="field-row">
                   <span className="font-mono">
-                    {revealPassword ? selectedEntry.password : "••••••••••••••••"}
+                    {revealPassword ? selectedEntry!.password : "••••••••••••••••"}
                   </span>
                   <div style={{ display: "flex", gap: "0.4rem" }}>
                     <button
@@ -714,7 +767,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     </button>
                     <button
                       className="btn btn-quiet btn-sm"
-                      onClick={() => copyToClipboard(selectedEntry.password, "pass")}
+                      onClick={() => copyToClipboard(selectedEntry!.password, "pass")}
                       title="Copy Password"
                     >
                       {copiedField === "pass" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
@@ -730,7 +783,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             </div>
 
             {/* TOTP 2FA Authenticator */}
-            {(selectedEntry.totpSeed || isEditing) ? (
+            {(selectedEntry?.totpSeed || isEditing) ? (
               <div className="field-card">
                 <label className="input-label">Two-Factor Authentication (TOTP Key / URI)</label>
                 {isEditing ? (
@@ -784,11 +837,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 />
               ) : (
                 <div className="field-row">
-                  <span className="font-mono">{selectedEntry.url || "—"}</span>
-                  {selectedEntry.url ? (
+                  <span className="font-mono">{selectedEntry!.url || "—"}</span>
+                  {selectedEntry!.url ? (
                     <div style={{ display: "flex", gap: "0.4rem" }}>
                       {(() => {
-                        const href = safeHref(selectedEntry.url);
+                        const href = safeHref(selectedEntry!.url);
                         return href ? (
                           <a
                             href={href}
@@ -803,7 +856,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                       })()}
                       <button
                         className="btn btn-quiet btn-sm"
-                        onClick={() => copyToClipboard(selectedEntry.url, "url")}
+                        onClick={() => copyToClipboard(selectedEntry!.url, "url")}
                       >
                         {copiedField === "url" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
                       </button>
@@ -825,11 +878,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 />
               ) : (
                 <div style={{ whiteSpace: "pre-wrap", color: "var(--ink-strong)", fontSize: "0.9rem" }}>
-                  {selectedEntry.notes || <span style={{ color: "var(--ink-muted)" }}>No notes attached.</span>}
+                  {selectedEntry!.notes || <span style={{ color: "var(--ink-muted)" }}>No notes attached.</span>}
                 </div>
               )}
             </div>
-            {!isEditing && !hidden ? <EntryAttachments key={selectedEntry.uuid} vault={vault}
+            {!isEditing && selectedEntry && !hidden ? <EntryAttachments key={selectedEntry.uuid} vault={vault}
               entryUuid={selectedEntry.uuid} readOnly={recycledIds.has(selectedEntry.uuid)}
               onChanged={() => { onChanged(); refreshVaultData(); }} /> : null}
           </div>

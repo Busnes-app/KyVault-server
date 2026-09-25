@@ -218,6 +218,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   nested paths, unchanged contents/history/binaries, no-ops, invalid targets and recycle guards.
   CSV prevalidates all prospective folder names before mutation so an invalid later row cannot
   leave earlier rows imported without a save revision; the same test file covers that boundary.
+  A new entry is a draft in the editor until Apply Edits creates it; Cancel leaves no entry and
+  no save revision. Selecting a folder clears an entry that is not in it.
 
 - `frontend/src/components/EntryAttachments.tsx` and `frontend/src/lib/kdbx.ts`:
   entries support adding one file at a time (10 MiB maximum), downloading decrypted
