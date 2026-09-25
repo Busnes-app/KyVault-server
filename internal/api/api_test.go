@@ -444,6 +444,10 @@ func TestAdminCannotDeactivateSelfOrLastAdmin(t *testing.T) {
 func TestAuditListBefore(t *testing.T) {
 	srv := newTestServer(t)
 	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+	other, err := srv.users.CreateSSOUser("other", users.RoleUser, "sub-other", "other", "other@example.com")
+	if err != nil {
+		t.Fatalf("CreateSSOUser: %v", err)
+	}
 	get := func(q string) []map[string]any {
 		req := httptest.NewRequest(http.MethodGet, "/api/audit?"+q, nil)
 		req.AddCookie(cookie)
@@ -455,9 +459,23 @@ func TestAuditListBefore(t *testing.T) {
 		}
 		return out
 	}
+	putRole := func(role string) {
+		req := httptest.NewRequest(http.MethodPut, "/api/admin/users/"+other.ID+"/role", strings.NewReader(`{"role":"`+role+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT role %q status = %d: %s", role, rec.Code, rec.Body)
+		}
+	}
+	// Two audited actions, so paging has something to page across.
+	putRole("admin")
+	putRole("user")
+
 	all := get("limit=100")
 	if len(all) < 2 {
-		t.Skip("need at least two audit rows")
+		t.Fatalf("need at least two audit rows, got %d", len(all))
 	}
 	last := int64(all[0]["index"].(float64))
 	older := get(fmt.Sprintf("limit=1&before=%d", last))
