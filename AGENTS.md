@@ -408,3 +408,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Skipped-only imports create no folders or save revisions. Changed field values are retained
   as separate entries; comparison performs no fuzzy matching, merging, or normalization.
   CSV parsing preserves password whitespace, including passwords consisting entirely of spaces.
+
+- `frontend/src/lib/totp.ts`: RFC 6238 TOTP in the browser. otpauth URIs may set secret,
+  digits (6 to 10), period and algorithm (SHA1, SHA256, SHA512; anything else falls back
+  to SHA-1). `totp.test.ts` pins the RFC 6238 Appendix B vectors for all three algorithms.
