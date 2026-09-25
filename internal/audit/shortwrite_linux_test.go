@@ -2,7 +2,9 @@ package audit
 
 import (
 	"bytes"
+	"errors"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -19,6 +21,22 @@ import (
 // alongside the failure, and which would otherwise kill the test binary — is ignored
 // for the duration.
 func TestShortWriteLeavesNoTornLine(t *testing.T) {
+	if os.Getenv("KYVAULT_SHORTWRITE_CHILD") != "1" {
+		// RLIMIT_FSIZE is process-wide and also caps go test's own testlog.txt, which
+		// made the parent binary fail at random. The capped part runs in a child.
+		cmd := exec.Command(os.Args[0], "-test.run=^TestShortWriteLeavesNoTornLine$", "-test.v")
+		cmd.Env = append(os.Environ(), "KYVAULT_SHORTWRITE_CHILD=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || bytes.Contains(out, []byte("--- FAIL")) {
+				t.Fatalf("child test failed: %v\n%s", err, out)
+			}
+		}
+		t.Logf("child output:\n%s", out)
+		return
+	}
+
 	dir, keyDir := t.TempDir(), t.TempDir()
 	store := loggedStore(t, dir, keyDir, 2)
 	logPath := filepath.Join(dir, "audit.jsonl")
