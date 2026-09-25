@@ -2,7 +2,6 @@ package audit
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -24,16 +23,21 @@ func TestShortWriteLeavesNoTornLine(t *testing.T) {
 	if os.Getenv("KYVAULT_SHORTWRITE_CHILD") != "1" {
 		// RLIMIT_FSIZE is process-wide and also caps go test's own testlog.txt, which
 		// made the parent binary fail at random. The capped part runs in a child.
+		//
+		// A crash or signal kill (the SIGXFSZ scenario this test guards against) exits
+		// non-zero and prints "FAIL" but never the "--- FAIL" marker, so the parent must
+		// require a positive "--- PASS" marker rather than merely the absence of failure.
 		cmd := exec.Command(os.Args[0], "-test.run=^TestShortWriteLeavesNoTornLine$", "-test.v")
 		cmd.Env = append(os.Environ(), "KYVAULT_SHORTWRITE_CHILD=1")
 		out, err := cmd.CombinedOutput()
-		if err != nil {
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) || bytes.Contains(out, []byte("--- FAIL")) {
-				t.Fatalf("child test failed: %v\n%s", err, out)
-			}
+		switch {
+		case bytes.Contains(out, []byte("--- SKIP: TestShortWriteLeavesNoTornLine")):
+			t.Skipf("child skipped:\n%s", out)
+		case err == nil && bytes.Contains(out, []byte("--- PASS: TestShortWriteLeavesNoTornLine")):
+			t.Logf("child output:\n%s", out)
+		default:
+			t.Fatalf("child test did not pass: %v\n%s", err, out)
 		}
-		t.Logf("child output:\n%s", out)
 		return
 	}
 
