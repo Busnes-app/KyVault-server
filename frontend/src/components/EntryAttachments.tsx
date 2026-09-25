@@ -20,6 +20,7 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
     pending.current = controller;
     setBusy(false);
     setError("");
+    setRemoveFromHistory(false);
     return () => controller.abort();
   }, [vault, entryUuid, readOnly]);
 
