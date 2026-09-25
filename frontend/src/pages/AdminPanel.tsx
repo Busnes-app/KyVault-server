@@ -354,7 +354,7 @@ export function AdminPanel() {
               <div
                 key={log.index}
                 style={{
-                  background: "#0d0f14",
+                  background: "var(--bg)",
                   border: "1px solid var(--line)",
                   borderRadius: "6px",
                   padding: "0.75rem 1rem",

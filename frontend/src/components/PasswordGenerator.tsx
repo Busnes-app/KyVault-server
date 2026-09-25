@@ -57,7 +57,7 @@ export function PasswordGenerator({ onSelect, onClose }: Props) {
 
         <div
           style={{
-            background: "#0d0f14",
+            background: "var(--bg)",
             border: "1px solid var(--accent)",
             padding: "1rem",
             borderRadius: "8px",

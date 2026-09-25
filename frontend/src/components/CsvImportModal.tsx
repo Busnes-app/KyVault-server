@@ -286,7 +286,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
         {parseSummary && parseSummary.validEntries.length > 0 ? (
           <div
             style={{
-              background: "#0d0f14",
+              background: "var(--bg)",
               border: "1px solid var(--line)",
               borderRadius: "8px",
               padding: "1rem",
@@ -437,7 +437,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
                 borderRadius: "6px",
                 maxHeight: "260px",
                 overflowY: "auto",
-                background: "#0d0f14",
+                background: "var(--bg)",
               }}
             >
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>

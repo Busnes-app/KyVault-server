@@ -248,7 +248,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         {paperCode ? (
           <div
             style={{
-              background: "#0d0f14",
+              background: "var(--bg)",
               border: "1px solid var(--accent)",
               borderRadius: "8px",
               padding: "1.25rem",
@@ -286,7 +286,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         {showVaultKey ? (
           <div
             style={{
-              background: "#0d0f14",
+              background: "var(--bg)",
               border: "1px solid var(--accent)",
               borderRadius: "8px",
               padding: "1.25rem",
@@ -379,7 +379,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
               <div
                 key={d.id}
                 style={{
-                  background: "#0d0f14",
+                  background: "var(--bg)",
                   border: "1px solid var(--line)",
                   borderRadius: "6px",
                   padding: "0.75rem 1rem",
