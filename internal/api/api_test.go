@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -125,7 +126,7 @@ func TestVaultOperationsAndConflicts(t *testing.T) {
 	// 1. Initial vault upload
 	v1Payload, _ := json.Marshal(VaultUploadRequest{
 		ExpectedVersion:  0,
-		KdbxBase64:       "ENCRYPTED-KDBX-V1",
+		KdbxBase64:       base64.StdEncoding.EncodeToString([]byte("ENCRYPTED-KDBX-V1")),
 		PasswordEnvelope: "pw-env-v1",
 		RecoveryEnvelope: "rec-env-v1",
 		DeviceID:         "chrome-ext",
@@ -158,7 +159,7 @@ func TestVaultOperationsAndConflicts(t *testing.T) {
 	// 3. Stale upload conflict (expectedVersion = 0 instead of 1)
 	vStalePayload, _ := json.Marshal(VaultUploadRequest{
 		ExpectedVersion: 0,
-		KdbxBase64:      "ENCRYPTED-KDBX-STALE",
+		KdbxBase64:      base64.StdEncoding.EncodeToString([]byte("ENCRYPTED-KDBX-STALE")),
 		DeviceID:        "phone-app",
 	})
 	req = httptest.NewRequest(http.MethodPost, "/api/vault/upload", bytes.NewReader(vStalePayload))
@@ -391,5 +392,50 @@ func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
 	}
 	if verify.WriteFailures == 0 {
 		t.Fatalf("GET /api/audit/verify reported no lost records after a failed write: %s", vrec.Body.String())
+	}
+}
+
+func TestAdminCannotDeactivateSelfOrLastAdmin(t *testing.T) {
+	srv := newTestServer(t)
+	admin, cookie := signedInUser(t, srv, "root", users.RoleAdmin)
+	post := func(path string) int {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := post("/api/admin/users/" + admin.ID + "/deactivate"); code != http.StatusBadRequest {
+		t.Fatalf("self deactivate = %d, want 400", code)
+	}
+	other, err := srv.users.CreateSSOUser("second", users.RoleAdmin, "sub-second", "second", "s@x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := post("/api/admin/users/" + other.ID + "/deactivate"); code != http.StatusOK {
+		t.Fatalf("deactivate other admin = %d, want 200", code)
+	}
+	// Reactivate other and deactivate root through the store, sign in third as admin, then
+	// deactivate other through the store too. Third is now the last active admin, so
+	// demoting itself via the role endpoint must get 409.
+	if err := srv.users.Reactivate(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.users.Deactivate(admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, otherCookie := signedInUser(t, srv, "third", users.RoleAdmin)
+	if err := srv.users.Deactivate(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	third, _ := srv.users.GetByUsername("third")
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/users/"+third.ID+"/role", strings.NewReader(`{"role":"user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(otherCookie)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("demote last admin = %d, want 409", rec.Code)
 	}
 }

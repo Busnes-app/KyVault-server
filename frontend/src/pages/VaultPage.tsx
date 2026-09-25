@@ -4,6 +4,7 @@ import type { EntryDraft } from "../lib/lockedDraft";
 import type { SaveState } from "../lib/vaultSave";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { generateTOTP } from "../lib/totp";
+import { safeHref } from "../lib/safeHref";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
@@ -665,15 +666,20 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                   <span className="font-mono">{selectedEntry.url || "—"}</span>
                   {selectedEntry.url ? (
                     <div style={{ display: "flex", gap: "0.4rem" }}>
-                      <a
-                        href={selectedEntry.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="btn btn-quiet btn-sm"
-                        title="Open in new tab"
-                      >
-                        <ExternalLink size={14} />
-                      </a>
+                      {(() => {
+                        const href = safeHref(selectedEntry.url);
+                        return href ? (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn btn-quiet btn-sm"
+                            title="Open in new tab"
+                          >
+                            <ExternalLink size={14} />
+                          </a>
+                        ) : null;
+                      })()}
                       <button
                         className="btn btn-quiet btn-sm"
                         onClick={() => copyToClipboard(selectedEntry.url, "url")}

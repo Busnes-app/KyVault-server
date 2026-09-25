@@ -113,16 +113,7 @@ func main() {
 		}
 	}
 	if webDir != "" {
-		fs := http.FileServer(http.Dir(webDir))
-		rootMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			path := filepath.Join(webDir, filepath.Clean(r.URL.Path))
-			if _, err := os.Stat(path); os.IsNotExist(err) {
-				// Fallback to index.html for SPA router
-				http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
-				return
-			}
-			fs.ServeHTTP(w, r)
-		})
+		rootMux.Handle("/", api.SPAHandler(webDir))
 	} else {
 		// Development fallback
 		rootMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +128,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:         ":" + port,
-		Handler:      rootMux,
+		Handler:      api.SecurityHeaders(rootMux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,

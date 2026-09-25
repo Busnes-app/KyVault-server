@@ -16,7 +16,9 @@ type SSOSettings = {
   issuerUrl: string;
   clientId: string;
   clientSecret?: string;
+  redirectUri?: string;
   autoProvision: boolean;
+  clientSecretSet?: boolean;
 };
 
 type AuditEntry = {
@@ -30,42 +32,34 @@ type AuditEntry = {
   hash: string;
 };
 
-export function AdminPanel() {
+export function AdminPanel({ currentUserId }: { currentUserId: string }) {
   const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit" | "backup">("sso");
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
   const [provisioning, setProvisioning] = useState<{ configured: boolean; basePath: string } | null>(null);
   const [auditValid, setAuditValid] = useState<boolean | null>(null);
 
-  const [ssoSettings, setSsoSettings] = useState<SSOSettings>({
-    enabled: false,
-    issuerUrl: "",
-    clientId: "",
-    clientSecret: "",
-    autoProvision: true,
-  });
+  const [ssoSettings, setSsoSettings] = useState<SSOSettings | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   const loadData = async () => {
-    try {
-      const [u, s, a, v, p] = await Promise.all([
-        getJSON<User[]>("/api/admin/users"),
-        getJSON<SSOSettings>("/api/admin/sso"),
-        getJSON<AuditEntry[]>("/api/audit?limit=50"),
-        getJSON<{ valid: boolean }>("/api/audit/verify"),
-        getJSON<{ configured: boolean; basePath: string }>("/api/admin/provisioning"),
-      ]);
-      setProvisioning(p);
-      setUsersList(u || []);
-      setSsoSettings(s);
-      setAuditLogs(a || []);
-      setAuditValid(v.valid);
-    } catch (err) {
-      setError(toErrorMessage(err, "Failed to load admin data"));
-    }
+    const [u, s, a, v, p] = await Promise.allSettled([
+      getJSON<User[]>("/api/admin/users"),
+      getJSON<SSOSettings>("/api/admin/sso"),
+      getJSON<AuditEntry[]>("/api/audit?limit=50"),
+      getJSON<{ valid: boolean }>("/api/audit/verify"),
+      getJSON<{ configured: boolean; basePath: string }>("/api/admin/provisioning"),
+    ]);
+    if (u.status === "fulfilled") setUsersList(u.value || []);
+    if (s.status === "fulfilled") setSsoSettings(s.value);
+    if (a.status === "fulfilled") setAuditLogs(a.value || []);
+    if (v.status === "fulfilled") setAuditValid(v.value.valid);
+    if (p.status === "fulfilled") setProvisioning(p.value);
+    const failed = [u, s, a, v, p].filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed.length) setError(toErrorMessage(failed[0].reason, "Some admin data could not be loaded"));
   };
 
   useEffect(() => {
@@ -74,13 +68,15 @@ export function AdminPanel() {
 
   const handleSaveSSO = async (e: FormEvent) => {
     e.preventDefault();
+    if (!ssoSettings) return;
     setBusy(true);
     setMessage("");
     setError("");
 
     try {
-      await putJSON("/api/admin/sso", ssoSettings);
-      setMessage("SSO settings saved successfully.");
+      await putJSON("/api/admin/sso", { ...ssoSettings, enabled: true });
+      setSsoSettings({ ...ssoSettings, clientSecret: "", clientSecretSet: true });
+      setMessage("SSO settings saved.");
     } catch (err) {
       setError(toErrorMessage(err, "Failed to save SSO settings"));
     } finally {
@@ -90,7 +86,7 @@ export function AdminPanel() {
 
   const applyKySignOnPreset = () => {
     setSsoSettings((prev) => ({
-      ...prev,
+      ...(prev ?? { enabled: true, issuerUrl: "", clientId: "", autoProvision: true }),
       enabled: true,
       issuerUrl: "https://auth.urlxl.com",
       clientId: "kyvaults",
@@ -196,71 +192,65 @@ export function AdminPanel() {
             </button>
           </div>
 
-          <form onSubmit={handleSaveSSO}>
-            <div className="input-group">
-              <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+          {ssoSettings ? (
+            <form onSubmit={handleSaveSSO}>
+              <div className="input-group">
+                <label className="input-label">Issuer URL</label>
                 <input
-                  type="checkbox"
-                  checked={ssoSettings.enabled}
-                  onChange={(e) => setSsoSettings({ ...ssoSettings, enabled: e.target.checked })}
+                  type="url"
+                  className="input font-mono"
+                  placeholder="https://auth.urlxl.com"
+                  value={ssoSettings.issuerUrl}
+                  onChange={(e) => setSsoSettings({ ...ssoSettings, issuerUrl: e.target.value })}
+                  required
                 />
-                <strong>Enable Single Sign-On (SSO)</strong>
-              </label>
-            </div>
+                <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)", marginTop: "0.25rem", display: "block" }}>
+                  Must support standard <code>.well-known/openid-configuration</code> auto-discovery.
+                </span>
+              </div>
 
-            <div className="input-group">
-              <label className="input-label">Issuer URL</label>
-              <input
-                type="url"
-                className="input font-mono"
-                placeholder="https://auth.urlxl.com"
-                value={ssoSettings.issuerUrl}
-                onChange={(e) => setSsoSettings({ ...ssoSettings, issuerUrl: e.target.value })}
-                required={ssoSettings.enabled}
-              />
-              <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)", marginTop: "0.25rem", display: "block" }}>
-                Must support standard <code>.well-known/openid-configuration</code> auto-discovery.
-              </span>
-            </div>
-
-            <div className="input-group">
-              <label className="input-label">Client ID</label>
-              <input
-                type="text"
-                className="input font-mono"
-                placeholder="kyvaults"
-                value={ssoSettings.clientId}
-                onChange={(e) => setSsoSettings({ ...ssoSettings, clientId: e.target.value })}
-                required={ssoSettings.enabled}
-              />
-            </div>
-
-            <div className="input-group">
-              <label className="input-label">Client Secret (optional for PKCE)</label>
-              <input
-                type="password"
-                className="input font-mono"
-                placeholder="••••••••••••"
-                value={ssoSettings.clientSecret || ""}
-                onChange={(e) => setSsoSettings({ ...ssoSettings, clientSecret: e.target.value })}
-              />
-            </div>
-
-            <div className="input-group">
-              <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.9rem" }}>
+              <div className="input-group">
+                <label className="input-label">Client ID</label>
                 <input
-                  type="checkbox"
-                  checked={ssoSettings.autoProvision}
-                  onChange={(e) => setSsoSettings({ ...ssoSettings, autoProvision: e.target.checked })}
+                  type="text"
+                  className="input font-mono"
+                  placeholder="kyvaults"
+                  value={ssoSettings.clientId}
+                  onChange={(e) => setSsoSettings({ ...ssoSettings, clientId: e.target.value })}
+                  required
                 />
-                Auto-provision new accounts upon successful SSO authentication
-              </label>
-            </div>
+              </div>
 
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? "Saving…" : "Save SSO Settings"}
-            </button>
-          </form>
+              <div className="input-group">
+                <label className="input-label">Client Secret</label>
+                <input
+                  type="password"
+                  className="input font-mono"
+                  autoComplete="off"
+                  placeholder={ssoSettings.clientSecretSet ? "Unchanged. Type a new value to replace it." : "Required unless the client uses PKCE only"}
+                  value={ssoSettings.clientSecret || ""}
+                  onChange={(e) => setSsoSettings({ ...ssoSettings, clientSecret: e.target.value })}
+                />
+              </div>
+
+              <div className="input-group">
+                <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.9rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={ssoSettings.autoProvision}
+                    onChange={(e) => setSsoSettings({ ...ssoSettings, autoProvision: e.target.checked })}
+                  />
+                  Auto-provision new accounts upon successful SSO authentication
+                </label>
+              </div>
+
+              <button type="submit" className="btn btn-primary" disabled={busy}>
+                {busy ? "Saving…" : "Save SSO Settings"}
+              </button>
+            </form>
+          ) : (
+            <p>{error ? "SSO settings could not be loaded." : "Loading SSO settings…"}</p>
+          )}
         </div>
       ) : activeTab === "users" ? (
         <div>
@@ -321,6 +311,8 @@ export function AdminPanel() {
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => handleToggleDeactivate(u)}
+                    disabled={u.id === currentUserId}
+                    title={u.id === currentUserId ? "You cannot deactivate your own account" : undefined}
                   >
                     {u.active ? "Deactivate" : "Reactivate"}
                   </button>

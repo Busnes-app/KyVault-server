@@ -2,8 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/Busnes-app/kyvault-server/internal/sso"
 	"github.com/Busnes-app/kyvault-server/internal/users"
@@ -33,6 +36,10 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	if err := s.users.SetRole(id, req.Role); err != nil {
+		if errors.Is(err, users.ErrLastAdmin) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, "failed to update role: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -43,7 +50,15 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request, adm
 
 func (s *Server) handleAdminUserDeactivate(w http.ResponseWriter, r *http.Request, admin users.User) {
 	id := r.PathValue("id")
+	if id == admin.ID {
+		http.Error(w, "you cannot deactivate your own account", http.StatusBadRequest)
+		return
+	}
 	if err := s.users.Deactivate(id); err != nil {
+		if errors.Is(err, users.ErrLastAdmin) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, "failed to deactivate user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -61,9 +76,16 @@ func (s *Server) handleAdminUserReactivate(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+type ssoView struct {
+	sso.SSOSettings
+	ClientSecretSet bool `json:"clientSecretSet"`
+}
+
 func (s *Server) handleAdminSSOGet(w http.ResponseWriter, r *http.Request, admin users.User) {
 	settings := s.ssoStore.Load()
-	writeJSON(w, http.StatusOK, settings)
+	view := ssoView{SSOSettings: settings, ClientSecretSet: settings.ClientSecret != ""}
+	view.ClientSecret = ""
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (s *Server) handleAdminSSOPut(w http.ResponseWriter, r *http.Request, admin users.User) {
@@ -81,13 +103,30 @@ func (s *Server) handleAdminSSOPut(w http.ResponseWriter, r *http.Request, admin
 		return
 	}
 
+	// KySignOn is the only way in. A disabled SSO is a server nobody can sign in to.
+	if !req.Enabled {
+		http.Error(w, "SSO cannot be disabled: KySignOn is the only way to sign in", http.StatusBadRequest)
+		return
+	}
+	issuer, err := url.Parse(req.IssuerURL)
+	if err != nil || issuer.Scheme != "https" || issuer.Host == "" {
+		http.Error(w, "issuerUrl must be an https URL", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ClientID) == "" {
+		http.Error(w, "clientId is required", http.StatusBadRequest)
+		return
+	}
+	if req.ClientSecret == "" {
+		req.ClientSecret = s.ssoStore.Load().ClientSecret
+	}
 	if err := s.ssoStore.Save(req); err != nil {
 		http.Error(w, "failed to save SSO settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	s.record(r, "admin.sso_configured", admin.ID, "", clientIP(r), "updated SSO configuration")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": req})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAuditList(w http.ResponseWriter, r *http.Request, admin users.User) {

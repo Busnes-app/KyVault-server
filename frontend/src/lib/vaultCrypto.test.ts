@@ -8,6 +8,7 @@ import {
   bytesToHex,
   hexToBytes,
   generateVaultMasterKey,
+  verifyMasterPassword,
 } from "./vaultCrypto.js";
 
 const key = () => {
@@ -143,3 +144,12 @@ async function wrapLegacyPbkdf2(vaultKey: Uint8Array, secret: string): Promise<s
     iterations,
   });
 }
+
+test("verifyMasterPassword accepts only the password that wraps this key", async () => {
+  const key = generateVaultMasterKey();
+  const envelope = await wrapVaultKey(key, "correct horse battery");
+  assert.equal(await verifyMasterPassword(envelope, "correct horse battery", key), true);
+  assert.equal(await verifyMasterPassword(envelope, "wrong horse", key), false);
+  assert.equal(await verifyMasterPassword(envelope, "correct horse battery", generateVaultMasterKey()), false);
+  assert.equal(await verifyMasterPassword("not json", "correct horse battery", key), false);
+});

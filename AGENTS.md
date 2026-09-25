@@ -12,7 +12,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side user credential. See "Replication" and "Authentication" below.
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
-8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector.
+8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
 
 ## Authentication
@@ -56,8 +56,11 @@ yourself adding one, the design has been misread.
   source's budget as `auth.logout_rejected`; success is `auth.sso_logout` with the `jti`.
 - The master password is not a credential. It unwraps the vault key envelope in the
   browser and is never transmitted. Changing it is a client-side re-wrap against
-  `PUT /api/vault/envelopes`.
+  `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
+  offline vault key each require the current master password or paper code, verified in
+  the browser against the stored envelope (`verifyMasterPassword`).
 - Paper recovery unlocks the vault, not the site.
+- Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.
@@ -65,7 +68,9 @@ yourself adding one, the design has been misread.
   (optional `_REDIRECT_URI`, `_AUTO_PROVISION`) and take precedence over
   `config/sso.json`. `PUT /api/admin/sso` answers 409 while they are set. Without an
   identity provider, or with an active account that has no `ssoSub`, the server
-  refuses to start.
+  refuses to start. `GET /api/admin/sso` never returns the client secret, only
+  `clientSecretSet`; a PUT with a blank secret keeps the stored one, and `enabled:false`,
+  a non-https issuer or an empty `clientId` is refused with 400.
 
 ## Replication
 
@@ -321,9 +326,11 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
   only drills and restores may hold private recovery material.
 
-- `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
-  to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
-  clear stored secrets from browser storage.
+- `frontend/src/lib/storage.ts` and `frontend/src/lib/deviceKey.ts`: manages the IndexedDB
+  `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)
+  under a non-extractable per-browser CryptoKey held in the same store; legacy plain-hex
+  records are deleted on sight, and the next password unlock writes a sealed record.
+  Forget This Device clears it.
 - `frontend/src/lib/vaultCrypto.ts`: the vault key envelope — **the only place a
   human-chosen secret is stretched**. Everything else is keyed on a 256-bit random vault
   key, where the KDF is near-irrelevant; here it is the whole defence, and the envelope is
@@ -358,7 +365,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
   Both implementations must produce that. Unit tests per repo only prove each side is
   self-consistent; agreeing on a vector is what proves they interoperate — the same lesson
-  the silently-mismatched replication format taught.
+  the silently-mismatched replication format taught. The client refuses master passwords under 12 characters (lib/masterPassword.ts) on create and change; the server never sees one so it cannot enforce this.
 
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.

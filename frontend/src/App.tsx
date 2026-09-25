@@ -12,6 +12,7 @@ import {
   bytesToHex,
   hexToBytes,
 } from "./lib/vaultCrypto";
+import { checkMasterPassword } from "./lib/masterPassword";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
@@ -133,6 +134,9 @@ export function App() {
           setShowUnlockModal(true);
           return;
         }
+
+        const problem = checkMasterPassword(masterPassword);
+        if (problem) throw new Error(problem);
 
         const key = generateVaultMasterKey();
 
@@ -486,7 +490,7 @@ export function App() {
         />
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (
-        <AdminPanel />
+        <AdminPanel currentUserId={user.id} />
       ) : vault ? (
         navTab === "security" ? <SecuritySettings
           user={user}

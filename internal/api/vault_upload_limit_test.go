@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -54,5 +55,39 @@ func TestOversizedVaultUploadPreservesCurrentVault(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), payload) {
 		t.Fatal("upload at the limit did not round-trip intact")
+	}
+}
+
+func TestJSONUploadDecodesBase64(t *testing.T) {
+	srv := newTestServer(t)
+	user, cookie := signedInUser(t, srv, "json-client", users.RoleUser)
+	if _, err := srv.vault.SaveVault(user.ID, 0, []byte("current"), "", "", "web"); err != nil {
+		t.Fatal(err)
+	}
+	handler := srv.Routes()
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/vault/upload", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("If-Match", `"1"`)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post(`{"kdbxBase64":"not base64!!"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad base64 = %d, want 400", rec.Code)
+	}
+	if rec := post(`{"kdbxBase64":""}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty body = %d, want 400", rec.Code)
+	}
+	if rec := post(`{"kdbxBase64":"` + base64.StdEncoding.EncodeToString([]byte("new bytes")) + `"}`); rec.Code != http.StatusOK {
+		t.Fatalf("good upload = %d: %s", rec.Code, rec.Body)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/vault/kdbx", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Body.String() != "new bytes" {
+		t.Fatalf("stored %q, want the decoded bytes", rec.Body.String())
 	}
 }
