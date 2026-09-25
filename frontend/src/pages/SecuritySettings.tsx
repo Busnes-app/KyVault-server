@@ -163,8 +163,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     }
     if (!await dialogs.confirm({
       title: "Show the vault key?",
-      message: "Your vault key unlocks everything, on any device, forever — and unlike your master " +
-      "password it cannot be changed without re-encrypting the vault. Only reveal it if you " +
+      message: "Your vault key unlocks everything, on any device, forever. Unlike your master " +
+      "password, it cannot be changed without re-encrypting the vault. Only reveal it if you " +
       "are printing it for offline recovery, and nobody can see your screen.",
       confirmLabel: "Show",
     })) return;

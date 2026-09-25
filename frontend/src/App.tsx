@@ -15,7 +15,7 @@ import {
 } from "./lib/vaultCrypto";
 import { checkMasterPassword } from "./lib/masterPassword";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
-import { useRoute } from "./lib/route";
+import { useRoute, type Route } from "./lib/route";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
 import { SecuritySettings } from "./pages/SecuritySettings";
@@ -54,6 +54,10 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [route, navigate] = useRoute();
   const navTab = route.tab;
+  const lastVault = useRef<Route>({ tab: "vault" });
+  useEffect(() => {
+    if (route.tab === "vault") lastVault.current = route;
+  }, [route]);
 
   // Vault state
   const [vault, setVault] = useState<KeePassVault | null>(null);
@@ -456,7 +460,7 @@ export function App() {
           <button
             className={`nav-link-btn ${navTab === "vault" ? "active" : ""}`}
             aria-label="Vault"
-            onClick={() => navigate({ tab: "vault" })}
+            onClick={() => navigate(lastVault.current)}
           >
             <Shield size={16} /> <span>Vault</span>
           </button>
@@ -576,7 +580,7 @@ export function App() {
                   value={unlockPassword}
                   onChange={(e) => setUnlockPassword(e.target.value)}
                   required
-                  autoFocus
+                  data-autofocus
                 />
               </div>
 

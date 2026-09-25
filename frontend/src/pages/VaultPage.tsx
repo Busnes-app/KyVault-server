@@ -136,16 +136,17 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   useEffect(() => {
     if (route.tab !== "vault" || route.entry === selectedEntryUuid) return;
     if (route.entry && !entries.some((e) => e.uuid === route.entry)) return;
+    if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault" }); return; }
     (async () => {
       if (await canChangeEntry()) {
         setIsEditing(false);
         setSelectedEntryUuid(route.entry ?? null);
-        if (route.entry) setPane("detail");
+        setPane(route.entry ? "detail" : "list");
       } else {
         navigate({ tab: "vault", entry: selectedEntryUuid ?? undefined });
       }
     })();
-  }, [route.tab, route.entry, entries, selectedEntryUuid]);
+  }, [route.tab, route.entry, entries, recycledIds, selectedEntryUuid]);
 
   // Load selected entry into editor
   const loadEditor = () => {

@@ -338,7 +338,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   (native `<dialog>`, Escape closes, backdrop click never closes, focus returns to the
   opener). Questions go through `useDialogs().confirm/prompt/notify`, sequenced by
   `lib/dialogQueue.ts` so a second question waits for the first. Native `confirm`, `prompt`
-  and `alert` are banned in `frontend/src`.
+  and `alert` are banned in `frontend/src`. `noNativeDialogs.test.ts` fails the suite if one comes back.
+  Autofocus inside a `Dialog` uses `data-autofocus`, not the React `autoFocus` prop: React
+  never emits an `autofocus` DOM attribute, so `Dialog`'s `[autofocus]` lookup was dead code.
 
 - `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
@@ -436,5 +438,6 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/clipboard.ts`: every copy goes through `copyText`; passwords, TOTP codes and generated passwords are cleared after 30 seconds if the clipboard still holds them (or, where reading is refused, if nothing newer was copied through the helper). The timed clear is best effort: browsers may refuse clipboard access from a timer, and the UI says so. `clipboard.test.ts` covers both.
 
 - `frontend/src/lib/route.ts`: hash routes `#/vault[/entryUuid]`, `#/security`, `#/admin/{sso|users|audit|backup}` drive the top tabs, admin tabs and the selected entry; unknown routes fall back to the vault; a non-admin on an admin route is redirected. `route.test.ts` covers parsing and formatting.
+  `App.tsx` remembers the last vault route (`lastVault` ref) so the Vault nav button restores the selected entry instead of deselecting it. `VaultPage`'s route-follow effect syncs the mobile pane (`list` when the hash drops the entry, `detail` when it names one) and treats a recycled entry's uuid as unknown, correcting the hash back to `#/vault` rather than reopening it.
 
 - `frontend/src/lib/useMediaQuery.ts` and `VaultPage` panes: under 900px the vault is one pane at a time (folders, list, detail) with Folders and Back controls; under 600px nav labels collapse to icons with aria-labels. Desktop keeps the three-column grid.

@@ -27,7 +27,7 @@ func TestShortWriteLeavesNoTornLine(t *testing.T) {
 		// A crash or signal kill (the SIGXFSZ scenario this test guards against) exits
 		// non-zero and prints "FAIL" but never the "--- FAIL" marker, so the parent must
 		// require a positive "--- PASS" marker rather than merely the absence of failure.
-		cmd := exec.Command(os.Args[0], "-test.run=^TestShortWriteLeavesNoTornLine$", "-test.v")
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestShortWriteLeavesNoTornLine$", "-test.v")
 		cmd.Env = append(os.Environ(), "KYVAULT_SHORTWRITE_CHILD=1")
 		out, err := cmd.CombinedOutput()
 		switch {

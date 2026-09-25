@@ -17,7 +17,7 @@ export function Dialog({ title, onClose, size = "md", children, closeLabel = "Cl
     // guard on every mount so a real native close is not ignored after the replay.
     closingRef.current = false;
     element?.showModal();
-    const autofocusTarget = element?.querySelector<HTMLElement>("[autofocus]")
+    const autofocusTarget = element?.querySelector<HTMLElement>("[data-autofocus]")
       ?? element?.querySelector<HTMLElement>("input, textarea, select");
     autofocusTarget?.focus();
     return () => {

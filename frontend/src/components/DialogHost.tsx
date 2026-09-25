@@ -50,7 +50,7 @@ function QuestionDialog({ request, settle }: { request: DialogRequest; settle: (
         {request.kind === "prompt" ? (
           <div className="input-group">
             <label className="input-label" htmlFor="dialog-input">{request.label ?? request.title}</label>
-            <input id="dialog-input" className="input" autoFocus value={value}
+            <input id="dialog-input" className="input" data-autofocus value={value}
               onChange={(e) => { setValue(e.target.value); setProblem(null); }} />
             {problem ? <p role="alert" style={{ color: "var(--danger)" }}>{problem}</p> : null}
           </div>
@@ -59,7 +59,7 @@ function QuestionDialog({ request, settle }: { request: DialogRequest; settle: (
           {request.kind !== "notify" ? (
             <button type="button" className="btn btn-secondary" onClick={() => settle(cancelValue)}>{request.cancelLabel ?? "Cancel"}</button>
           ) : null}
-          <button type="submit" className={`btn ${request.danger ? "btn-danger" : "btn-primary"}`} autoFocus={request.kind !== "prompt"}>
+          <button type="submit" className={`btn ${request.danger ? "btn-danger" : "btn-primary"}`} {...(request.kind !== "prompt" ? { "data-autofocus": true } : {})}>
             {request.confirmLabel ?? (request.kind === "notify" ? "OK" : "Continue")}
           </button>
         </div>
