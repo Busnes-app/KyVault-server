@@ -10,6 +10,8 @@ test("intervals read as humans say them", () => {
   assert.equal(formatInterval(86400), "Daily");
   assert.equal(formatInterval(259200), "Every 3 days");
   assert.equal(formatInterval(Number.NaN), "Unknown");
+  assert.equal(formatInterval(10), "Every 1 minutes");
+  assert.equal(formatInterval(-1), "Unknown");
 });
 
 test("timestamps never render Invalid Date", () => {

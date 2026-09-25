@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { ArchiveRestore, CheckCircle2, Download, RefreshCw, Send, ShieldCheck } from "lucide-react";
 import { getJSON, postBlob, postJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { formatInterval, formatWhen } from "../lib/format";
@@ -53,7 +53,7 @@ export function AdminBackup() {
   const [threshold, setThreshold] = useState(2);
   const [totalShares, setTotalShares] = useState(3);
   const [intervalInput, setIntervalInput] = useState("1440");
-  const [scheduleDirty, setScheduleDirty] = useState(false);
+  const scheduleDirty = useRef(false);
   const [drill, setDrill] = useState<DrillResult>();
   const [busy, setBusy] = useState(false);
   const [depositReply, setDepositReply] = useState<DepositReply>();
@@ -65,7 +65,7 @@ export function AdminBackup() {
       const next = await getJSON<BackupStatus>("/api/backup/status");
       setStatus(next);
       setURL(next.recoveryUrl ?? "");
-      if (!scheduleDirty) setIntervalInput(Number.isFinite(next.intervalSec) ? String(Math.round(next.intervalSec / 60)) : "");
+      if (!scheduleDirty.current) setIntervalInput(Number.isFinite(next.intervalSec) ? String(Math.round(next.intervalSec / 60)) : "");
     } catch (cause: unknown) {
       setError(toErrorMessage(cause, "Failed to load backup status"));
     }
@@ -174,19 +174,19 @@ export function AdminBackup() {
         <form onSubmit={(event) => {
           event.preventDefault();
           const minutes = Number(intervalInput);
-          if (intervalInput.trim() === "" || !Number.isInteger(minutes) || (minutes > 0 && minutes < 15)) {
+          if (intervalInput.trim() === "" || !Number.isInteger(minutes) || minutes < 0 || (minutes > 0 && minutes < 15)) {
             setError("Enter 0 to turn the schedule off, or 15 or more minutes.");
             return;
           }
           void act(async () => {
             await putJSON("/api/backup/schedule", { intervalSec: minutes * 60 });
-            setScheduleDirty(false);
+            scheduleDirty.current = false;
             setMessage("Backup schedule saved.");
           });
         }}>
           <label htmlFor="backup-interval">Interval in minutes (0 turns the schedule off; otherwise 15–527040)</label>
           <input id="backup-interval" className="input" type="number" min={0} max={527040} step={1} value={intervalInput}
-            onChange={(event) => { setIntervalInput(event.target.value); setScheduleDirty(true); }} />
+            onChange={(event) => { setIntervalInput(event.target.value); scheduleDirty.current = true; }} />
           <button className="btn btn-secondary" disabled={busy}>Save schedule</button>
         </form>
       </div> : null}
