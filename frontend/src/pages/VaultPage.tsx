@@ -664,28 +664,30 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               ) : (
                 <div className="field-row">
                   <span className="font-mono">{selectedEntry.url || "—"}</span>
-                  {(() => {
-                    const href = safeHref(selectedEntry.url);
-                    return href ? (
-                      <div style={{ display: "flex", gap: "0.4rem" }}>
-                        <a
-                          href={href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="btn btn-quiet btn-sm"
-                          title="Open in new tab"
-                        >
-                          <ExternalLink size={14} />
-                        </a>
-                        <button
-                          className="btn btn-quiet btn-sm"
-                          onClick={() => copyToClipboard(selectedEntry.url, "url")}
-                        >
-                          {copiedField === "url" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
-                        </button>
-                      </div>
-                    ) : null;
-                  })()}
+                  {selectedEntry.url ? (
+                    <div style={{ display: "flex", gap: "0.4rem" }}>
+                      {(() => {
+                        const href = safeHref(selectedEntry.url);
+                        return href ? (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn btn-quiet btn-sm"
+                            title="Open in new tab"
+                          >
+                            <ExternalLink size={14} />
+                          </a>
+                        ) : null;
+                      })()}
+                      <button
+                        className="btn btn-quiet btn-sm"
+                        onClick={() => copyToClipboard(selectedEntry.url, "url")}
+                      >
+                        {copiedField === "url" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>
