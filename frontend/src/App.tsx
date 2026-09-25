@@ -5,6 +5,7 @@ import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
 import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
+import { downloadBlob } from "./lib/download";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
@@ -273,13 +274,7 @@ export function App() {
   const handleExportKdbx = async () => {
     if (!saveQueue || saveState.kind === "saving") return;
     const binary = await saveQueue.exportBinary();
-    const blob = new Blob([binary], { type: "application/x-keepass2" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${user?.username || "vault"}.kdbx`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(new Blob([binary], { type: "application/x-keepass2" }), `${user?.username || "vault"}.kdbx`);
   };
 
   const closeVault = () => {

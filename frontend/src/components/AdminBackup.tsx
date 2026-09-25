@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { ArchiveRestore, CheckCircle2, Download, RefreshCw, Send, ShieldCheck } from "lucide-react";
 import { getJSON, postBlob, postJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { formatInterval, formatWhen } from "../lib/format";
+import { downloadBlob } from "../lib/download";
 
 type Receipt = {
   capsule_id: string;
@@ -112,12 +113,7 @@ export function AdminBackup() {
 
   const download = () => void act(async () => {
     const blob = await postBlob("/api/backup/export-capsule");
-    const href = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.download = "kyvault.kycap";
-    anchor.click();
-    URL.revokeObjectURL(href);
+    downloadBlob(blob, "kyvault.kycap");
     setMessage("Downloaded sealed capsule.");
   });
 

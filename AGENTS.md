@@ -324,6 +324,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.
   `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
 
+- `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
+  appends the anchor and revokes the object URL a second later so Firefox and Safari do not
+  cancel it.
+
 - `frontend/src/styles/styles.css`: `.settings-page` provides the bounded scroll area for
   Admin and Security within the fixed-height app shell; keep long backup forms reachable.
 
