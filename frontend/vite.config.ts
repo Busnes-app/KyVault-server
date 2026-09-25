@@ -14,6 +14,10 @@ export default defineConfig({
         target: "http://localhost:5877",
         changeOrigin: true,
       },
+      "/scim": {
+        target: "http://localhost:5877",
+        changeOrigin: true,
+      },
     },
   },
   build: {
