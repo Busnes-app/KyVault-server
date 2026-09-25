@@ -29,7 +29,7 @@ export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, 
     }
   };
 
-  return <Dialog title="Entry History" onClose={onClose} size="lg" closeLabel="Close entry history">
+  return <Dialog title="Entry History" onClose={onClose} size="lg" closeLabel="Close entry history" className="entry-history-dialog">
     <p>Previous versions stored inside your encrypted vault. Restoring replaces this entry’s contents, including attachments and custom fields, and saves automatically.</p>
     {!vault.entryHistoryEnabled ? <p>Entry history is disabled for this vault. Restoring is unavailable because the current version could not be kept.</p> : null}
     {versions.length === 0 ? <p>No previous versions. New versions are kept when you apply changed entry fields while entry history is enabled.</p> : <>
