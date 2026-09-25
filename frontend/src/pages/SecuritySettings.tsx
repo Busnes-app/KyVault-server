@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, FormEvent } from "react";
+import React, { useState, useEffect, useRef, useCallback, FormEvent } from "react";
 import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCrypto";
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
@@ -8,6 +8,13 @@ import { useDialogs } from "../components/DialogHost";
 
 import { AUTO_LOCK_MINUTES, parseAutoLockMinutes, type AutoLockMinutes } from "../lib/autoLock";
 import { formatWhen } from "../lib/format";
+import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
+import { groupHex, useHideAfter } from "../lib/secretDisplay";
+
+// Type-it-back comparison ignores formatting, not case or characters.
+function normalizeCode(value: string): string {
+  return value.toUpperCase().replace(/[-\s]/g, "");
+}
 
 type Device = {
   id: string;
@@ -36,11 +43,20 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [ssoConfig, setSsoConfig] = useState<{ enabled: boolean; issuerUrl: string } | null>(null);
   const [showPairing, setShowPairing] = useState(false);
   const [showVaultKey, setShowVaultKey] = useState(false);
+  const [vaultKeyCopied, setVaultKeyCopied] = useState(false);
+  const [paperCodeCopied, setPaperCodeCopied] = useState(false);
+  const [paperConfirmInput, setPaperConfirmInput] = useState("");
+  const [paperConfirmed, setPaperConfirmed] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [revoking, setRevoking] = useState<string | null>(null);
+
+  const hideVaultKey = useCallback(() => setShowVaultKey(false), []);
+  const hidePaperCode = useCallback(() => setPaperCode(null), []);
+  useHideAfter(60_000, showVaultKey, hideVaultKey);
+  useHideAfter(120_000, paperCode !== null, hidePaperCode);
 
   // A lock cancels pending dialogs (App.tsx closeVault), but these handlers hold the
   // vault key in closure across awaits; a stale resume must not act on an unmounted page.
@@ -162,6 +178,9 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       if (!alive.current) return;
 
       setPaperCode(code);
+      setPaperConfirmInput("");
+      setPaperConfirmed(false);
+      setPaperCodeCopied(false);
       setMessage("Paper recovery backup generated. Print or write this down.");
     } catch (err) {
       setError(toErrorMessage(err, "Failed to generate paper recovery code"));
@@ -192,6 +211,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     try {
       if (!(await proveCurrentPassword())) return;
       if (!alive.current) return;
+      setVaultKeyCopied(false);
       setShowVaultKey(true);
     } catch (err) {
       setError(toErrorMessage(err, "Failed to verify the current master password"));
@@ -339,6 +359,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
         {paperCode ? (
           <div
+            className="print-only-secret"
             style={{
               background: "var(--bg)",
               border: "1px solid var(--accent)",
@@ -353,6 +374,46 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             </div>
             <div style={{ fontSize: "1.4rem", fontWeight: 700, letterSpacing: "0.1em", color: "var(--accent)" }} className="font-mono">
               {paperCode}
+            </div>
+            <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center", marginTop: "1rem" }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={async () => {
+                  const copied = await copyText(paperCode, { clearAfterMs: SECRET_CLIPBOARD_MS });
+                  if (copied) { setPaperCodeCopied(true); setTimeout(() => setPaperCodeCopied(false), 2000); }
+                }}
+              >
+                {paperCodeCopied ? <CheckCircle2 size={14} /> : null} Copy
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => window.print()}>
+                Print
+              </button>
+            </div>
+            <p style={{ fontSize: "0.75rem", color: "var(--ink-muted)", marginTop: "0.5rem" }}>
+              Cleared from the clipboard after 30 seconds when the browser allows it.
+            </p>
+
+            <div style={{ marginTop: "1.25rem", textAlign: "left" }}>
+              <label className="input-label" htmlFor="paper-code-confirm">Type the code to confirm you saved it</label>
+              <input
+                id="paper-code-confirm"
+                type="text"
+                className="input"
+                value={paperConfirmInput}
+                onChange={(e) => setPaperConfirmInput(e.target.value)}
+              />
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginTop: "0.5rem" }}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={normalizeCode(paperConfirmInput) !== normalizeCode(paperCode)}
+                  onClick={() => { setPaperConfirmed(true); setPaperCode(null); }}
+                >
+                  Done
+                </button>
+                {!paperConfirmed ? <span style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>Not confirmed yet.</span> : null}
+              </div>
             </div>
           </div>
         ) : null}
@@ -377,6 +438,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
         {showVaultKey ? (
           <div
+            className="print-only-secret"
             style={{
               background: "var(--bg)",
               border: "1px solid var(--accent)",
@@ -393,8 +455,26 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
               className="font-mono"
               style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--accent)", wordBreak: "break-all" }}
             >
-              {bytesToHex(vaultKey)}
+              {groupHex(bytesToHex(vaultKey))}
             </div>
+            <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center", marginTop: "1rem" }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={async () => {
+                  const copied = await copyText(bytesToHex(vaultKey), { clearAfterMs: SECRET_CLIPBOARD_MS });
+                  if (copied) { setVaultKeyCopied(true); setTimeout(() => setVaultKeyCopied(false), 2000); }
+                }}
+              >
+                {vaultKeyCopied ? <CheckCircle2 size={14} /> : null} Copy
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => window.print()}>
+                Print
+              </button>
+            </div>
+            <p style={{ fontSize: "0.75rem", color: "var(--ink-muted)", marginTop: "0.5rem" }}>
+              Cleared from the clipboard after 30 seconds when the browser allows it.
+            </p>
           </div>
         ) : null}
 
