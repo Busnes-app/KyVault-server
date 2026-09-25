@@ -439,20 +439,23 @@ export function App() {
         <ThemeSwitcher />
         <div className="nav-links">
           <button
-            className={`nav-link-btn ${navTab === "vault" ? "active" : ""}`}
+            className={`ky-nav-item nav-link-btn ${navTab === "vault" ? "active" : ""}`}
+            aria-current={navTab === "vault" ? "page" : undefined}
             onClick={() => setNavTab("vault")}
           >
             <Shield size={16} /> Vault
           </button>
           <button
-            className={`nav-link-btn ${navTab === "security" ? "active" : ""}`}
+            className={`ky-nav-item nav-link-btn ${navTab === "security" ? "active" : ""}`}
+            aria-current={navTab === "security" ? "page" : undefined}
             onClick={() => setNavTab("security")}
           >
             <KeyRound size={16} /> Security
           </button>
           {user.role === "admin" ? (
             <button
-              className={`nav-link-btn ${navTab === "admin" ? "active" : ""}`}
+            className={`ky-nav-item nav-link-btn ${navTab === "admin" ? "active" : ""}`}
+            aria-current={navTab === "admin" ? "page" : undefined}
               onClick={() => setNavTab("admin")}
             >
               <Settings size={16} /> Admin
