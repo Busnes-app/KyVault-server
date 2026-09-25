@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "KYVAULT_MOCK_API=1 vite",
     "build": "tsc && vite build",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "preview": "vite preview"

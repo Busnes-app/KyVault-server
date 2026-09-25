@@ -142,6 +142,7 @@ the user's, not the directory's.
 
 - Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
+- UI without KySignOn: `npm run dev:mock` in `frontend/` serves the app with an in-process mock of the API (`frontend/mock/api.ts`, dev only, never built) for manual and screenshot checks.
 - Daemon build: `go build -o ./kyvault-server ./cmd/server`
 - Docker build: `docker build -t kyvault-server:latest .`
 - Dependency vulns: `govulncheck ./...` and `npm audit --audit-level=high` in `frontend/`
