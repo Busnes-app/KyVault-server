@@ -31,6 +31,7 @@ import {
   RefreshCw,
   FileSpreadsheet,
   CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
 
 type Props = {
@@ -75,6 +76,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [showEntryHistory, setShowEntryHistory] = useState(false);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const [revealPassword, setRevealPassword] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const saving = saveState.kind === "saving";
@@ -407,6 +409,36 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 className="btn btn-quiet btn-sm"
                 style={{ padding: "0.1rem 0.3rem" }}
                 onClick={() => setImportMessage(null)}
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
+
+          {importError ? (
+            <div
+              role="alert"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: "var(--danger-soft)",
+                border: "1px solid rgba(239, 68, 68, 0.3)",
+                padding: "0.5rem 0.75rem",
+                borderRadius: "6px",
+                fontSize: "0.8rem",
+                marginBottom: "0.5rem",
+                color: "var(--danger)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <AlertCircle size={14} />
+                <span>{importError}</span>
+              </div>
+              <button
+                className="btn btn-quiet btn-sm"
+                style={{ padding: "0.1rem 0.3rem" }}
+                onClick={() => setImportError(null)}
               >
                 ✕
               </button>
@@ -755,11 +787,18 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           onImportComplete={(count, createdFolders, skipped) => {
             if (count > 0) onChanged();
             refreshVaultData();
+            setImportError(null);
             const folderText =
               createdFolders.length > 0
                 ? ` (${createdFolders.length} folder${createdFolders.length === 1 ? "" : "s"} created)`
                 : "";
-            setImportMessage(`Successfully imported ${count} password${count === 1 ? "" : "s"}${folderText}. ${skipped} duplicate${skipped === 1 ? "" : "s"} skipped.${count > 0 ? " Changes are saved automatically." : ""}`);
+            setImportMessage(`Imported ${count} password${count === 1 ? "" : "s"}${folderText}. ${skipped} duplicate${skipped === 1 ? "" : "s"} skipped.${count > 0 ? " Changes are saved automatically." : ""}`);
+          }}
+          onImportFailed={(message) => {
+            onChanged();
+            refreshVaultData();
+            setImportMessage(null);
+            setImportError(`Import stopped: ${message} Entries added before the failure are kept and saved automatically.`);
           }}
         />
       ) : null}
