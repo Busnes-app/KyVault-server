@@ -118,7 +118,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     uuid: selectedEntryUuid, title: editTitle, username: editUsername, password: editPassword,
     url: editUrl, notes: editNotes, totpSeed: editTotp, groupUuid: editGroupUuid,
   } : null); }, [draftDirty, selectedEntryUuid, editTitle, editUsername, editPassword, editUrl, editNotes, editTotp, editGroupUuid, onDraftChange]);
-  const canChangeEntry = async () => !draftDirty || dialogs.confirm({
+  const canChangeEntry = async () => !draftDirty || await dialogs.confirm({
     title: "Discard unsaved edits?",
     message: "Discard unapplied entry edits?",
     confirmLabel: "Discard",

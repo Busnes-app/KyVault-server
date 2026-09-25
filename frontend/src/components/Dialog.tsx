@@ -31,8 +31,12 @@ export function Dialog({ title, onClose, size = "md", children, closeLabel = "Cl
       onCancel={(event) => { event.preventDefault(); onClose(); }}
       // Chrome can close a <dialog> natively (e.g. a rapid double Escape) without the
       // cancel handler above running. The native "close" event always fires, so it is
-      // the reliable place to keep the owner's state in sync with the element.
-      onClose={() => { if (!closingRef.current) onClose(); }}>
+      // the reliable place to keep the owner's state in sync with the element. close()
+      // queues its "close" event rather than firing it synchronously, so a StrictMode
+      // remount's showModal() can reopen the element before the prior cleanup's queued
+      // event arrives; a close event on an element that is open again is that stale
+      // replay, so it is ignored.
+      onClose={(event) => { if (!closingRef.current && !event.currentTarget.open) onClose(); }}>
       <div className="modal-header">
         <h3 id={titleId}>{title}</h3>
         <button type="button" className="btn btn-quiet btn-sm" aria-label={closeLabel} onClick={onClose}>✕</button>
