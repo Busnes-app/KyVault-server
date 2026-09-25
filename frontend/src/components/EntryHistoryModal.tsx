@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { KeePassVault } from "../lib/kdbx";
+import { Dialog } from "./Dialog";
 
 type Props = {
   vault: KeePassVault;
@@ -10,19 +11,12 @@ type Props = {
 };
 
 export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, onClose }: Props) {
-  const dialog = useRef<HTMLDialogElement>(null);
   const versions = vault.getEntryHistory(entryUuid);
   const [selectedIndex, setSelectedIndex] = useState(versions[0]?.index ?? -1);
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState("");
   const selected = versions.find(version => version.index === selectedIndex);
   const preview = selected ? vault.getEntryHistoryVersion(entryUuid, selected.index) : null;
-
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => { element?.close(); };
-  }, []);
 
   const restore = () => {
     if (!allowRestore || !selected) return;
@@ -35,11 +29,7 @@ export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, 
     }
   };
 
-  return <dialog ref={dialog} className="modal-card entry-history-dialog" aria-labelledby="entry-history-title" onCancel={onClose}>
-    <div className="modal-header">
-      <h3 id="entry-history-title">Entry History</h3>
-      <button type="button" className="btn btn-quiet btn-sm" aria-label="Close entry history" onClick={onClose}>✕</button>
-    </div>
+  return <Dialog title="Entry History" onClose={onClose} size="lg" closeLabel="Close entry history">
     <p>Previous versions stored inside your encrypted vault. Restoring replaces this entry’s contents, including attachments and custom fields, and saves automatically.</p>
     {!vault.entryHistoryEnabled ? <p>Entry history is disabled for this vault. Restoring is unavailable because the current version could not be kept.</p> : null}
     {versions.length === 0 ? <p>No previous versions. New versions are kept when you apply changed entry fields while entry history is enabled.</p> : <>
@@ -68,5 +58,5 @@ export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, 
         onClick={restore}>Restore this version</button>
     </>}
     {error ? <p role="alert">{error}</p> : null}
-  </dialog>;
+  </Dialog>;
 }

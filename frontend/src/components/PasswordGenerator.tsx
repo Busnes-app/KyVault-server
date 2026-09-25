@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Copy, RefreshCw, Check } from "lucide-react";
 import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
+import { Dialog } from "./Dialog";
 
 type Props = {
   onSelect: (password: string) => void;
@@ -47,15 +48,7 @@ export function PasswordGenerator({ onSelect, onClose }: Props) {
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Password Generator</h3>
-          <button className="btn btn-quiet btn-sm" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Dialog title="Password Generator" onClose={onClose}>
         <div
           style={{
             background: "var(--bg)",
@@ -137,7 +130,6 @@ export function PasswordGenerator({ onSelect, onClose }: Props) {
             Use Password
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

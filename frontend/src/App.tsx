@@ -20,6 +20,7 @@ import { VaultPage } from "./pages/VaultPage";
 import { SecuritySettings } from "./pages/SecuritySettings";
 import { AdminPanel } from "./pages/AdminPanel";
 import { HistoryModal } from "./components/HistoryModal";
+import { Dialog } from "./components/Dialog";
 import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
 import "./styles/styles.css";
 
@@ -525,14 +526,7 @@ export function App() {
 
       {/* Unlock Modal for SSO sessions or locked vaults */}
       {showUnlockModal ? (
-        <div className="modal-overlay" onClick={() => setShowUnlockModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Unlock KeePass Vault</h3>
-              <button className="btn btn-quiet btn-sm" onClick={() => setShowUnlockModal(false)}>
-                ✕
-              </button>
-            </div>
+        <Dialog title="Unlock KeePass Vault" onClose={() => setShowUnlockModal(false)}>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
               You are signed in — KySignOn has proved who you are. Unlocking is separate: your master
               password decrypts the vault here in your browser, and is never sent to the server.
@@ -589,8 +583,7 @@ export function App() {
                 </div>
               </div>
             </form>
-          </div>
-        </div>
+        </Dialog>
       ) : null}
 
       {/* History & Rollback Modal */}

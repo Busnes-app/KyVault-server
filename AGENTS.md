@@ -332,6 +332,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/styles/styles.css`: `.settings-page` provides the bounded scroll area for
   Admin and Security within the fixed-height app shell; keep long backup forms reachable.
 
+- `frontend/src/components/Dialog.tsx` and `DialogHost.tsx`: every modal uses `Dialog`
+  (native `<dialog>`, Escape closes, backdrop click never closes, focus returns to the
+  opener). Questions go through `useDialogs().confirm/prompt/notify`, sequenced by
+  `lib/dialogQueue.ts` so a second question waits for the first. Native `confirm`, `prompt`
+  and `alert` are banned in `frontend/src`.
+
 - `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
   only drills and restores may hold private recovery material.

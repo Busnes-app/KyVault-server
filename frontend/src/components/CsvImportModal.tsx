@@ -10,7 +10,6 @@ import {
   findDuplicateImports,
 } from "../lib/csvImport";
 import {
-  FileSpreadsheet,
   UploadCloud,
   CheckCircle2,
   AlertTriangle,
@@ -21,6 +20,7 @@ import {
   FolderPlus,
   Folder,
 } from "lucide-react";
+import { Dialog } from "./Dialog";
 
 type Props = {
   vault: KeePassVault;
@@ -142,22 +142,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div
-        className="modal-card"
-        style={{ maxWidth: "860px", width: "95%" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-header">
-          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-            <FileSpreadsheet size={22} color="var(--accent)" />
-            <h3>Import Passwords from CSV</h3>
-          </div>
-          <button className="btn btn-quiet btn-sm" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Dialog title="Import Passwords from CSV" onClose={onClose} size="lg">
         <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
           Seamlessly import your credentials from Chrome, 1Password, Bitwarden, LastPass,
           DashPass (Dashlane), or generic CSV files. All parsing and decryption occur zero-knowledge
@@ -556,7 +541,6 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
               : `Import ${importCount} Password${importCount === 1 ? "" : "s"}`}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

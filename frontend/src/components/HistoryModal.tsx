@@ -2,7 +2,8 @@ import { ConflictComparison } from "./ConflictComparison";
 import type { KeePassVault } from "../lib/kdbx";
 import React, { useState, useEffect } from "react";
 import { getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
-import { History, RotateCcw, AlertTriangle, Trash2, CheckCircle2 } from "lucide-react";
+import { RotateCcw, AlertTriangle, Trash2, CheckCircle2 } from "lucide-react";
+import { Dialog } from "./Dialog";
 
 type HistoryEntry = {
   id: string;
@@ -93,18 +94,7 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" style={{ maxWidth: "680px" }} onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <History size={20} color="var(--accent)" />
-            <h3>Vault Version History & Rollback</h3>
-          </div>
-          <button className="btn btn-quiet btn-sm" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Dialog title="Vault Version History & Rollback" onClose={onClose} size="lg">
         <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--line)", marginBottom: "1.5rem" }}>
           <button
             className={`nav-link-btn ${activeTab === "history" ? "active" : ""}`}
@@ -233,7 +223,6 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
             Close
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }
