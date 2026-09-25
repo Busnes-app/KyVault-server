@@ -63,6 +63,7 @@ export function App() {
   const checkpoint = useRef<Promise<void>>(Promise.resolve());
   const memoryDraft = useRef<LockedDraft | undefined>(undefined);
   const [lockNotice, setLockNotice] = useState("");
+  const [sessionNotice, setSessionNotice] = useState("");
   const recoveryId = (u: User): string | undefined => {
     try { return draftPointer(sessionStorage, u.id); } catch { return undefined; }
   };
@@ -95,6 +96,7 @@ export function App() {
       const res = await getJSON<{ authenticated: boolean; user?: User }>("/api/auth/me");
       if (res.authenticated && res.user) {
         setUser(res.user);
+        setSessionNotice("");
         await initVault(res.user);
       } else {
         setUser(null);
@@ -117,6 +119,13 @@ export function App() {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const ended = () => { closeVault(); setUser(null); setSessionNotice("Your session ended. Sign in again."); };
+    window.addEventListener("kyvault:unauthorized", ended);
+    return () => window.removeEventListener("kyvault:unauthorized", ended);
+  }, [user?.id]);
 
   const initVault = async (u: User, masterPassword?: string) => {
     const generation = ++unlockGeneration.current;
@@ -416,7 +425,7 @@ export function App() {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return <LoginPage notice={sessionNotice} />;
   }
 
   return (
