@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generatePassword } from "./generatePassword";
+import { generatePassword, loadGeneratorOptions, DEFAULT_GENERATOR } from "./generatePassword";
 
 test("every selected class appears at least once", () => {
   for (let i = 0; i < 200; i++) {
@@ -29,4 +29,11 @@ test("excludeLookalikes filters O0Il1| from every set", () => {
     const p = generatePassword({ length: 40, upper: true, lower: true, numbers: true, symbols: false, excludeLookalikes: true });
     assert.doesNotMatch(p, /[O0Il1|]/);
   }
+});
+
+test("a tampered non-boolean flag and non-number length fall back to defaults", () => {
+  const storage = { getItem: () => JSON.stringify({ upper: "no", length: "20" }) };
+  const loaded = loadGeneratorOptions(storage);
+  assert.equal(loaded.upper, DEFAULT_GENERATOR.upper);
+  assert.equal(loaded.length, DEFAULT_GENERATOR.length);
 });

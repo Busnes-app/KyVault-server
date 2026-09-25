@@ -19,18 +19,13 @@ export function generatePassword(opts: GeneratorOptions, random: (a: Uint32Array
   const classes = (Object.keys(SETS) as Array<keyof typeof SETS>).filter((k) => opts[k] && setFor(k).length > 0);
   if (classes.length === 0) throw new Error("Select at least one character set.");
   const union = classes.map((k) => setFor(k)).join("");
-  const pick = (from: string) => {
-    const limit = Math.floor(0x100000000 / from.length) * from.length;
-    const buf = new Uint32Array(1);
-    do { random(buf); } while (buf[0] >= limit);
-    return from[buf[0] % from.length];
-  };
   const uniformBelow = (n: number) => {
     const limit = Math.floor(0x100000000 / n) * n;
     const buf = new Uint32Array(1);
     do { random(buf); } while (buf[0] >= limit);
     return buf[0] % n;
   };
+  const pick = (from: string) => from[uniformBelow(from.length)];
   const chars = classes.map((k) => pick(setFor(k)));
   while (chars.length < opts.length) chars.push(pick(union));
   for (let i = chars.length - 1; i > 0; i--) {
@@ -41,13 +36,19 @@ export function generatePassword(opts: GeneratorOptions, random: (a: Uint32Array
 }
 
 const KEY = "kyvault.generator";
+const BOOL_KEYS = ["upper", "lower", "numbers", "symbols", "excludeLookalikes"] as const;
 export function loadGeneratorOptions(storage: Pick<Storage, "getItem"> = localStorage): GeneratorOptions {
   try {
     const raw = storage.getItem(KEY);
     if (!raw) return DEFAULT_GENERATOR;
-    const parsed = JSON.parse(raw) as Partial<GeneratorOptions>;
-    const merged = { ...DEFAULT_GENERATOR, ...parsed };
-    return Number.isInteger(merged.length) && merged.length >= 8 && merged.length <= 128 ? merged : DEFAULT_GENERATOR;
+    const parsed = JSON.parse(raw) as Partial<Record<keyof GeneratorOptions, unknown>>;
+    // Stored values are untrusted (tampered localStorage, stale format): a flag that is
+    // not strictly a boolean, or a length outside range, falls back to the default rather
+    // than being coerced, so e.g. {"upper":"no"} cannot silently flip a class on.
+    const length = typeof parsed.length === "number" && Number.isInteger(parsed.length) && parsed.length >= 8 && parsed.length <= 128
+      ? parsed.length : DEFAULT_GENERATOR.length;
+    const flags = Object.fromEntries(BOOL_KEYS.map((k) => [k, typeof parsed[k] === "boolean" ? parsed[k] : DEFAULT_GENERATOR[k]]));
+    return { length, ...flags } as GeneratorOptions;
   } catch { return DEFAULT_GENERATOR; }
 }
 export function saveGeneratorOptions(opts: GeneratorOptions, storage: Pick<Storage, "setItem"> = localStorage): void {
