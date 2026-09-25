@@ -417,3 +417,5 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/totp.ts`: RFC 6238 TOTP in the browser. otpauth URIs may set secret,
   digits (6 to 10), period and algorithm (SHA1, SHA256, SHA512; anything else falls back
   to SHA-1). `totp.test.ts` pins the RFC 6238 Appendix B vectors for all three algorithms.
+
+- `frontend/src/lib/format.ts`: `formatInterval` (Off, minutes, Hourly, hours, Daily, days) and `formatWhen` (never renders Invalid Date). `format.test.ts` covers both.
