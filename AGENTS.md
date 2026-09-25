@@ -197,6 +197,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - Best-effort 90-second keyword refresh policy (foreground cadence; background catch-up on resume).
 - DOX hierarchy scope is app-only.
 
+## Shared browser UI
+
+- `frontend/src/ky-ui/` is generated from Busnes-app/ky-ui, pinned by `VERSION` file hashes. Change shared colors, navigation states and storage helpers upstream, then run its consumer sync with an explicit worktree map; do not hand-edit vendored files.
+- Products own layout, routes, saved choice keys and named palettes. Busnes aliases consume shared tokens; mark primary navigation with `ky-nav-item` while preserving current-page semantics.
+- Verify vendored files with `node frontend/src/ky-ui/check-vendor.mjs` from this document's directory. Builds/CI run that check. Rendered evidence and capture limitations are recorded in the repository-root `UI-VERIFICATION.md`.
+
 ## Child DOX Index
 
 - `frontend/src/lib/kdbx.ts` and `frontend/src/pages/VaultPage.tsx`: selected live

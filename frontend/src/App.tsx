@@ -25,6 +25,8 @@ import { Dialog } from "./components/Dialog";
 import { useDialogs } from "./components/DialogHost";
 import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
 import "./styles/styles.css";
+import "./ky-ui/tokens.css";
+import "./ky-ui/navigation.css";
 
 type User = {
   id: string;
@@ -461,14 +463,16 @@ export function App() {
         <ThemeSwitcher />
         <div className="nav-links">
           <button
-            className={`nav-link-btn ${navTab === "vault" ? "active" : ""}`}
+            className={`ky-nav-item nav-link-btn ${navTab === "vault" ? "active" : ""}`}
+            aria-current={navTab === "vault" ? "page" : undefined}
             aria-label="Vault"
             onClick={() => navigate(lastVault.current)}
           >
             <Shield size={16} /> <span>Vault</span>
           </button>
           <button
-            className={`nav-link-btn ${navTab === "security" ? "active" : ""}`}
+            className={`ky-nav-item nav-link-btn ${navTab === "security" ? "active" : ""}`}
+            aria-current={navTab === "security" ? "page" : undefined}
             aria-label="Security"
             onClick={() => navigate({ tab: "security" })}
           >
@@ -476,7 +480,8 @@ export function App() {
           </button>
           {user.role === "admin" ? (
             <button
-              className={`nav-link-btn ${navTab === "admin" ? "active" : ""}`}
+              className={`ky-nav-item nav-link-btn ${navTab === "admin" ? "active" : ""}`}
+              aria-current={navTab === "admin" ? "page" : undefined}
               aria-label="Admin"
               onClick={() => navigate({ tab: "admin", admin: "sso" })}
             >

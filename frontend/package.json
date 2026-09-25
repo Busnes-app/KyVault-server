@@ -8,7 +8,9 @@
     "dev:mock": "KYVAULT_MOCK_API=1 vite",
     "build": "tsc && vite build",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "prebuild": "node src/ky-ui/check-vendor.mjs",
+    "pretest": "node src/ky-ui/check-vendor.mjs"
   },
   "dependencies": {
     "hash-wasm": "^4.12.0",
