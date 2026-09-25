@@ -9,19 +9,20 @@ type Props = {
 
 export function DevicePairingModal({ onClose }: Props) {
   const [pin, setPin] = useState("");
-  const [secret, setSecret] = useState("");
   const [qrUrl, setQrUrl] = useState("");
-  const [secondsRemaining, setSecondsRemaining] = useState(90);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
 
   const fetchPairingCode = async () => {
     try {
       setError("");
-      setSecondsRemaining(90);
+      setPin("");
+      setQrUrl("");
+      setExpiresAt(null);
       const res = await postJSON<{ pin: string; secret: string; expiresAt: string }>("/api/devices/pairing/start", {});
       setPin(res.pin);
-      setSecret(res.secret);
+      setExpiresAt(new Date(res.expiresAt).getTime());
 
       const qrPayload = JSON.stringify({
         server: window.location.origin,
@@ -34,8 +35,8 @@ export function DevicePairingModal({ onClose }: Props) {
         margin: 2,
         width: 220,
         color: {
-          dark: "#4deeea",
-          light: "#0d0f14",
+          dark: "#111111",
+          light: "#ffffff",
         },
       });
       setQrUrl(qr);
@@ -48,24 +49,21 @@ export function DevicePairingModal({ onClose }: Props) {
     fetchPairingCode();
   }, []);
 
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (secondsRemaining <= 0) return;
-    const timer = setInterval(() => {
-      setSecondsRemaining((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [secondsRemaining]);
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const secondsRemaining = expiresAt === null ? null : Math.max(0, Math.ceil((expiresAt - now) / 1000));
 
-  const copyPIN = () => {
-    navigator.clipboard.writeText(pin);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copyPIN = async () => {
+    try {
+      await navigator.clipboard.writeText(pin);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Could not copy the PIN. Your browser blocked clipboard access.");
+    }
   };
 
   return (
@@ -83,7 +81,14 @@ export function DevicePairingModal({ onClose }: Props) {
         </p>
 
         {error ? (
-          <p style={{ color: "var(--danger)" }}>{error}</p>
+          <div style={{ padding: "1rem 0" }}>
+            <p style={{ color: "var(--danger)" }}>{error}</p>
+            <button className="btn btn-primary" onClick={fetchPairingCode}>
+              Try again
+            </button>
+          </div>
+        ) : secondsRemaining === null ? (
+          <p style={{ color: "var(--ink-muted)" }}>Requesting a pairing code…</p>
         ) : secondsRemaining > 0 ? (
           <div>
             {qrUrl ? (
@@ -91,7 +96,7 @@ export function DevicePairingModal({ onClose }: Props) {
                 style={{
                   display: "inline-block",
                   padding: "0.5rem",
-                  background: "var(--bg)",
+                  background: "#ffffff",
                   border: "1px solid var(--line)",
                   borderRadius: "8px",
                   marginBottom: "1rem",
