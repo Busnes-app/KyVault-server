@@ -155,3 +155,64 @@ func TestAdminSSOPutStillWorksWithoutTheEnvironment(t *testing.T) {
 		t.Errorf("settings were not saved: %+v", got)
 	}
 }
+
+func TestAdminSSOGetNeverReturnsTheSecret(t *testing.T) {
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+	for _, k := range []string{sso.EnvIssuer, sso.EnvClientID, sso.EnvClientSecret} {
+		t.Setenv(k, "")
+	}
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: "https://signon.example", ClientID: "kyvault", ClientSecret: "s3cret"}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sso", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "s3cret") {
+		t.Fatalf("secret in GET body: %s", rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"clientSecretSet":true`) {
+		t.Fatalf("clientSecretSet missing: %s", rec.Body)
+	}
+}
+
+func TestAdminSSOPutRules(t *testing.T) {
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+	for _, k := range []string{sso.EnvIssuer, sso.EnvClientID, sso.EnvClientSecret} {
+		t.Setenv(k, "")
+	}
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: "https://signon.example", ClientID: "kyvault", ClientSecret: "s3cret"}); err != nil {
+		t.Fatal(err)
+	}
+	put := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/admin/sso", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		return rec
+	}
+	cases := map[string]int{
+		`{"enabled":false,"issuerUrl":"https://signon.example","clientId":"kyvault"}`: 400,
+		`{"enabled":true,"issuerUrl":"http://signon.example","clientId":"kyvault"}`:   400,
+		`{"enabled":true,"issuerUrl":"https://signon.example","clientId":""}`:         400,
+		`{"enabled":true,"issuerUrl":"https://signon.example","clientId":"kyvault"}`:  200,
+	}
+	for body, want := range cases {
+		if rec := put(body); rec.Code != want {
+			t.Errorf("%s -> %d, want %d (%s)", body, rec.Code, want, rec.Body)
+		}
+	}
+	if got := srv.ssoStore.Load(); got.ClientSecret != "s3cret" || !got.Enabled {
+		t.Fatalf("blank secret must keep the stored one and SSO must stay enabled: %+v", got)
+	}
+	rec := put(`{"enabled":true,"issuerUrl":"https://signon.example","clientId":"kyvault","clientSecret":"new"}`)
+	if strings.Contains(rec.Body.String(), "new") {
+		t.Fatalf("PUT echoed the secret: %s", rec.Body)
+	}
+	if got := srv.ssoStore.Load(); got.ClientSecret != "new" {
+		t.Fatalf("new secret not saved: %+v", got)
+	}
+}

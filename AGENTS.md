@@ -65,7 +65,9 @@ yourself adding one, the design has been misread.
   (optional `_REDIRECT_URI`, `_AUTO_PROVISION`) and take precedence over
   `config/sso.json`. `PUT /api/admin/sso` answers 409 while they are set. Without an
   identity provider, or with an active account that has no `ssoSub`, the server
-  refuses to start.
+  refuses to start. `GET /api/admin/sso` never returns the client secret, only
+  `clientSecretSet`; a PUT with a blank secret keeps the stored one, and `enabled:false`,
+  a non-https issuer or an empty `clientId` is refused with 400.
 
 ## Replication
 
