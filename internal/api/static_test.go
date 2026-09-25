@@ -14,8 +14,12 @@ func TestSPAHandlerNeverListsDirectories(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "assets", "fonts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html>app"), 0o644)
-	os.WriteFile(filepath.Join(dir, "assets", "fonts", "a.woff2"), []byte("font"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html>app"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets", "fonts", "a.woff2"), []byte("font"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	h := SPAHandler(dir)
 
 	for _, path := range []string{"/", "/assets/", "/assets/fonts/", "/vault", "/assets/fonts"} {

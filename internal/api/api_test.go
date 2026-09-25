@@ -416,7 +416,9 @@ func TestAdminCannotDeactivateSelfOrLastAdmin(t *testing.T) {
 	if code := post("/api/admin/users/" + other.ID + "/deactivate"); code != http.StatusOK {
 		t.Fatalf("deactivate other admin = %d, want 200", code)
 	}
-	// root is now the last active admin; a second admin session trying to remove it must get 409.
+	// Reactivate other and deactivate root through the store, sign in third as admin, then
+	// deactivate other through the store too. Third is now the last active admin, so
+	// demoting itself via the role endpoint must get 409.
 	if err := srv.users.Reactivate(other.ID); err != nil {
 		t.Fatal(err)
 	}
