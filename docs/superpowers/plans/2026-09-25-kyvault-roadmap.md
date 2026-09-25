@@ -43,6 +43,7 @@ passes the AGENTS.md Verification list. Every phase ends with a DOX pass on `AGE
 - `EntryAttachments`: reset `removeFromHistory` in the per-entry effect.
 - CSV import: call `onChanged()` in a `finally` when any mutation happened; surface partial failure in the modal, not `alert`.
 - `vaultSave.ts`: on 409, fetch `/api/vault/metadata` and store the new version so Retry is meaningful; on network errors retry once on `window` `online`.
+- Paper recovery code cannot unlock a vault that also has a password envelope: `App.tsx` tries `recoveryEnvelope` only when `passwordEnvelope` is absent, while the unlock dialog offers "or Paper Recovery Key". Try both envelopes.
 - Login page: distinguish "KyVault backend unreachable" (fetch threw or 5xx) from "SSO not configured" (200 with `enabled:false`); add a Retry button; read `?error=` and `?error_description=` set by the OIDC callback and show them.
 - `api.ts`: on 401 from any authenticated call, dispatch a `kyvault:unauthorized` event; `App.tsx` listens, clears state and shows the login page with "Your session ended."
 - `AdminPanel`: `auditValid` is `boolean | "loading" | "error"`; only `false` shows the red badge; show `writeFailures` from `/api/audit/verify`.
