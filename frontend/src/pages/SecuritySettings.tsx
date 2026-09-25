@@ -349,7 +349,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           <h3 style={{ margin: 0 }}>This Device & 1-Click SSO</h3>
         </div>
         <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
-          This browser holds your local zero-knowledge encryption key in its secure storage vault to allow instant 1-click SSO access.
+          The vault key is kept in this browser, encrypted under a key the browser will not export. Forget This Device removes it.
         </p>
 
         {onForgetDevice && (

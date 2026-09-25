@@ -324,9 +324,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
   only drills and restores may hold private recovery material.
 
-- `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
-  to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
-  clear stored secrets from browser storage.
+- `frontend/src/lib/storage.ts` and `frontend/src/lib/deviceKey.ts`: manages the IndexedDB
+  `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)
+  under a non-extractable per-browser CryptoKey held in the same store; legacy plain-hex
+  records are ignored and replaced on the next password unlock. Forget This Device clears it.
 - `frontend/src/lib/vaultCrypto.ts`: the vault key envelope — **the only place a
   human-chosen secret is stretched**. Everything else is keyed on a 256-bit random vault
   key, where the KDF is near-irrelevant; here it is the whole defence, and the envelope is
