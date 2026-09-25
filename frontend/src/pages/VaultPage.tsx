@@ -58,7 +58,7 @@ type Props = {
 export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate }: Props) {
   const dialogs = useDialogs();
   const narrow = useMediaQuery(NARROW);
-  const [pane, setPane] = useState<"folders" | "list" | "detail">("list");
+  const [pane, setPane] = useState<"folders" | "list" | "detail">(initialDraft ? "detail" : "list");
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
   const [recycledIds, setRecycledIds] = useState<Set<string>>(new Set());
@@ -257,6 +257,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     onChanged();
     setSelectedEntryUuid(null);
     navigate({ tab: "vault", entry: undefined });
+    setPane("list");
     refreshVaultData();
   };
 
@@ -833,6 +834,10 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           </div>
         ) : (
           <div style={{ textAlign: "center", padding: "4rem 0", color: "var(--ink-muted)" }}>
+            <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Back to list"
+              onClick={() => setPane("list")} style={{ marginBottom: "1rem" }}>
+              <ChevronLeft size={16} />
+            </button>
             <Key size={48} style={{ opacity: 0.2, marginBottom: "1rem" }} />
             <p>Select an entry to view details, or create a new password.</p>
           </div>

@@ -1,12 +1,13 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 export function useMediaQuery(query: string): boolean {
-  const subscribe = (listener: () => void) => {
+  const subscribe = useCallback((listener: () => void) => {
     const mql = window.matchMedia(query);
     mql.addEventListener("change", listener);
     return () => mql.removeEventListener("change", listener);
-  };
-  return useSyncExternalStore(subscribe, () => window.matchMedia(query).matches, () => false);
+  }, [query]);
+  const getSnapshot = useCallback(() => window.matchMedia(query).matches, [query]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 export const NARROW = "(max-width: 900px)";
