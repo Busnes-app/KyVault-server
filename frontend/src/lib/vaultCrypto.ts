@@ -161,3 +161,14 @@ async function derivePbkdf2Key(secret: string, salt: Uint8Array, iterations: num
   );
   return new Uint8Array(bits);
 }
+
+// True only when password opens envelopeJSON to exactly vaultKey. Used as a step-up
+// before re-wrapping or showing the key; nothing leaves the browser.
+export async function verifyMasterPassword(envelopeJSON: string, password: string, vaultKey: Uint8Array): Promise<boolean> {
+  try {
+    const opened = await unwrapVaultKey(envelopeJSON, password);
+    return bytesToHex(opened) === bytesToHex(vaultKey);
+  } catch {
+    return false;
+  }
+}

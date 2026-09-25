@@ -56,7 +56,9 @@ yourself adding one, the design has been misread.
   source's budget as `auth.logout_rejected`; success is `auth.sso_logout` with the `jti`.
 - The master password is not a credential. It unwraps the vault key envelope in the
   browser and is never transmitted. Changing it is a client-side re-wrap against
-  `PUT /api/vault/envelopes`.
+  `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
+  offline vault key each require the current master password, verified in the browser
+  against the stored envelope (`verifyMasterPassword`).
 - Paper recovery unlocks the vault, not the site.
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing

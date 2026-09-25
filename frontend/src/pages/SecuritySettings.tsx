@@ -1,6 +1,6 @@
 import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
-import { wrapVaultKey, bytesToHex } from "../lib/vaultCrypto";
+import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCrypto";
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
@@ -27,6 +27,7 @@ type Props = {
 export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange }: Props) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
   const [paperCode, setPaperCode] = useState<string | null>(null);
   const [ssoConfig, setSsoConfig] = useState<{ enabled: boolean; issuerUrl: string } | null>(null);
@@ -51,6 +52,18 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       .catch(() => {});
   }, []);
 
+  // Every action below either changes what protects the vault key or shows it.
+  // Prove the current master password first; it never leaves the browser.
+  const proveCurrentPassword = async (): Promise<boolean> => {
+    const meta = await getJSON<{ passwordEnvelope?: string }>("/api/vault/metadata");
+    if (!meta.passwordEnvelope) { setError("No master password envelope is stored for this vault."); return false; }
+    if (!(await verifyMasterPassword(meta.passwordEnvelope, currentPassword, vaultKey))) {
+      setError("The current master password is incorrect.");
+      return false;
+    }
+    return true;
+  };
+
   const handleChangePassword = async (e: FormEvent) => {
     e.preventDefault();
     const problem = checkMasterPassword(newPassword);
@@ -64,6 +77,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
 
     try {
+      if (!(await proveCurrentPassword())) return;
+
       // Changing the master password is entirely a re-wrap of the vault key envelope.
       // There is no password on the server to update: it never had one, and the new
       // password is not sent anywhere — only the envelope it encrypts is.
@@ -76,6 +91,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       setMessage("Master password changed and vault key re-wrapped successfully.");
       setNewPassword("");
       setConfirmPassword("");
+      setCurrentPassword("");
       onUserUpdated();
     } catch (err) {
       setError(toErrorMessage(err, "Failed to change password"));
@@ -91,6 +107,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
 
     try {
+      if (!(await proveCurrentPassword())) return;
+
       // Generate 16-character alphanumeric code
       const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
       const bytes = new Uint8Array(16);
@@ -122,7 +140,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   // The vault key in the form KeePassXC will accept. A downloaded .kdbx is encrypted with
   // exactly this string, so without it the "open your vault in any KeePass client" fallback
   // is not actually available to anyone.
-  const handleRevealVaultKey = () => {
+  const handleRevealVaultKey = async () => {
     if (showVaultKey) {
       setShowVaultKey(false);
       return;
@@ -132,7 +150,17 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       "password it cannot be changed without re-encrypting the vault. Only reveal it if you " +
       "are printing it for offline recovery, and nobody can see your screen.\n\nShow it?",
     )) return;
-    setShowVaultKey(true);
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      if (!(await proveCurrentPassword())) return;
+      setShowVaultKey(true);
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to verify the current master password"));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const handleRevokeDevice = async (id: string, name: string) => {
@@ -211,6 +239,13 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           re-encrypted.
         </p>
 
+        <div className="input-group">
+          <label className="input-label" htmlFor="current-master-password">Current Master Password</label>
+          <input id="current-master-password" type="password" className="input" autoComplete="current-password"
+            value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+          <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>Needed to change the password, generate a paper code or show the vault key. Checked in this browser only.</p>
+        </div>
+
         <form onSubmit={handleChangePassword}>
           <div className="input-group">
             <label htmlFor="new-master-password" className="input-label">New Master Password</label>
@@ -238,7 +273,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
               required
             />
           </div>
-          <button type="submit" className="btn btn-primary" disabled={busy || !newPassword}>
+          <button type="submit" className="btn btn-primary" disabled={busy || !newPassword || !currentPassword}>
             {busy ? "Updating…" : "Update Master Password"}
           </button>
         </form>
@@ -274,7 +309,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           </div>
         ) : null}
 
-        <button className="btn btn-secondary" onClick={handleGeneratePaperRecovery} disabled={busy}>
+        <button className="btn btn-secondary" onClick={handleGeneratePaperRecovery} disabled={busy || !currentPassword}>
           Generate Printable Paper Key
         </button>
       </section>
@@ -315,7 +350,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           </div>
         ) : null}
 
-        <button className="btn btn-secondary" onClick={handleRevealVaultKey}>
+        <button className="btn btn-secondary" onClick={handleRevealVaultKey} disabled={busy || (!showVaultKey && !currentPassword)}>
           {showVaultKey ? "Hide Vault Key" : "Show Vault Key"}
         </button>
       </section>
