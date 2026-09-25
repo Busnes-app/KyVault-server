@@ -13,6 +13,9 @@ export function Dialog({ title, onClose, size = "md", children, closeLabel = "Cl
   useEffect(() => {
     const element = ref.current;
     const opener = document.activeElement as HTMLElement | null;
+    // StrictMode mounts, cleans up, and mounts again on the same instance; clear the
+    // guard on every mount so a real native close is not ignored after the replay.
+    closingRef.current = false;
     element?.showModal();
     const autofocusTarget = element?.querySelector<HTMLElement>("[autofocus]")
       ?? element?.querySelector<HTMLElement>("input, textarea, select");
