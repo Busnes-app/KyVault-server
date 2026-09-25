@@ -172,3 +172,13 @@ export async function verifyMasterPassword(envelopeJSON: string, password: strin
     return false;
   }
 }
+
+// The unlock dialog accepts a master password or a paper code; each has its own envelope.
+export async function unwrapVaultKeyFromEnvelopes(envelopes: Array<string | undefined>, secret: string): Promise<Uint8Array> {
+  const present = envelopes.filter((e): e is string => !!e);
+  if (present.length === 0) throw new Error("No key envelopes found on server metadata");
+  for (const envelope of present) {
+    try { return await unwrapVaultKey(envelope, secret); } catch { /* try the next envelope */ }
+  }
+  throw new Error("Incorrect master password or paper code");
+}

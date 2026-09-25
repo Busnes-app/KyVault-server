@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   wrapVaultKey,
   unwrapVaultKey,
+  unwrapVaultKeyFromEnvelopes,
   deriveEnvelopeKey,
   ENVELOPE_ARGON2ID,
   bytesToHex,
@@ -152,4 +153,15 @@ test("verifyMasterPassword accepts only the password that wraps this key", async
   assert.equal(await verifyMasterPassword(envelope, "wrong horse", key), false);
   assert.equal(await verifyMasterPassword(envelope, "correct horse battery", generateVaultMasterKey()), false);
   assert.equal(await verifyMasterPassword("not json", "correct horse battery", key), false);
+});
+
+test("either envelope unlocks with its own secret", async () => {
+  const key = generateVaultMasterKey();
+  const password = await wrapVaultKey(key, "correct horse battery");
+  const paper = await wrapVaultKey(key, "KYPASS-AAAA-BBBB-CCCC-DDDD");
+  assert.equal(bytesToHex(await unwrapVaultKeyFromEnvelopes([password, paper], "correct horse battery")), bytesToHex(key));
+  assert.equal(bytesToHex(await unwrapVaultKeyFromEnvelopes([password, paper], "KYPASS-AAAA-BBBB-CCCC-DDDD")), bytesToHex(key));
+  assert.equal(bytesToHex(await unwrapVaultKeyFromEnvelopes([undefined, paper], "KYPASS-AAAA-BBBB-CCCC-DDDD")), bytesToHex(key));
+  await assert.rejects(unwrapVaultKeyFromEnvelopes([password, paper], "wrong"), /Incorrect master password or paper code/);
+  await assert.rejects(unwrapVaultKeyFromEnvelopes([undefined, undefined], "x"), /No key envelopes/);
 });

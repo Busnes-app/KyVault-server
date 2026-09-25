@@ -8,7 +8,7 @@ import { KeePassVault } from "./lib/kdbx";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
-  unwrapVaultKey,
+  unwrapVaultKeyFromEnvelopes,
   bytesToHex,
   hexToBytes,
 } from "./lib/vaultCrypto";
@@ -162,13 +162,7 @@ export function App() {
       // Case 2: Existing vault on server
       let key: Uint8Array | null = null;
       if (masterPassword) {
-        if (meta.passwordEnvelope) {
-          key = await unwrapVaultKey(meta.passwordEnvelope, masterPassword);
-        } else if (meta.recoveryEnvelope) {
-          key = await unwrapVaultKey(meta.recoveryEnvelope, masterPassword);
-        } else {
-          throw new Error("No key envelopes found on server metadata");
-        }
+        key = await unwrapVaultKeyFromEnvelopes([meta.passwordEnvelope, meta.recoveryEnvelope], masterPassword);
       } else {
         // The trusted-key deadline survives refreshing or closing every tab.
         try {

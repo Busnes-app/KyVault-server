@@ -59,7 +59,7 @@ yourself adding one, the design has been misread.
   `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
   offline vault key each require the current master password or paper code, verified in
   the browser against the stored envelope (`verifyMasterPassword`).
-- Paper recovery unlocks the vault, not the site.
+- Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
