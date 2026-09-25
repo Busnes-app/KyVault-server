@@ -1,9 +1,10 @@
-import React, { useState, useEffect, FormEvent } from "react";
+import React, { useState, useEffect, useRef, FormEvent } from "react";
 import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCrypto";
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
+import { useDialogs } from "../components/DialogHost";
 
 import { AUTO_LOCK_MINUTES, parseAutoLockMinutes, type AutoLockMinutes } from "../lib/autoLock";
 import { formatWhen } from "../lib/format";
@@ -26,6 +27,7 @@ type Props = {
 };
 
 export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange }: Props) {
+  const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -39,6 +41,16 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [revoking, setRevoking] = useState<string | null>(null);
+
+  // A lock cancels pending dialogs (App.tsx closeVault), but these handlers hold the
+  // vault key in closure across awaits; a stale resume must not act on an unmounted page.
+  const alive = useRef(true);
+  useEffect(() => {
+    // StrictMode mounts, cleans up, and mounts again on the same instance; re-arm on
+    // every mount so the replay does not leave the guard permanently tripped.
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
   const loadDevices = async () => {
     try {
@@ -88,15 +100,18 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
     try {
       if (!(await proveCurrentPassword())) return;
+      if (!alive.current) return;
 
       // Changing the master password is entirely a re-wrap of the vault key envelope.
       // There is no password on the server to update: it never had one, and the new
       // password is not sent anywhere — only the envelope it encrypts is.
       const newEnvelope = await wrapVaultKey(vaultKey, newPassword);
+      if (!alive.current) return;
 
       await putJSON("/api/vault/envelopes", {
         passwordEnvelope: newEnvelope,
       });
+      if (!alive.current) return;
 
       setMessage("Master password changed and vault key re-wrapped.");
       setNewPassword("");
@@ -111,13 +126,19 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   };
 
   const handleGeneratePaperRecovery = async () => {
-    if (!confirm("Generating a new paper recovery code will invalidate any previous paper backup. Proceed?")) return;
+    if (!await dialogs.confirm({
+      title: "Generate a new paper code?",
+      message: "Generating a new paper recovery code will invalidate any previous paper backup. Proceed?",
+      confirmLabel: "Generate",
+    })) return;
+    if (!alive.current) return;
     setBusy(true);
     setMessage("");
     setError("");
 
     try {
       if (!(await proveCurrentPassword())) return;
+      if (!alive.current) return;
 
       // Generate 16-character alphanumeric code
       const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -133,10 +154,12 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       // onto the user record so it could start a session; that made it a second way to
       // authenticate, which SSO-only does not allow. It unlocks the vault, not the site.
       const recoveryEnv = await wrapVaultKey(vaultKey, code);
+      if (!alive.current) return;
 
       await putJSON("/api/vault/envelopes", {
         recoveryEnvelope: recoveryEnv,
       });
+      if (!alive.current) return;
 
       setPaperCode(code);
       setMessage("Paper recovery backup generated. Print or write this down.");
@@ -155,16 +178,20 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       setShowVaultKey(false);
       return;
     }
-    if (!confirm(
-      "Your vault key unlocks everything, on any device, forever — and unlike your master " +
-      "password it cannot be changed without re-encrypting the vault. Only reveal it if you " +
-      "are printing it for offline recovery, and nobody can see your screen.\n\nShow it?",
-    )) return;
+    if (!await dialogs.confirm({
+      title: "Show the vault key?",
+      message: "Your vault key unlocks everything, on any device, forever. Unlike your master " +
+      "password, it cannot be changed without re-encrypting the vault. Only reveal it if you " +
+      "are printing it for offline recovery, and nobody can see your screen.",
+      confirmLabel: "Show",
+    })) return;
+    if (!alive.current) return;
     setBusy(true);
     setMessage("");
     setError("");
     try {
       if (!(await proveCurrentPassword())) return;
+      if (!alive.current) return;
       setShowVaultKey(true);
     } catch (err) {
       setError(toErrorMessage(err, "Failed to verify the current master password"));
@@ -175,7 +202,12 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
   const handleRevokeDevice = async (id: string, name: string) => {
     if (revoking) return;
-    if (!confirm(`Revoke access for device "${name}"?`)) return;
+    if (!await dialogs.confirm({
+      title: "Revoke device?",
+      message: `Revoke access for device "${name}"?`,
+      confirmLabel: "Revoke",
+      danger: true,
+    })) return;
     setRevoking(id);
     setError("");
     setMessage("");

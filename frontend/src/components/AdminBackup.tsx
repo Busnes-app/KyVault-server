@@ -3,6 +3,7 @@ import { ArchiveRestore, CheckCircle2, Download, RefreshCw, Send, ShieldCheck } 
 import { getJSON, postBlob, postJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { formatInterval, formatWhen } from "../lib/format";
 import { downloadBlob } from "../lib/download";
+import { useDialogs } from "./DialogHost";
 
 type Receipt = {
   capsule_id: string;
@@ -47,6 +48,7 @@ export function BackupDepositResult({ reply }: { reply: DepositReply }) {
 }
 
 export function AdminBackup() {
+  const dialogs = useDialogs();
   const [status, setStatus] = useState<BackupStatus>();
   const [url, setURL] = useState("");
   const [code, setCode] = useState("");
@@ -219,8 +221,13 @@ export function AdminBackup() {
 
       {status?.recoveryUrl ? <div className="field-card" style={{ marginBottom: "1rem" }}>
         <p>Unpair removes the remote URL and token. The pinned key, receipts and local copies stay. A KyRecovery administrator must separately revoke the token there.</p>
-        <button className="btn btn-secondary" type="button" disabled={busy} onClick={() => {
-          if (window.confirm("Remove the remote pairing while keeping the key, receipts and local copies? Ask a KyRecovery administrator to revoke the token there.")) {
+        <button className="btn btn-secondary" type="button" disabled={busy} onClick={async () => {
+          if (await dialogs.confirm({
+            title: "Unpair KyRecovery?",
+            message: "Remove the remote pairing while keeping the key, receipts and local copies? Ask a KyRecovery administrator to revoke the token there.",
+            confirmLabel: "Unpair",
+            danger: true,
+          })) {
             void act(async () => { await deleteJSON("/api/backup/pairing"); setMessage("Remote pairing removed. Local backups remain available."); });
           }
         }}>Unpair KyRecovery</button>

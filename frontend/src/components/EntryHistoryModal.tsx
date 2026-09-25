@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { KeePassVault } from "../lib/kdbx";
+import { Dialog } from "./Dialog";
+import { useDialogs } from "./DialogHost";
 
 type Props = {
   vault: KeePassVault;
@@ -10,7 +12,7 @@ type Props = {
 };
 
 export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, onClose }: Props) {
-  const dialog = useRef<HTMLDialogElement>(null);
+  const dialogs = useDialogs();
   const versions = vault.getEntryHistory(entryUuid);
   const [selectedIndex, setSelectedIndex] = useState(versions[0]?.index ?? -1);
   const [reveal, setReveal] = useState(false);
@@ -18,15 +20,13 @@ export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, 
   const selected = versions.find(version => version.index === selectedIndex);
   const preview = selected ? vault.getEntryHistoryVersion(entryUuid, selected.index) : null;
 
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => { element?.close(); };
-  }, []);
-
-  const restore = () => {
+  const restore = async () => {
     if (!allowRestore || !selected) return;
-    if (!confirm("Restore this entry version? The current version will be kept in entry history. The entry will stay in its current folder.")) return;
+    if (!await dialogs.confirm({
+      title: "Restore this version?",
+      message: "Restore this entry version? The current version will be kept in entry history. The entry will stay in its current folder.",
+      confirmLabel: "Restore",
+    })) return;
     try {
       vault.restoreEntryVersion(entryUuid, selected.index);
       onRestored();
@@ -35,11 +35,7 @@ export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, 
     }
   };
 
-  return <dialog ref={dialog} className="modal-card entry-history-dialog" aria-labelledby="entry-history-title" onCancel={onClose}>
-    <div className="modal-header">
-      <h3 id="entry-history-title">Entry History</h3>
-      <button type="button" className="btn btn-quiet btn-sm" aria-label="Close entry history" onClick={onClose}>✕</button>
-    </div>
+  return <Dialog title="Entry History" onClose={onClose} size="lg" closeLabel="Close entry history" className="entry-history-dialog">
     <p>Previous versions stored inside your encrypted vault. Restoring replaces this entry’s contents, including attachments and custom fields, and saves automatically.</p>
     {!vault.entryHistoryEnabled ? <p>Entry history is disabled for this vault. Restoring is unavailable because the current version could not be kept.</p> : null}
     {versions.length === 0 ? <p>No previous versions. New versions are kept when you apply changed entry fields while entry history is enabled.</p> : <>
@@ -68,5 +64,5 @@ export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, 
         onClick={restore}>Restore this version</button>
     </>}
     {error ? <p role="alert">{error}</p> : null}
-  </dialog>;
+  </Dialog>;
 }

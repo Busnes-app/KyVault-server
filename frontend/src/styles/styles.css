@@ -383,17 +383,6 @@ button.group-item {
 }
 
 /* Modals & Overlays */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  backdrop-filter: blur(4px);
-}
-
 .modal-card {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -405,6 +394,11 @@ button.group-item {
   overflow-y: auto;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
 }
+
+dialog.modal-card { margin: auto; border: 1px solid var(--line); color: var(--ink-strong); }
+dialog.modal-card::backdrop { background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(4px); }
+dialog.dialog-lg { max-width: 760px; }
+@media (max-width: 600px) { dialog.modal-card { width: 100vw; max-width: 100vw; max-height: 100dvh; border-radius: 0; padding: 1.25rem; } }
 
 .modal-header {
   display: flex;
@@ -419,13 +413,10 @@ button.group-item {
 }
 
 .entry-history-dialog {
-  color: var(--ink-strong);
-  margin: auto;
   max-width: 680px;
   overflow-wrap: anywhere;
 }
 
-.entry-history-dialog::backdrop { background: rgba(0, 0, 0, 0.75); }
 .entry-history-reveal { display: flex; gap: 0.5rem; margin: 1rem 0; }
 .entry-history-fields > div { border-bottom: 1px solid var(--line); padding: 0.75rem 0; }
 .entry-history-fields dt { font-weight: 600; }
@@ -644,3 +635,19 @@ button.group-item {
 /* Keep the header controls reachable when the theme picker wraps. */
 .app-nav { flex-wrap: wrap; gap: 12px; }
 .app-nav > div { flex-wrap: wrap; }
+
+.vault-only-narrow { display: none; }
+.vault-layout--narrow { grid-template-columns: 1fr; height: calc(100dvh - 57px); }
+.vault-layout--narrow .vault-only-narrow { display: inline-flex; }
+.vault-layout--narrow .vault-sidebar, .vault-layout--narrow .vault-list-pane, .vault-layout--narrow .vault-detail-pane { display: none; border-right: 0; }
+.vault-layout--narrow[data-pane="folders"] .vault-sidebar { display: flex; }
+.vault-layout--narrow[data-pane="list"] .vault-list-pane { display: flex; }
+.vault-layout--narrow[data-pane="detail"] .vault-detail-pane { display: block; padding: 1rem; }
+.vault-layout--narrow .detail-header { flex-wrap: wrap; gap: 0.5rem; }
+.vault-layout--narrow .field-row { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .app-nav { padding: 0.5rem 0.75rem; }
+  .nav-link-btn span, .nav-user-name { display: none; }
+  .settings-page { padding: 1rem 0.75rem; }
+  .vault-detail-pane .font-mono { overflow-wrap: anywhere; }
+}

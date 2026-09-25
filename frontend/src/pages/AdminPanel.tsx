@@ -3,6 +3,8 @@ import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
 import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore } from "lucide-react";
 import { AdminBackup } from "../components/AdminBackup";
 import { formatWhen } from "../lib/format";
+import { useDialogs } from "../components/DialogHost";
+import type { Route } from "../lib/route";
 
 type User = {
   id: string;
@@ -35,8 +37,9 @@ type AuditEntry = {
 
 type AuditVerify = { valid: boolean; writeFailures: number; error: string };
 
-export function AdminPanel({ currentUserId }: { currentUserId: string }) {
-  const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit" | "backup">("sso");
+export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: string; route: Route; navigate: (next: Route) => void }) {
+  const dialogs = useDialogs();
+  const activeTab = route.admin ?? "sso";
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
   const [provisioning, setProvisioning] = useState<{ configured: boolean; basePath: string } | null>(null);
@@ -100,7 +103,12 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
 
   const handleToggleDeactivate = async (u: User) => {
     const action = u.active ? "deactivate" : "reactivate";
-    if (!confirm(`${action === "deactivate" ? "Deactivate" : "Reactivate"} user "${u.username}"?`)) return;
+    if (!await dialogs.confirm({
+      title: action === "deactivate" ? "Deactivate user?" : "Reactivate user?",
+      message: `${action === "deactivate" ? "Deactivate" : "Reactivate"} user "${u.username}"?`,
+      confirmLabel: action === "deactivate" ? "Deactivate" : "Reactivate",
+      danger: action === "deactivate",
+    })) return;
 
     try {
       await postJSON(`/api/admin/users/${u.id}/${action}`, {});
@@ -125,25 +133,25 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", borderBottom: "1px solid var(--line)", marginBottom: "2rem" }}>
         <button
           className={`nav-link-btn ${activeTab === "sso" ? "active" : ""}`}
-          onClick={() => setActiveTab("sso")}
+          onClick={() => navigate({ tab: "admin", admin: "sso" })}
         >
           <Shield size={16} /> Single Sign-On (SSO)
         </button>
         <button
           className={`nav-link-btn ${activeTab === "users" ? "active" : ""}`}
-          onClick={() => setActiveTab("users")}
+          onClick={() => navigate({ tab: "admin", admin: "users" })}
         >
           <Users size={16} /> User Directory ({usersList.length})
         </button>
         <button
           className={`nav-link-btn ${activeTab === "audit" ? "active" : ""}`}
-          onClick={() => setActiveTab("audit")}
+          onClick={() => navigate({ tab: "admin", admin: "audit" })}
         >
           <ScrollText size={16} /> Tamper-Evident Audit Log
         </button>
         <button
           className={`nav-link-btn ${activeTab === "backup" ? "active" : ""}`}
-          onClick={() => setActiveTab("backup")}
+          onClick={() => navigate({ tab: "admin", admin: "backup" })}
         >
           <ArchiveRestore size={16} /> Backup &amp; Recovery
         </button>

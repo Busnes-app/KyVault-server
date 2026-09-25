@@ -125,15 +125,15 @@ test("a burst waits for idle and uploads only its final encrypted revision", asy
   assert.equal((await KeePassVault.open(uploads[0], key)).getEntries().length, 3);
 });
 
-test("security actions proceed in every save state unless the user declines discarding edits", () => {
+test("security actions proceed in every save state unless the user declines discarding edits", async () => {
   for (const state of [
     { kind: "saved", version: 1 },
     { kind: "saving", version: 1 },
     { kind: "error", version: 1, message: "offline" },
   ] satisfies SaveState[]) {
     for (const hasDraft of [false, true]) {
-      assert.equal(canDiscardVault(state, hasDraft, () => true), true);
-      assert.equal(canDiscardVault(state, hasDraft, () => false), !hasDraft && state.kind === "saved");
+      assert.equal(await canDiscardVault(state, hasDraft, async () => true), true);
+      assert.equal(await canDiscardVault(state, hasDraft, async () => false), !hasDraft && state.kind === "saved");
     }
   }
 });

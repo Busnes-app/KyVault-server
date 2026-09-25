@@ -15,11 +15,14 @@ import {
 } from "./lib/vaultCrypto";
 import { checkMasterPassword } from "./lib/masterPassword";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
+import { useRoute, type Route } from "./lib/route";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
 import { SecuritySettings } from "./pages/SecuritySettings";
 import { AdminPanel } from "./pages/AdminPanel";
 import { HistoryModal } from "./components/HistoryModal";
+import { Dialog } from "./components/Dialog";
+import { useDialogs } from "./components/DialogHost";
 import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
 import "./styles/styles.css";
 import "./ky-ui/tokens.css";
@@ -48,9 +51,15 @@ const noSubscribe = () => () => {};
 const idleSnapshot = () => idleSave;
 
 export function App() {
+  const dialogs = useDialogs();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [navTab, setNavTab] = useState<"vault" | "security" | "admin">("vault");
+  const [route, navigate] = useRoute();
+  const navTab = route.tab;
+  const lastVault = useRef<Route>({ tab: "vault" });
+  useEffect(() => {
+    if (route.tab === "vault") lastVault.current = route;
+  }, [route]);
 
   // Vault state
   const [vault, setVault] = useState<KeePassVault | null>(null);
@@ -81,7 +90,12 @@ export function App() {
   }, [unsaved]);
 
   const confirmDiscardVault = () => canDiscardVault(saveState, hasDraft, () =>
-    confirm("Some edits are unsaved or still saving. Continue and discard unsaved edits? An upload already accepted by the server cannot be undone."));
+    dialogs.confirm({
+      title: "Discard unsaved edits?",
+      message: "Some edits are unsaved or still saving. Continue and discard unsaved edits? An upload already accepted by the server cannot be undone.",
+      confirmLabel: "Discard",
+      danger: true,
+    }));
 
   // Replacing or closing a vault must never leave a timer/old upload able to save later.
   useEffect(() => () => { saveQueue?.discard(); }, [saveQueue]);
@@ -122,6 +136,10 @@ export function App() {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (!loading && user && route.tab === "admin" && user.role !== "admin") navigate({ tab: "vault" });
+  }, [loading, route.tab, user?.role]);
 
   useEffect(() => {
     if (!user) return;
@@ -280,6 +298,9 @@ export function App() {
   };
 
   const closeVault = () => {
+    // A question asked before the lock must not be answerable after it: the handler
+    // that asked still holds the vault key in its closure.
+    dialogs.cancelAll();
     unlockGeneration.current++;
     if (user) {
       try { sessionStorage.setItem(`kyvault.locked:${user.id}`, "1"); } catch {}
@@ -367,7 +388,7 @@ export function App() {
 
   const changeAutoLock = (minutes: AutoLockMinutes) => {
     setAutoLockMinutes(minutes);
-    try { storeAutoLockMinutes(minutes); } catch { alert("The timeout applies to this tab, but browser storage could not save the preference."); }
+    try { storeAutoLockMinutes(minutes); } catch { void dialogs.notify({ title: "Setting not saved", message: "The timeout applies to this tab, but browser storage could not save the preference." }); }
   };
 
   const logout = async () => {
@@ -383,12 +404,12 @@ export function App() {
   };
 
   const handleLogout = async () => {
-    if (!confirmDiscardVault()) return;
-    try { await logout(); } catch { alert("Vault locked locally, but server logout failed. Retry signing out when the connection returns."); }
+    if (!await confirmDiscardVault()) return;
+    try { await logout(); } catch { await dialogs.notify({ title: "Sign-out did not reach the server", message: "Vault locked locally, but server logout failed. Retry signing out when the connection returns." }); }
   };
 
   const handleForgetDevice = async () => {
-    if (!confirmDiscardVault()) return;
+    if (!await confirmDiscardVault()) return;
     const username = user?.username;
     closeVault();
     // Neither storage failure nor a stalled logout may prevent the other action starting.
@@ -407,13 +428,13 @@ export function App() {
       }),
       logout(),
     ]);
-    if (results[0].status === "rejected") alert("Could not forget this device. Clear this site's browser data to remove its saved vault key.");
-    if (results[1].status === "rejected") alert("Could not remove the local recovery copy. Clear this site’s browser data.");
-    if (results[2].status === "rejected") alert("Vault locked locally, but server logout failed.");
+    if (results[0].status === "rejected") await dialogs.notify({ title: "Could not complete that", message: "Could not forget this device. Clear this site's browser data to remove its saved vault key." });
+    if (results[1].status === "rejected") await dialogs.notify({ title: "Could not complete that", message: "Could not remove the local recovery copy. Clear this site’s browser data." });
+    if (results[2].status === "rejected") await dialogs.notify({ title: "Sign-out did not reach the server", message: "Vault locked locally, but server logout failed." });
   };
 
-  const handleLockVault = () => {
-    if (!confirmDiscardVault()) return;
+  const handleLockVault = async () => {
+    if (!await confirmDiscardVault()) return;
     closeVault();
     setShowUnlockModal(true);
   };
@@ -444,30 +465,33 @@ export function App() {
           <button
             className={`ky-nav-item nav-link-btn ${navTab === "vault" ? "active" : ""}`}
             aria-current={navTab === "vault" ? "page" : undefined}
-            onClick={() => setNavTab("vault")}
+            aria-label="Vault"
+            onClick={() => navigate(lastVault.current)}
           >
-            <Shield size={16} /> Vault
+            <Shield size={16} /> <span>Vault</span>
           </button>
           <button
             className={`ky-nav-item nav-link-btn ${navTab === "security" ? "active" : ""}`}
             aria-current={navTab === "security" ? "page" : undefined}
-            onClick={() => setNavTab("security")}
+            aria-label="Security"
+            onClick={() => navigate({ tab: "security" })}
           >
-            <KeyRound size={16} /> Security
+            <KeyRound size={16} /> <span>Security</span>
           </button>
           {user.role === "admin" ? (
             <button
-            className={`ky-nav-item nav-link-btn ${navTab === "admin" ? "active" : ""}`}
-            aria-current={navTab === "admin" ? "page" : undefined}
-              onClick={() => setNavTab("admin")}
+              className={`ky-nav-item nav-link-btn ${navTab === "admin" ? "active" : ""}`}
+              aria-current={navTab === "admin" ? "page" : undefined}
+              aria-label="Admin"
+              onClick={() => navigate({ tab: "admin", admin: "sso" })}
             >
-              <Settings size={16} /> Admin
+              <Settings size={16} /> <span>Admin</span>
             </button>
           ) : null}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-          <span style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
+          <span className="nav-user-name" style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
             {user.username}
           </span>
           <button className="btn btn-quiet btn-sm" onClick={handleLockVault} title="Lock Vault">
@@ -495,17 +519,19 @@ export function App() {
           hidden={navTab !== "vault"}
           onExport={handleExportKdbx}
           onReload={() => initVault(user)}
+          route={route}
+          navigate={navigate}
         />
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (
-        <AdminPanel currentUserId={user.id} />
+        <AdminPanel currentUserId={user.id} route={route} navigate={navigate} />
       ) : vault ? (
         navTab === "security" ? <SecuritySettings
           user={user}
           vaultKey={vaultKey!}
           autoLockMinutes={autoLockMinutes}
           onAutoLockChange={changeAutoLock}
-          onUserUpdated={() => { if (confirmDiscardVault()) void checkAuth(); }}
+          onUserUpdated={async () => { if (await confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
         /> : null
       ) : (
@@ -530,14 +556,7 @@ export function App() {
 
       {/* Unlock Modal for SSO sessions or locked vaults */}
       {showUnlockModal ? (
-        <div className="modal-overlay" onClick={() => setShowUnlockModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Unlock KeePass Vault</h3>
-              <button className="btn btn-quiet btn-sm" onClick={() => setShowUnlockModal(false)}>
-                ✕
-              </button>
-            </div>
+        <Dialog title="Unlock KeePass Vault" onClose={() => setShowUnlockModal(false)}>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
               You are signed in — KySignOn has proved who you are. Unlocking is separate: your master
               password decrypts the vault here in your browser, and is never sent to the server.
@@ -569,7 +588,7 @@ export function App() {
                   value={unlockPassword}
                   onChange={(e) => setUnlockPassword(e.target.value)}
                   required
-                  autoFocus
+                  data-autofocus
                 />
               </div>
 
@@ -594,8 +613,7 @@ export function App() {
                 </div>
               </div>
             </form>
-          </div>
-        </div>
+        </Dialog>
       ) : null}
 
       {/* History & Rollback Modal */}

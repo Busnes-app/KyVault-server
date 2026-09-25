@@ -12,6 +12,9 @@ import { HistoryModal } from "../components/HistoryModal";
 import { EntryHistoryModal } from "../components/EntryHistoryModal";
 import { EntryAttachments } from "../components/EntryAttachments";
 import { CsvImportModal } from "../components/CsvImportModal";
+import { useDialogs } from "../components/DialogHost";
+import type { Route } from "../lib/route";
+import { useMediaQuery, NARROW } from "../lib/useMediaQuery";
 import {
   Folder,
   Plus,
@@ -33,6 +36,7 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   AlertCircle,
+  ChevronLeft,
 } from "lucide-react";
 
 type Props = {
@@ -47,9 +51,14 @@ type Props = {
   onSave: (options?: { overwrite?: boolean }) => Promise<void>;
   onExport: () => void;
   onReload: () => Promise<void>;
+  route: Route;
+  navigate: (next: Route) => void;
 };
 
-export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft }: Props) {
+export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate }: Props) {
+  const dialogs = useDialogs();
+  const narrow = useMediaQuery(NARROW);
+  const [pane, setPane] = useState<"folders" | "list" | "detail">(initialDraft ? "detail" : "list");
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
   const [recycledIds, setRecycledIds] = useState<Set<string>>(new Set());
@@ -116,7 +125,28 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     uuid: selectedEntryUuid, title: editTitle, username: editUsername, password: editPassword,
     url: editUrl, notes: editNotes, totpSeed: editTotp, groupUuid: editGroupUuid,
   } : null); }, [draftDirty, selectedEntryUuid, editTitle, editUsername, editPassword, editUrl, editNotes, editTotp, editGroupUuid, onDraftChange]);
-  const canChangeEntry = () => !draftDirty || confirm("Discard unapplied entry edits?");
+  const canChangeEntry = async () => !draftDirty || await dialogs.confirm({
+    title: "Discard unsaved edits?",
+    message: "Discard unapplied entry edits?",
+    confirmLabel: "Discard",
+    danger: true,
+  });
+
+  // The editor stays mounted across tabs, so ignore route changes while another tab is active.
+  useEffect(() => {
+    if (route.tab !== "vault" || route.entry === selectedEntryUuid) return;
+    if (route.entry && !entries.some((e) => e.uuid === route.entry)) return;
+    if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault" }); return; }
+    (async () => {
+      if (await canChangeEntry()) {
+        setIsEditing(false);
+        setSelectedEntryUuid(route.entry ?? null);
+        setPane(route.entry ? "detail" : "list");
+      } else {
+        navigate({ tab: "vault", entry: selectedEntryUuid ?? undefined });
+      }
+    })();
+  }, [route.tab, route.entry, entries, recycledIds, selectedEntryUuid]);
 
   // Load selected entry into editor
   const loadEditor = () => {
@@ -193,8 +223,8 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     refreshVaultData();
   };
 
-  const handleCreateNewEntry = () => {
-    if (!canChangeEntry()) return;
+  const handleCreateNewEntry = async () => {
+    if (!await canChangeEntry()) return;
     const newEntry = vault.createEntry({
       title: "New Account",
       username: "",
@@ -207,21 +237,32 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     refreshVaultData();
     if (selectedGroupUuid === "recycle") setSelectedGroupUuid("all");
     setSelectedEntryUuid(newEntry.uuid);
+    navigate({ tab: "vault", entry: newEntry.uuid });
+    setPane("detail");
     setIsEditing(true);
   };
 
-  const handleDeleteEntry = () => {
+  const handleDeleteEntry = async () => {
     if (!selectedEntryUuid) return;
-    const message = vault.recyclingEnabled ? "Move this entry to the Recycle Bin?" :
-      "Recycling is disabled for this vault. Permanently delete this entry from the current vault? Existing snapshots and backups may still contain it.";
-    if (!confirm(message)) return;
+    const permanent = !vault.recyclingEnabled;
+    const message = permanent ? "Recycling is disabled for this vault. Permanently delete this entry from the current vault? Existing snapshots and backups may still contain it." :
+      "Move this entry to the Recycle Bin?";
+    const ok = await dialogs.confirm({
+      title: permanent ? "Delete permanently?" : "Move to Recycle Bin?",
+      message,
+      confirmLabel: permanent ? "Delete" : "Move",
+      danger: permanent,
+    });
+    if (!ok) return;
     vault.deleteEntry(selectedEntryUuid);
     onChanged();
     setSelectedEntryUuid(null);
+    navigate({ tab: "vault", entry: undefined });
+    setPane("list");
     refreshVaultData();
   };
 
-  const handleRestoreEntry = () => {
+  const handleRestoreEntry = async () => {
     if (!selectedEntryUuid) return;
     try {
       vault.restoreEntry(selectedEntryUuid);
@@ -230,26 +271,35 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       setSelectedGroupUuid("all");
       setShowReusedPasswords(false);
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to restore entry.");
+      await dialogs.notify({ title: "Entry not restored", message: error instanceof Error ? error.message : "Unable to restore entry." });
     }
   };
 
   const selectedFolder = groups.find(group => group.uuid === selectedGroupUuid);
-  const handleCreateGroup = () => {
-    const name = prompt(selectedFolder ? `New subfolder in "${selectedFolder.path}":` : "New folder name:");
+  const handleCreateGroup = async () => {
+    const name = await dialogs.prompt({
+      title: "New folder",
+      label: selectedFolder ? `New subfolder in "${selectedFolder.path}"` : "New folder name",
+      validate: (v) => v.trim() ? null : "Enter a folder name.",
+    });
     if (name === null) return;
     try {
       vault.createGroup(name, selectedFolder?.uuid);
       onChanged();
       refreshVaultData();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to create folder.");
+      await dialogs.notify({ title: "Folder not created", message: error instanceof Error ? error.message : "Unable to create folder." });
     }
   };
 
-  const handleRenameGroup = () => {
+  const handleRenameGroup = async () => {
     if (!selectedFolder) return;
-    const name = prompt("Rename folder:", selectedFolder.name);
+    const name = await dialogs.prompt({
+      title: "Rename folder",
+      label: "Folder name",
+      defaultValue: selectedFolder.name,
+      validate: (v) => v.trim() ? null : "Enter a folder name.",
+    });
     if (name === null) return;
     try {
       if (vault.renameGroup(selectedFolder.uuid, name)) {
@@ -257,7 +307,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         refreshVaultData();
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to rename folder.");
+      await dialogs.notify({ title: "Folder not renamed", message: error instanceof Error ? error.message : "Unable to rename folder." });
     }
   };
 
@@ -279,22 +329,28 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   }, [entries, selectedGroupUuid, searchQuery, showReusedPasswords, reusedPasswords, recycledIds]);
 
   return (
-    <div className="vault-layout" style={hidden ? { display: "none" } : undefined}>
+    <div className={`vault-layout${narrow ? " vault-layout--narrow" : ""}`} data-pane={pane} style={hidden ? { display: "none" } : undefined}>
       {/* 1. Sidebar Folders */}
       <aside className="vault-sidebar">
         <div className="sidebar-header">
           <span style={{ fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase", color: "var(--ink)" }}>
             Folders
           </span>
-          <button type="button" className="btn btn-quiet btn-sm" onClick={handleCreateGroup}
-            title={selectedFolder ? "Add Subfolder" : "Add Folder"} aria-label={selectedFolder ? "Add Subfolder" : "Add Folder"}>
-            <Plus size={16} />
-          </button>
+          <div style={{ display: "flex", gap: "0.25rem" }}>
+            <button type="button" className="btn btn-quiet btn-sm" onClick={handleCreateGroup}
+              title={selectedFolder ? "Add Subfolder" : "Add Folder"} aria-label={selectedFolder ? "Add Subfolder" : "Add Folder"}>
+              <Plus size={16} />
+            </button>
+            <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Close folders"
+              onClick={() => setPane("list")}>
+              <ChevronLeft size={16} />
+            </button>
+          </div>
         </div>
 
         <div
           className={`group-item ${selectedGroupUuid === "all" ? "active" : ""}`}
-          onClick={() => setSelectedGroupUuid("all")}
+          onClick={() => { setSelectedGroupUuid("all"); setPane("list"); }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Shield size={16} />
@@ -306,7 +362,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         </div>
 
         <button type="button" className={`group-item ${selectedGroupUuid === "recycle" ? "active" : ""}`}
-          onClick={() => { if (canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); } }}>
+          onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); navigate({ tab: "vault", entry: undefined }); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); setPane("list"); } }}>
           <span style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}><Trash2 size={16} /> Recycle Bin</span>
           <span>{recycledIds.size}</span>
         </button>
@@ -320,7 +376,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             title={g.path}
             aria-label={g.path} aria-pressed={selectedGroupUuid === g.uuid}
             style={{ paddingLeft: `${1 + Math.min(g.depth, 6) * 0.75}rem` }}
-            onClick={() => setSelectedGroupUuid(g.uuid)}
+            onClick={() => { setSelectedGroupUuid(g.uuid); setPane("list"); }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <Folder size={16} />
@@ -354,6 +410,10 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       <section className="vault-list-pane">
         <div className="list-search-bar">
           <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
+            <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Folders"
+              onClick={() => setPane("folders")}>
+              <Folder size={16} />
+            </button>
             <div style={{ position: "relative", flex: 1 }}>
               <Search
                 size={16}
@@ -457,7 +517,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     <button className="btn btn-danger btn-sm" onClick={() => void onSave({ overwrite: true })}>Overwrite server copy</button>
                     <button
                       className="btn btn-secondary btn-sm"
-                      onClick={() => { if (confirm("Discard the unsaved edits in this tab and reload the server copy?")) void onReload(); }}
+                      onClick={async () => { if (await dialogs.confirm({ title: "Reload server copy?", message: "Discard the unsaved edits in this tab and reload the server copy?", confirmLabel: "Reload", danger: true })) void onReload(); }}
                     >
                       Reload server copy
                     </button>
@@ -488,7 +548,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={() => { if (canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); } }}
+                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); setPane("detail"); } }}
               >
                 <div className="entry-title">
                   <span>{e.title || "Untitled"}</span>
@@ -509,6 +569,10 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         {selectedEntry ? (
           <div>
             <div className="detail-header">
+              <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Back to list"
+                onClick={() => setPane("list")}>
+                <ChevronLeft size={16} />
+              </button>
               <div>
                 <h2>{isEditing ? "Edit Entry" : selectedEntry.title || "Untitled"}</h2>
                 <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>
@@ -771,6 +835,10 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           </div>
         ) : (
           <div style={{ textAlign: "center", padding: "4rem 0", color: "var(--ink-muted)" }}>
+            <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Back to list"
+              onClick={() => setPane("list")} style={{ marginBottom: "1rem" }}>
+              <ChevronLeft size={16} />
+            </button>
             <Key size={48} style={{ opacity: 0.2, marginBottom: "1rem" }} />
             <p>Select an entry to view details, or create a new password.</p>
           </div>
@@ -837,6 +905,8 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             setSelectedGroupUuid("all");
             setShowReusedPasswords(false);
             setSelectedEntryUuid(uuid);
+            navigate({ tab: "vault", entry: uuid });
+            setPane("detail");
           } }}
           onClose={() => setShowHistory(false)}
           onRestored={async () => {

@@ -2,7 +2,9 @@ import { ConflictComparison } from "./ConflictComparison";
 import type { KeePassVault } from "../lib/kdbx";
 import React, { useState, useEffect } from "react";
 import { getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
-import { History, RotateCcw, AlertTriangle, Trash2, CheckCircle2 } from "lucide-react";
+import { RotateCcw, AlertTriangle, Trash2, CheckCircle2 } from "lucide-react";
+import { Dialog } from "./Dialog";
+import { useDialogs } from "./DialogHost";
 
 type HistoryEntry = {
   id: string;
@@ -28,6 +30,7 @@ type Props = {
 };
 
 export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: Props) {
+  const dialogs = useDialogs();
   const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -60,7 +63,12 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
 
   const restoreSnapshot = async (id: string) => {
     if (!allowRollback || busyId !== null) return;
-    if (!confirm(`Are you sure you want to rollback to snapshot ${id}? Current changes will be archived.`)) return;
+    if (!await dialogs.confirm({
+      title: "Roll back the vault?",
+      message: `Roll back to snapshot ${id}? Current changes will be archived.`,
+      confirmLabel: "Roll back",
+      danger: true,
+    })) return;
     setBusyId(id);
     setMessage("");
     setError("");
@@ -77,7 +85,12 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
 
   const discardConflict = async (id: string) => {
     if (!allowRollback || busyId !== null) return;
-    if (!confirm("Are you sure you want to discard this conflict upload?")) return;
+    if (!await dialogs.confirm({
+      title: "Discard this conflict?",
+      message: "Discard this conflict upload?",
+      confirmLabel: "Discard",
+      danger: true,
+    })) return;
     setBusyId(id);
     setMessage("");
     setError("");
@@ -93,18 +106,7 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" style={{ maxWidth: "680px" }} onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <History size={20} color="var(--accent)" />
-            <h3>Vault Version History & Rollback</h3>
-          </div>
-          <button className="btn btn-quiet btn-sm" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Dialog title="Vault Version History & Rollback" onClose={onClose} size="lg">
         <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--line)", marginBottom: "1.5rem" }}>
           <button
             className={`nav-link-btn ${activeTab === "history" ? "active" : ""}`}
@@ -233,7 +235,6 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
             Close
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

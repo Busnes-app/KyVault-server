@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { postJSON, toErrorMessage } from "../lib/api";
 import { Smartphone, Laptop, Check, Copy } from "lucide-react";
 import { copyText } from "../lib/clipboard";
+import { Dialog } from "./Dialog";
 
 type Props = {
   onClose: () => void;
@@ -71,15 +72,8 @@ export function DevicePairingModal({ onClose }: Props) {
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" style={{ textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Pair Device or Extension</h3>
-          <button className="btn btn-quiet btn-sm" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
+    <Dialog title="Pair Device or Extension" onClose={onClose}>
+      <div style={{ textAlign: "center" }}>
         <p style={{ color: "var(--ink-muted)", fontSize: "0.9rem", margin: "0 0 1.5rem 0" }}>
           Scan this QR code with the <strong>KyVault Mobile App</strong>, or enter the PIN in your <strong>Browser Extension</strong>.
         </p>
@@ -151,6 +145,6 @@ export function DevicePairingModal({ onClose }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
