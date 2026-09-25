@@ -1,6 +1,7 @@
 import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { wrapVaultKey, bytesToHex } from "../lib/vaultCrypto";
+import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 
@@ -52,6 +53,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
   const handleChangePassword = async (e: FormEvent) => {
     e.preventDefault();
+    const problem = checkMasterPassword(newPassword);
+    if (problem) { setError(problem); return; }
     if (newPassword !== confirmPassword) {
       setError("New passwords do not match");
       return;
@@ -210,22 +213,28 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
         <form onSubmit={handleChangePassword}>
           <div className="input-group">
-            <label className="input-label">New Master Password</label>
+            <label htmlFor="new-master-password" className="input-label">New Master Password</label>
             <input
+              id="new-master-password"
               type="password"
               className="input"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+              minLength={MIN_MASTER_PASSWORD_LENGTH}
               required
             />
           </div>
           <div className="input-group">
-            <label className="input-label">Confirm New Password</label>
+            <label htmlFor="confirm-master-password" className="input-label">Confirm New Password</label>
             <input
+              id="confirm-master-password"
               type="password"
               className="input"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
+              autoComplete="new-password"
+              minLength={MIN_MASTER_PASSWORD_LENGTH}
               required
             />
           </div>

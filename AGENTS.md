@@ -362,7 +362,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
   Both implementations must produce that. Unit tests per repo only prove each side is
   self-consistent; agreeing on a vector is what proves they interoperate — the same lesson
-  the silently-mismatched replication format taught.
+  the silently-mismatched replication format taught. The client refuses master passwords under 12 characters (lib/masterPassword.ts) on create and change; the server never sees one so it cannot enforce this.
 
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
