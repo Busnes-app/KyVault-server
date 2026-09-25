@@ -79,6 +79,8 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
     if (!allowRollback || busyId !== null) return;
     if (!confirm("Are you sure you want to discard this conflict upload?")) return;
     setBusyId(id);
+    setMessage("");
+    setError("");
     try {
       await deleteJSON(`/api/vault/conflicts/${id}`);
       setConflicts((prev) => prev.filter((c) => c.id !== id));
@@ -106,13 +108,13 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
         <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--line)", marginBottom: "1.5rem" }}>
           <button
             className={`nav-link-btn ${activeTab === "history" ? "active" : ""}`}
-            onClick={() => { setComparisonId(null); setActiveTab("history"); }}
+            onClick={() => { setComparisonId(null); setActiveTab("history"); setMessage(""); setError(""); }}
           >
             Snapshots ({history.length})
           </button>
           <button
             className={`nav-link-btn ${activeTab === "conflicts" ? "active" : ""}`}
-            onClick={() => { setComparisonId(null); setActiveTab("conflicts"); }}
+            onClick={() => { setComparisonId(null); setActiveTab("conflicts"); setMessage(""); setError(""); }}
           >
             Preserved Conflicts ({conflicts.length})
           </button>
@@ -129,13 +131,20 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
             <CheckCircle2 size={16} /> {message}
           </p>
         ) : null}
-        {error ? <p style={{ color: "var(--danger)", fontSize: "0.9rem" }}>{error}</p> : null}
+        {error ? (
+          <p style={{ color: "var(--danger)", fontSize: "0.9rem", display: "flex", alignItems: "center", gap: "0.6rem" }}>
+            {error}
+            <button className="btn btn-quiet btn-sm" onClick={loadData}>
+              Retry
+            </button>
+          </p>
+        ) : null}
 
         {comparisonId && recovery ? (
           <ConflictComparison key={comparisonId} conflictId={comparisonId} current={recovery.vault} vaultKey={recovery.vaultKey}
             onRecovered={recovery.onRecovered} onBack={() => setComparisonId(null)} />
         ) : loading ? (
-          <p style={{ color: "var(--ink-muted)" }}>Loading snapshots…</p>
+          <p style={{ color: "var(--ink-muted)" }}>Loading {activeTab === "history" ? "snapshots" : "conflicts"}…</p>
         ) : activeTab === "history" ? (
           history.length === 0 ? (
             <p style={{ color: "var(--ink-muted)" }}>No past version snapshots found.</p>

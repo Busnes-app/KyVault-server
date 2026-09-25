@@ -6,6 +6,7 @@ import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, D
 import { DevicePairingModal } from "../components/DevicePairingModal";
 
 import { AUTO_LOCK_MINUTES, parseAutoLockMinutes, type AutoLockMinutes } from "../lib/autoLock";
+import { formatWhen } from "../lib/format";
 
 type Device = {
   id: string;
@@ -37,12 +38,15 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [revoking, setRevoking] = useState<string | null>(null);
 
   const loadDevices = async () => {
     try {
       const list = await getJSON<Device[]>("/api/devices");
       setDevices(list || []);
-    } catch {}
+    } catch (err) {
+      setError(toErrorMessage(err, "Could not load paired devices."));
+    }
   };
 
   useEffect(() => {
@@ -170,13 +174,19 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   };
 
   const handleRevokeDevice = async (id: string, name: string) => {
+    if (revoking) return;
     if (!confirm(`Revoke access for device "${name}"?`)) return;
+    setRevoking(id);
+    setError("");
+    setMessage("");
     try {
       await deleteJSON(`/api/devices/${id}`);
       setDevices((prev) => prev.filter((d) => d.id !== id));
       setMessage(`Device "${name}" revoked.`);
     } catch (err) {
       setError(toErrorMessage(err, "Failed to revoke device"));
+    } finally {
+      setRevoking(null);
     }
   };
 
@@ -441,13 +451,14 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
                 <div>
                   <div style={{ fontWeight: 600 }}>{d.name}</div>
                   <div style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.2rem" }}>
-                    {d.platform} • Last active: {new Date(d.lastSeenAt).toLocaleString()} ({d.lastIp || "—"})
+                    {d.platform} • Last active: {formatWhen(d.lastSeenAt)} ({d.lastIp || "—"})
                   </div>
                 </div>
                 <button
                   className="btn btn-danger btn-sm"
                   onClick={() => handleRevokeDevice(d.id, d.name)}
                   title="Revoke device"
+                  disabled={revoking !== null}
                 >
                   <Trash2 size={14} /> Revoke
                 </button>
