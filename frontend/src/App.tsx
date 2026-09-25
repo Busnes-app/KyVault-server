@@ -21,6 +21,8 @@ import { AdminPanel } from "./pages/AdminPanel";
 import { HistoryModal } from "./components/HistoryModal";
 import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
 import "./styles/styles.css";
+import "./ky-ui/tokens.css";
+import "./ky-ui/navigation.css";
 
 type User = {
   id: string;
