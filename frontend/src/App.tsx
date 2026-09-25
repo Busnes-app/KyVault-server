@@ -14,6 +14,7 @@ import {
   hexToBytes,
 } from "./lib/vaultCrypto";
 import { checkMasterPassword } from "./lib/masterPassword";
+import { unlockMode, checkCreatePassword } from "./lib/unlockMode";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
 import { useRoute, type Route } from "./lib/route";
 import { LoginPage } from "./pages/LoginPage";
@@ -101,11 +102,15 @@ export function App() {
   useEffect(() => () => { saveQueue?.discard(); }, [saveQueue]);
 
   // SSO unlock modal state
+  const [meta, setMeta] = useState<VaultMetadata | null>(null);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const [lockedReason, setLockedReason] = useState<"new" | "locked" | null>(null);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState("");
+  const [unlockConfirm, setUnlockConfirm] = useState("");
   const [unlockError, setUnlockError] = useState("");
   const [unlocking, setUnlocking] = useState(false);
+  const mode = unlockMode(meta?.version);
 
   // Check auth on load
   const checkAuth = async () => {
@@ -157,11 +162,12 @@ export function App() {
       if (!current()) return;
       const meta = await getJSON<VaultMetadata>("/api/vault/metadata");
       if (!current()) return;
+      setMeta(meta);
 
       // Case 1: Brand new vault (version 0)
       if (!meta.version || meta.version === 0) {
         if (!masterPassword) {
-          setShowUnlockModal(true);
+          setLockedReason("new");
           return;
         }
 
@@ -178,14 +184,16 @@ export function App() {
 
         const version = await uploadVault(binary, 0, pwEnvelope);
         if (!current()) return;
+        setMeta({ ...meta, version, passwordEnvelope: pwEnvelope });
         await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
         if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
         try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {}
         setSaveQueue(new VaultSaveQueue(newVault, version));
         setVaultKey(key);
         setVault(newVault);
-        setLockNotice(notices.join(" "));
+        setLockedReason(null);
         setShowUnlockModal(false);
+        setLockNotice(["Vault created. Generate a paper recovery code from Security so a forgotten password does not lock you out.", ...notices].join(" "));
         return;
       }
 
@@ -199,17 +207,17 @@ export function App() {
           const last = sessionStorage.getItem(`kyvault.activity:${u.id}`) ?? localStorage.getItem(`kyvault.activity:${u.id}`);
           if (sessionStorage.getItem(`kyvault.locked:${u.id}`) || localStorage.getItem(`kyvault.locked:${u.id}`) ||
               cachedKeyExpired(last, autoLockMinutes * 60000)) {
-            setShowUnlockModal(true);
+            setLockedReason("locked");
             await clearDeviceVaultKey(u.username).catch(() => {});
             return;
           }
-        } catch { setShowUnlockModal(true); return; }
+        } catch { setLockedReason("locked"); return; }
         // Check for cached key on this trusted device
         const cachedHex = await getDeviceVaultKey(u.username).catch(() => undefined);
         if (cachedHex) {
           key = hexToBytes(cachedHex);
         } else {
-          setShowUnlockModal(true);
+          setLockedReason("locked");
           return;
         }
       }
@@ -233,11 +241,11 @@ export function App() {
         try {
           const last = sessionStorage.getItem(`kyvault.activity:${u.id}`) ?? localStorage.getItem(`kyvault.activity:${u.id}`);
           if (localStorage.getItem(`kyvault.locked:${u.id}`) || cachedKeyExpired(last, autoLockMinutes * 60000)) {
-            setShowUnlockModal(true);
+            setLockedReason("locked");
             await clearDeviceVaultKey(u.username).catch(() => {});
             return;
           }
-        } catch { setShowUnlockModal(true); return; }
+        } catch { setLockedReason("locked"); return; }
       }
       if (masterPassword) {
         await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
@@ -266,24 +274,31 @@ export function App() {
       if (recovered) notices.unshift("Recovered local edits. Review them before saving.");
       setLockNotice(notices.join(" "));
       if (masterPassword) { try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {} }
+      setLockedReason(null);
       setShowUnlockModal(false);
     } catch (err) {
       if (!current()) return;
       console.error("Vault init error:", err);
       setUnlockError(toErrorMessage(err, "Failed to unlock vault"));
-      setShowUnlockModal(true);
+      setLockedReason(meta?.version ? "locked" : "new");
     }
   };
 
   const handleUnlockSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    setUnlocking(true);
     setUnlockError("");
 
+    if (mode === "create") {
+      const problem = checkCreatePassword(unlockPassword, unlockConfirm);
+      if (problem) { setUnlockError(problem); return; }
+    }
+
+    setUnlocking(true);
     try {
       await initVault(user, unlockPassword);
       setUnlockPassword("");
+      setUnlockConfirm("");
     } catch (err) {
       setUnlockError(toErrorMessage(err, "Incorrect password or recovery key"));
     } finally {
@@ -314,8 +329,10 @@ export function App() {
     setVault(null);
     setVaultKey(null);
     setUnlockPassword("");
+    setUnlockConfirm("");
     setShowUnlockModal(false);
     setShowHistoryModal(false);
+    setLockedReason(meta?.version ? "locked" : "new");
   };
 
   const autoLock = useRef(() => {});
@@ -439,6 +456,12 @@ export function App() {
     setShowUnlockModal(true);
   };
 
+  const closeUnlockModal = () => {
+    if (unlocking) return;
+    setShowUnlockModal(false);
+    setLockedReason(null);
+  };
+
   if (loading) {
     return (
       <div className="auth-container">
@@ -503,7 +526,14 @@ export function App() {
         </div>
       </header>
 
-      {lockNotice ? <p role="status" style={{ padding: "0.75rem", margin: 0 }}>{lockNotice}</p> : null}
+      {lockNotice ? (
+        <p role="status" style={{ padding: "0.75rem", margin: 0, display: "flex", gap: "0.75rem", alignItems: "center" }}>
+          <span>{lockNotice}</span>
+          {lockNotice.startsWith("Vault created.") ? (
+            <button className="btn btn-quiet btn-sm" onClick={() => navigate({ tab: "security" })}>Go to Security</button>
+          ) : null}
+        </p>
+      ) : null}
 
       {/* Keep the editor mounted across tabs so drafts and save status survive navigation. */}
       {vault && vaultKey && saveQueue ? (
@@ -554,13 +584,13 @@ export function App() {
         </div>
       )}
 
-      {/* Unlock Modal for SSO sessions or locked vaults */}
-      {showUnlockModal ? (
-        <Dialog title="Unlock KeePass Vault" onClose={() => setShowUnlockModal(false)}>
+      {/* Unlock/create modal: auto-opens on the vault tab when locked; explicit opens work on any tab */}
+      {showUnlockModal || (lockedReason && navTab === "vault") ? (
+        <Dialog title={mode === "create" ? "Create your master password" : "Unlock KeePass Vault"} onClose={closeUnlockModal}>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
-              You are signed in — KySignOn has proved who you are. Unlocking is separate: your master
-              password decrypts the vault here in your browser, and is never sent to the server.
-              Enter it once to trust this device for 1-click unlock.
+              {mode === "create"
+                ? "This password encrypts your vault key in your browser. It is never sent to the server, so nobody can reset it for you. Use at least 12 characters; a short sentence works well."
+                : "You are signed in — KySignOn has proved who you are. Unlocking is separate: your master password decrypts the vault here in your browser, and is never sent to the server. Enter it once to trust this device for 1-click unlock."}
             </p>
 
             {unlockError ? (
@@ -579,36 +609,67 @@ export function App() {
             ) : null}
 
             <form onSubmit={handleUnlockSubmit}>
-              <div className="input-group">
-                <label className="input-label">Master Password or Paper Recovery Key</label>
-                <input
-                  type="password"
-                  className="input font-mono"
-                  placeholder="•••••••••••• or KYPASS-XXXX-..."
-                  value={unlockPassword}
-                  onChange={(e) => setUnlockPassword(e.target.value)}
-                  required
-                  data-autofocus
-                />
-              </div>
+              {mode === "create" ? (
+                <>
+                  <div className="input-group">
+                    <label className="input-label">Master password</label>
+                    <input
+                      type="password"
+                      className="input font-mono"
+                      autoComplete="new-password"
+                      value={unlockPassword}
+                      onChange={(e) => setUnlockPassword(e.target.value)}
+                      required
+                      data-autofocus
+                    />
+                  </div>
+                  <div className="input-group">
+                    <label className="input-label">Confirm master password</label>
+                    <input
+                      type="password"
+                      className="input font-mono"
+                      autoComplete="new-password"
+                      value={unlockConfirm}
+                      onChange={(e) => setUnlockConfirm(e.target.value)}
+                      required
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="input-group">
+                  <label className="input-label">Master Password or Paper Recovery Key</label>
+                  <input
+                    type="password"
+                    className="input font-mono"
+                    placeholder="•••••••••••• or KYPASS-XXXX-..."
+                    autoComplete="current-password"
+                    value={unlockPassword}
+                    onChange={(e) => setUnlockPassword(e.target.value)}
+                    required
+                    data-autofocus
+                  />
+                </div>
+              )}
 
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-quiet btn-sm"
-                  onClick={() => {
-                    setShowUnlockModal(false);
-                    setShowHistoryModal(true);
-                  }}
-                >
-                  <RotateCcw size={14} /> Rollback / History
-                </button>
+                {mode === "unlock" ? (
+                  <button
+                    type="button"
+                    className="btn btn-quiet btn-sm"
+                    onClick={() => {
+                      closeUnlockModal();
+                      setShowHistoryModal(true);
+                    }}
+                  >
+                    <RotateCcw size={14} /> Rollback / History
+                  </button>
+                ) : <span />}
                 <div style={{ display: "flex", gap: "0.75rem" }}>
-                  <button type="button" className="btn btn-secondary" onClick={() => setShowUnlockModal(false)}>
+                  <button type="button" className="btn btn-secondary" onClick={closeUnlockModal} disabled={unlocking}>
                     Cancel
                   </button>
-                  <button type="submit" className="btn btn-primary" disabled={unlocking || !unlockPassword}>
-                    {unlocking ? "Unlocking…" : "Unlock"}
+                  <button type="submit" className="btn btn-primary" disabled={unlocking || !unlockPassword || (mode === "create" && !unlockConfirm)}>
+                    {unlocking ? (mode === "create" ? "Creating…" : "Unlocking…") : mode === "create" ? "Create vault" : "Unlock"}
                   </button>
                 </div>
               </div>

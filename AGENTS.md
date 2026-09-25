@@ -59,6 +59,7 @@ yourself adding one, the design has been misread.
   `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
   offline vault key each require the current master password or paper code, verified in
   the browser against the stored envelope (`verifyMasterPassword`).
+- A version-0 vault shows a create dialog with a confirm field (`lib/unlockMode.ts`); the unlock dialog auto-opens only on the vault tab.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - User-facing callback failures (identity not linked, account deactivated, login fenced by a logout) redirect to `/?sso_error=<code>`; the login page explains the code. Token and configuration failures keep their status codes.
