@@ -453,3 +453,5 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `App.tsx` remembers the last vault route (`lastVault` ref) so the Vault nav button restores the selected entry instead of deselecting it. `VaultPage`'s route-follow effect syncs the mobile pane (`list` when the hash drops the entry, `detail` when it names one) and treats a recycled entry's uuid as unknown, correcting the hash back to `#/vault` rather than reopening it.
 
 - `frontend/src/lib/useMediaQuery.ts` and `VaultPage` panes: under 900px the vault is one pane at a time (folders, list, detail) with Folders and Back controls; under 600px nav labels collapse to icons with aria-labels. Desktop keeps the three-column grid.
+
+- `frontend/src/lib/generatePassword.ts`: uniform rejection sampling, one guaranteed character per selected class, length 8 to 128, optional look-alike exclusion, settings persisted under `kyvault.generator`. `generatePassword.test.ts` pins class coverage and the error cases.

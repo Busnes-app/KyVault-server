@@ -2,49 +2,60 @@ import React, { useState, useEffect } from "react";
 import { Copy, RefreshCw, Check } from "lucide-react";
 import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 import { Dialog } from "./Dialog";
+import { useDialogs } from "./DialogHost";
+import { generatePassword, loadGeneratorOptions, saveGeneratorOptions, type GeneratorOptions } from "../lib/generatePassword";
 
 type Props = {
   onSelect: (password: string) => void;
   onClose: () => void;
+  currentValue: string;
 };
 
-export function PasswordGenerator({ onSelect, onClose }: Props) {
-  const [length, setLength] = useState(20);
-  const [useUpper, setUseUpper] = useState(true);
-  const [useLower, setUseLower] = useState(true);
-  const [useNumbers, setUseNumbers] = useState(true);
-  const [useSymbols, setUseSymbols] = useState(true);
+export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
+  const dialogs = useDialogs();
+  const [options, setOptions] = useState<GeneratorOptions>(() => loadGeneratorOptions());
   const [generated, setGenerated] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const generate = () => {
-    let chars = "";
-    if (useLower) chars += "abcdefghijklmnopqrstuvwxyz";
-    if (useUpper) chars += "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    if (useNumbers) chars += "0123456789";
-    if (useSymbols) chars += "!@#$%^&*()_+-=[]{}|;:,.<>?";
+  const update = (patch: Partial<GeneratorOptions>) => {
+    const next = { ...options, ...patch };
+    setOptions(next);
+    saveGeneratorOptions(next);
+  };
 
-    if (!chars) chars = "abcdefghijklmnopqrstuvwxyz";
-
-    const array = new Uint32Array(length);
-    crypto.getRandomValues(array);
-
-    let result = "";
-    for (let i = 0; i < length; i++) {
-      result += chars[array[i] % chars.length];
+  const regenerate = () => {
+    try {
+      setGenerated(generatePassword(options));
+      setError(null);
+    } catch (err) {
+      setGenerated("");
+      setError(err instanceof Error ? err.message : "Could not generate a password.");
     }
-    setGenerated(result);
     setCopied(false);
   };
 
-  useEffect(() => {
-    generate();
-  }, [length, useUpper, useLower, useNumbers, useSymbols]);
+  useEffect(regenerate, [options.length, options.upper, options.lower, options.numbers, options.symbols, options.excludeLookalikes]);
 
   const copy = async () => {
+    if (!generated) return;
     const ok = await copyText(generated, { clearAfterMs: SECRET_CLIPBOARD_MS });
     setCopied(ok);
     if (ok) setTimeout(() => setCopied(false), 2000);
+  };
+
+  const use = async () => {
+    if (!generated) return;
+    if (currentValue) {
+      const confirmed = await dialogs.confirm({
+        title: "Replace the current password?",
+        message: "The current password will be replaced in the editor. Apply Edits keeps the previous one in entry history.",
+        confirmLabel: "Replace",
+      });
+      if (!confirmed) return;
+    }
+    onSelect(generated);
+    onClose();
   };
 
   return (
@@ -63,20 +74,21 @@ export function PasswordGenerator({ onSelect, onClose }: Props) {
         >
           <span
             className="font-mono"
+            role={error ? "alert" : undefined}
             style={{
               fontSize: "1.1rem",
               wordBreak: "break-all",
-              color: "var(--accent)",
+              color: error ? "var(--danger)" : "var(--accent)",
               letterSpacing: "0.05em",
             }}
           >
-            {generated}
+            {error ?? generated}
           </span>
           <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button className="btn btn-quiet btn-sm" onClick={generate} title="Regenerate">
+            <button className="btn btn-quiet btn-sm" onClick={regenerate} title="Regenerate">
               <RefreshCw size={16} />
             </button>
-            <button className="btn btn-quiet btn-sm" onClick={copy} title="Copy">
+            <button className="btn btn-quiet btn-sm" onClick={copy} title="Copy" disabled={!generated}>
               {copied ? <Check size={16} color="#10b981" /> : <Copy size={16} />}
             </button>
           </div>
@@ -84,49 +96,60 @@ export function PasswordGenerator({ onSelect, onClose }: Props) {
 
         <div className="input-group">
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
-            <label className="input-label">Length</label>
-            <span className="font-mono">{length}</span>
+            <label className="input-label" htmlFor="generator-length">Length</label>
+            <input
+              id="generator-length"
+              type="number"
+              min={8}
+              max={128}
+              className="input"
+              style={{ width: "5rem", textAlign: "right" }}
+              value={options.length}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (Number.isInteger(n)) update({ length: Math.min(128, Math.max(8, n)) });
+              }}
+            />
           </div>
           <input
             type="range"
-            min="10"
-            max="64"
-            value={length}
-            onChange={(e) => setLength(parseInt(e.target.value, 10))}
+            min="8"
+            max="128"
+            value={options.length}
+            onChange={(e) => update({ length: parseInt(e.target.value, 10) })}
             style={{ width: "100%", accentColor: "var(--accent)" }}
           />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1.5rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.75rem" }}>
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.85rem" }}>
-            <input type="checkbox" checked={useUpper} onChange={(e) => setUseUpper(e.target.checked)} />
+            <input type="checkbox" checked={options.upper} onChange={(e) => update({ upper: e.target.checked })} />
             Uppercase (A-Z)
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.85rem" }}>
-            <input type="checkbox" checked={useLower} onChange={(e) => setUseLower(e.target.checked)} />
+            <input type="checkbox" checked={options.lower} onChange={(e) => update({ lower: e.target.checked })} />
             Lowercase (a-z)
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.85rem" }}>
-            <input type="checkbox" checked={useNumbers} onChange={(e) => setUseNumbers(e.target.checked)} />
+            <input type="checkbox" checked={options.numbers} onChange={(e) => update({ numbers: e.target.checked })} />
             Numbers (0-9)
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.85rem" }}>
-            <input type="checkbox" checked={useSymbols} onChange={(e) => setUseSymbols(e.target.checked)} />
+            <input type="checkbox" checked={options.symbols} onChange={(e) => update({ symbols: e.target.checked })} />
             Special Characters (!@#$)
           </label>
         </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontSize: "0.85rem", marginBottom: "1.5rem" }}>
+          <input type="checkbox" checked={options.excludeLookalikes ?? false} onChange={(e) => update({ excludeLookalikes: e.target.checked })} />
+          Exclude look-alike characters (O, 0, I, l, 1, |)
+        </label>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
           <button className="btn btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              onSelect(generated);
-              onClose();
-            }}
-          >
+          <button className="btn btn-primary" onClick={use} disabled={!generated}>
             Use Password
           </button>
         </div>

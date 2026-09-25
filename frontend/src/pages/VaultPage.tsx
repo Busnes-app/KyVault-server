@@ -915,6 +915,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
       {showGenerator ? (
         <PasswordGenerator
+          currentValue={editPassword}
           onSelect={(pw) => {
             setEditPassword(pw);
             setRevealPassword(true);
