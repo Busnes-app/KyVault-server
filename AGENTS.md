@@ -61,6 +61,7 @@ yourself adding one, the design has been misread.
   the browser against the stored envelope (`verifyMasterPassword`).
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
+- User-facing callback failures (identity not linked, account deactivated, login fenced by a logout) redirect to `/?sso_error=<code>`; the login page explains the code. Token and configuration failures keep their status codes.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.

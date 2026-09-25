@@ -124,6 +124,12 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL.String(), http.StatusFound)
 }
 
+// loginFailure sends the browser back to the login page with a fixed code the page can
+// explain. The codes are an enum, never free text from the request.
+func loginFailure(w http.ResponseWriter, r *http.Request, code string) {
+	http.Redirect(w, r, "/?sso_error="+code, http.StatusFound)
+}
+
 func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	settings := s.ssoStore.Load()
 	if !settings.Enabled || settings.IssuerURL == "" {
@@ -222,7 +228,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	if user.ID == "" {
 		if !settings.AutoProvision {
-			http.Error(w, "Access denied: SSO identity not linked to any KyVault account.", http.StatusForbidden)
+			loginFailure(w, r, "not_linked")
 			return
 		}
 
@@ -252,14 +258,14 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !user.Active {
-		http.Error(w, "Account deactivated", http.StatusForbidden)
+		loginFailure(w, r, "deactivated")
 		return
 	}
 
 	if err := s.startSession(w, r, user.ID, identity, authenticatedAt); err != nil {
 		if errors.Is(err, errLoginFenced) {
 			s.record(r, "auth.sso_login_fenced", user.ID, "", clientIP(r), "login refused: KySignOn logged this session out")
-			http.Error(w, "signed out by KySignOn; sign in again", http.StatusForbidden)
+			loginFailure(w, r, "signed_out")
 			return
 		}
 		http.Error(w, "failed to start session", http.StatusInternalServerError)
