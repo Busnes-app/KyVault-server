@@ -1,6 +1,6 @@
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback } from "react";
-import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
+import { getJSON, postJSON, putJSON, toErrorMessage, HttpError } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
 import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
@@ -376,7 +376,12 @@ export function App() {
   const logout = async () => {
     closeVault();
     // Clear the visible vault before waiting on a possibly stalled network request.
-    await postJSON("/api/auth/logout", {});
+    try {
+      await postJSON("/api/auth/logout", {});
+    } catch (err) {
+      // A 401 here means the server session was already gone; treat it as signed out.
+      if (!(err instanceof HttpError) || err.status !== 401) throw err;
+    }
     setUser(null);
   };
 
