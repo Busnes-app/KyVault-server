@@ -1,14 +1,15 @@
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback } from "react";
-import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
+import { getJSON, postJSON, putJSON, toErrorMessage, HttpError } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
 import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
+import { downloadBlob } from "./lib/download";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
-  unwrapVaultKey,
+  unwrapVaultKeyFromEnvelopes,
   bytesToHex,
   hexToBytes,
 } from "./lib/vaultCrypto";
@@ -65,6 +66,7 @@ export function App() {
   const checkpoint = useRef<Promise<void>>(Promise.resolve());
   const memoryDraft = useRef<LockedDraft | undefined>(undefined);
   const [lockNotice, setLockNotice] = useState("");
+  const [sessionNotice, setSessionNotice] = useState("");
   const recoveryId = (u: User): string | undefined => {
     try { return draftPointer(sessionStorage, u.id); } catch { return undefined; }
   };
@@ -97,6 +99,7 @@ export function App() {
       const res = await getJSON<{ authenticated: boolean; user?: User }>("/api/auth/me");
       if (res.authenticated && res.user) {
         setUser(res.user);
+        setSessionNotice("");
         await initVault(res.user);
       } else {
         setUser(null);
@@ -119,6 +122,13 @@ export function App() {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const ended = () => { closeVault(); setUser(null); setSessionNotice("Your session ended. Sign in again."); };
+    window.addEventListener("kyvault:unauthorized", ended);
+    return () => window.removeEventListener("kyvault:unauthorized", ended);
+  }, [user?.id]);
 
   const initVault = async (u: User, masterPassword?: string) => {
     const generation = ++unlockGeneration.current;
@@ -164,13 +174,7 @@ export function App() {
       // Case 2: Existing vault on server
       let key: Uint8Array | null = null;
       if (masterPassword) {
-        if (meta.passwordEnvelope) {
-          key = await unwrapVaultKey(meta.passwordEnvelope, masterPassword);
-        } else if (meta.recoveryEnvelope) {
-          key = await unwrapVaultKey(meta.recoveryEnvelope, masterPassword);
-        } else {
-          throw new Error("No key envelopes found on server metadata");
-        }
+        key = await unwrapVaultKeyFromEnvelopes([meta.passwordEnvelope, meta.recoveryEnvelope], masterPassword);
       } else {
         // The trusted-key deadline survives refreshing or closing every tab.
         try {
@@ -272,13 +276,7 @@ export function App() {
   const handleExportKdbx = async () => {
     if (!saveQueue || saveState.kind === "saving") return;
     const binary = await saveQueue.exportBinary();
-    const blob = new Blob([binary], { type: "application/x-keepass2" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${user?.username || "vault"}.kdbx`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(new Blob([binary], { type: "application/x-keepass2" }), `${user?.username || "vault"}.kdbx`);
   };
 
   const closeVault = () => {
@@ -375,7 +373,12 @@ export function App() {
   const logout = async () => {
     closeVault();
     // Clear the visible vault before waiting on a possibly stalled network request.
-    await postJSON("/api/auth/logout", {});
+    try {
+      await postJSON("/api/auth/logout", {});
+    } catch (err) {
+      // A 401 here means the server session was already gone; treat it as signed out.
+      if (!(err instanceof HttpError) || err.status !== 401) throw err;
+    }
     setUser(null);
   };
 
@@ -424,7 +427,7 @@ export function App() {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return <LoginPage notice={sessionNotice} />;
   }
 
   return (

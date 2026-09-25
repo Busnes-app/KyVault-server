@@ -59,8 +59,10 @@ yourself adding one, the design has been misread.
   `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
   offline vault key each require the current master password or paper code, verified in
   the browser against the stored envelope (`verifyMasterPassword`).
-- Paper recovery unlocks the vault, not the site.
+- Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
+- User-facing callback failures (identity not linked, account deactivated, login fenced by a logout) redirect to `/?sso_error=<code>`; the login page explains the code. Token and configuration failures keep their status codes.
+- A 401 from any API call except the session probe and logout raises `kyvault:unauthorized`; the app locks the vault and shows the login page with a notice.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.
@@ -309,8 +311,11 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Applied edits, entry/folder creation, deletion, and CSV import enqueue saves after 1.5 seconds
   of idle time. Explicit retry flushes immediately. Serialize
   KDBX exports and uploads; each success acknowledges only its starting edit revision and
-  advances the version for the next upload. Failures (including 409) remain unsaved and
-  require explicit retry. Uploads use the shared CSRF request helper. `App.tsx` retains
+  advances the version for the next upload. Failures remain unsaved. A network failure
+  retries once when the browser reports online. A 409 is flagged as a conflict: Retry does
+  nothing, Overwrite server copy re-reads the server version and uploads over it (the
+  server copy stays in history), Reload server copy discards local edits. Uploads use the
+  shared CSRF request helper. `App.tsx` retains
   the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
   rollback. Lock/logout/forget always allow the user to confirm discarding unsaved or in-flight
   edits; saving cannot refuse those actions. Closing/replacing the queue cancels its timer,
@@ -318,6 +323,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   be undone. Logout clears the visible vault before network I/O; forgetting starts key removal
   independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.
   `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
+
+- `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
+  appends the anchor and revokes the object URL a second later so Firefox and Safari do not
+  cancel it.
 
 - `frontend/src/styles/styles.css`: `.settings-page` provides the bounded scroll area for
   Admin and Security within the fixed-height app shell; keep long backup forms reachable.
@@ -408,3 +417,11 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Skipped-only imports create no folders or save revisions. Changed field values are retained
   as separate entries; comparison performs no fuzzy matching, merging, or normalization.
   CSV parsing preserves password whitespace, including passwords consisting entirely of spaces.
+
+- `frontend/src/lib/totp.ts`: RFC 6238 TOTP in the browser. otpauth URIs may set secret,
+  digits (6 to 10), period and algorithm (SHA1, SHA256, SHA512; anything else falls back
+  to SHA-1). `totp.test.ts` pins the RFC 6238 Appendix B vectors for all three algorithms.
+
+- `frontend/src/lib/format.ts`: `formatInterval` (Off, minutes, Hourly, hours, Daily, days) and `formatWhen` (never renders Invalid Date). `format.test.ts` covers both.
+
+- `frontend/src/lib/clipboard.ts`: every copy goes through `copyText`; passwords, TOTP codes and generated passwords are cleared after 30 seconds if the clipboard still holds them (or, where reading is refused, if nothing newer was copied through the helper). The timed clear is best effort: browsers may refuse clipboard access from a timer, and the UI says so. `clipboard.test.ts` covers both.

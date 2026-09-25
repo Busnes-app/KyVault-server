@@ -5,6 +5,7 @@ import type { SaveState } from "../lib/vaultSave";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { generateTOTP } from "../lib/totp";
 import { safeHref } from "../lib/safeHref";
+import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
@@ -31,6 +32,7 @@ import {
   RefreshCw,
   FileSpreadsheet,
   CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
 
 type Props = {
@@ -42,7 +44,7 @@ type Props = {
   onDraftChange: (draft: EntryDraft | null) => void;
   initialDraft?: EntryDraft | null;
   hidden: boolean;
-  onSave: () => Promise<void>;
+  onSave: (options?: { overwrite?: boolean }) => Promise<void>;
   onExport: () => void;
   onReload: () => Promise<void>;
 };
@@ -75,6 +77,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [showEntryHistory, setShowEntryHistory] = useState(false);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const [revealPassword, setRevealPassword] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const saving = saveState.kind === "saving";
@@ -164,10 +167,12 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     };
   }, [selectedEntry?.totpSeed]);
 
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
+  const copyToClipboard = async (text: string, field: string) => {
+    const secret = field === "pass" || field === "totp";
+    const ok = await copyText(text, secret ? { clearAfterMs: SECRET_CLIPBOARD_MS } : {});
+    setCopiedField(ok ? field : null);
+    if (!ok) setImportError("Could not copy. Your browser blocked clipboard access.");
+    if (ok) setTimeout(() => setCopiedField(null), 2000);
   };
 
   const handleSaveEntry = () => {
@@ -413,11 +418,53 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             </div>
           ) : null}
 
+          {importError ? (
+            <div
+              role="alert"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: "var(--danger-soft)",
+                border: "1px solid rgba(239, 68, 68, 0.3)",
+                padding: "0.5rem 0.75rem",
+                borderRadius: "6px",
+                fontSize: "0.8rem",
+                marginBottom: "0.5rem",
+                color: "var(--danger)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <AlertCircle size={14} />
+                <span>{importError}</span>
+              </div>
+              <button
+                className="btn btn-quiet btn-sm"
+                style={{ padding: "0.1rem 0.3rem" }}
+                onClick={() => setImportError(null)}
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
+
           <div role={saveState.kind === "error" ? "alert" : "status"} style={{ padding: "0.5rem", fontSize: "0.85rem" }}>
             {saveState.kind === "error" ? (
               <>
                 <p style={{ color: "var(--danger)" }}>Unsaved edits: {saveState.message}</p>
-                <button className="btn btn-primary btn-sm" onClick={() => void onSave()}>Retry Save</button>
+                {saveState.conflict ? (
+                  <>
+                    <button className="btn btn-danger btn-sm" onClick={() => void onSave({ overwrite: true })}>Overwrite server copy</button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => { if (confirm("Discard the unsaved edits in this tab and reload the server copy?")) void onReload(); }}
+                    >
+                      Reload server copy
+                    </button>
+                  </>
+                ) : (
+                  <button className="btn btn-primary btn-sm" onClick={() => void onSave()}>Retry Save</button>
+                )}
               </>
             ) : <span>{saving ? "Saving…" : draftDirty ? "Applied changes saved" : "All changes saved"}</span>}
             {draftDirty ? <p>Entry edits have not been applied.</p> : null}
@@ -608,6 +655,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     >
                       {copiedField === "pass" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
                     </button>
+                    {copiedField === "pass" ? (
+                      <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)" }}>
+                        Cleared from the clipboard after 30 seconds when the browser allows it.
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               )}
@@ -643,6 +695,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                         {copiedField === "totp" ? <Check size={16} color="#10b981" /> : <Copy size={16} />}
                       </button>
                     </div>
+                    {copiedField === "totp" ? (
+                      <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)" }}>
+                        Cleared from the clipboard after 30 seconds when the browser allows it.
+                      </span>
+                    ) : null}
                   </div>
                 ) : (
                   <span style={{ color: "var(--ink-muted)" }}>—</span>
@@ -755,11 +812,18 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           onImportComplete={(count, createdFolders, skipped) => {
             if (count > 0) onChanged();
             refreshVaultData();
+            setImportError(null);
             const folderText =
               createdFolders.length > 0
                 ? ` (${createdFolders.length} folder${createdFolders.length === 1 ? "" : "s"} created)`
                 : "";
-            setImportMessage(`Successfully imported ${count} password${count === 1 ? "" : "s"}${folderText}. ${skipped} duplicate${skipped === 1 ? "" : "s"} skipped.${count > 0 ? " Changes are saved automatically." : ""}`);
+            setImportMessage(`Imported ${count} password${count === 1 ? "" : "s"}${folderText}. ${skipped} duplicate${skipped === 1 ? "" : "s"} skipped.${count > 0 ? " Changes are saved automatically." : ""}`);
+          }}
+          onImportFailed={(message) => {
+            onChanged();
+            refreshVaultData();
+            setImportMessage(null);
+            setImportError(`Import stopped: ${message} Entries added before the failure are kept and saved automatically.`);
           }}
         />
       ) : null}

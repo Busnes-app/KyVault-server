@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { MAX_ATTACHMENT_BYTES, type KeePassVault } from "../lib/kdbx";
+import { downloadBlob } from "../lib/download";
 
 type Props = {
   vault: KeePassVault;
@@ -20,6 +21,7 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
     pending.current = controller;
     setBusy(false);
     setError("");
+    setRemoveFromHistory(false);
     return () => controller.abort();
   }, [vault, entryUuid, readOnly]);
 
@@ -43,12 +45,8 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
 
   const download = (name: string) => {
     try {
-      const url = URL.createObjectURL(new Blob([vault.getAttachment(entryUuid, name)], { type: "application/octet-stream" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = name.replace(/[\\/\u0000-\u001f\u007f]/g, "_") || "attachment";
-      link.click();
-      URL.revokeObjectURL(url);
+      const safeName = name.replace(/[\\/\u0000-\u001f\u007f]/g, "_") || "attachment";
+      downloadBlob(new Blob([vault.getAttachment(entryUuid, name)], { type: "application/octet-stream" }), safeName);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to download this attachment.");
     }

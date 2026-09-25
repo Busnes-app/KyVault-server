@@ -1,6 +1,8 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { ArchiveRestore, CheckCircle2, Download, RefreshCw, Send, ShieldCheck } from "lucide-react";
 import { getJSON, postBlob, postJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
+import { formatInterval, formatWhen } from "../lib/format";
+import { downloadBlob } from "../lib/download";
 
 type Receipt = {
   capsule_id: string;
@@ -51,7 +53,8 @@ export function AdminBackup() {
   const [publicKey, setPublicKey] = useState("");
   const [threshold, setThreshold] = useState(2);
   const [totalShares, setTotalShares] = useState(3);
-  const [intervalMinutes, setIntervalMinutes] = useState(1440);
+  const [intervalInput, setIntervalInput] = useState("1440");
+  const scheduleDirty = useRef(false);
   const [drill, setDrill] = useState<DrillResult>();
   const [busy, setBusy] = useState(false);
   const [depositReply, setDepositReply] = useState<DepositReply>();
@@ -63,7 +66,7 @@ export function AdminBackup() {
       const next = await getJSON<BackupStatus>("/api/backup/status");
       setStatus(next);
       setURL(next.recoveryUrl ?? "");
- setIntervalMinutes(next.intervalSec / 60);
+      if (!scheduleDirty.current) setIntervalInput(Number.isFinite(next.intervalSec) ? String(Math.round(next.intervalSec / 60)) : "");
     } catch (cause: unknown) {
       setError(toErrorMessage(cause, "Failed to load backup status"));
     }
@@ -78,6 +81,7 @@ export function AdminBackup() {
     setError("");
     setMessage("");
     setDepositReply(undefined);
+    setDrill(undefined);
     try {
       await action();
       await refresh();
@@ -93,7 +97,7 @@ export function AdminBackup() {
     void act(async () => {
       await postJSON<BackupStatus>("/api/backup/pair-remote", { recoveryUrl: url, pairingCode: code });
       setCode("");
-      setMessage("KyRecovery pairing pinned successfully.");
+      setMessage("KyRecovery pairing pinned.");
     });
   };
 
@@ -104,17 +108,12 @@ export function AdminBackup() {
   const runDrill = () => void act(async () => {
     const result = await postJSON<DrillResult>("/api/backup/drill", {});
     setDrill(result);
-    setMessage(result.passed ? "Restore drill passed." : "Restore drill found a problem.");
+    result.passed ? setMessage("Restore drill passed.") : setError("Restore drill found a problem. See the checks below.");
   });
 
   const download = () => void act(async () => {
     const blob = await postBlob("/api/backup/export-capsule");
-    const href = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.download = "kyvault.kycap";
-    anchor.click();
-    URL.revokeObjectURL(href);
+    downloadBlob(blob, "kyvault.kycap");
     setMessage("Downloaded sealed capsule.");
   });
 
@@ -144,13 +143,13 @@ export function AdminBackup() {
       <div className="field-card" style={{ marginBottom: "1rem" }}>
         <h4 style={{ marginTop: 0 }}>Pairing status</h4>
         <p>
-          <strong>{status?.error ? "Recovery configuration needs attention" : status?.paired ? "Paired and healthy" : status?.keyHealthy ? "Key pinned; remote not paired" : "No recovery key"}</strong>
+          <strong>{!status ? "Loading…" : status.error ? "Recovery configuration needs attention" : !status.keyHealthy ? "No recovery key" : status.paired ? "Paired and healthy" : "Key pinned; remote not paired"}</strong>
         </p>
         {status?.recoveryKeyId ? <p className="font-mono" style={{ overflowWrap: "anywhere" }}>Key: {status.recoveryKeyId}</p> : null}
         {status?.threshold ? <p>Custodians: {status.threshold} of {status.totalShares}</p> : null}
         {status?.lastDeposit ? (
           <p className="font-mono" style={{ overflowWrap: "anywhere" }}>
-            Last deposit: {status.lastDeposit.capsule_id} at {new Date(status.lastDeposit.deposited_at).toLocaleString()}
+            Last deposit: {status.lastDeposit.capsule_id} at {formatWhen(status.lastDeposit.deposited_at)}
           </p>
         ) : null}
       </div>
@@ -161,21 +160,30 @@ export function AdminBackup() {
         <p>Local directory: {status.backupDir || "Not configured"}. Copies: {status.localCopies?.length ?? 0}.</p>
         <p>Remote: {status.recoveryUrl || "Not paired"}. Private HTTPS destinations: {status.allowPrivate ? "enabled" : "disabled"}.</p>
         {!status.paired && !status.backupDir ? <p>A key needs a destination: pair with KyRecovery or configure a local backup directory.</p> : null}
-        <p>Schedule: {status.intervalSec === 0 ? "Off" : `Every ${status.intervalSec / 60} minutes`}. Next attempt: {status.nextAttempt ? new Date(status.nextAttempt).toLocaleString() : "None"}.</p>
+        <p>Schedule: {formatInterval(status.intervalSec)}. Next attempt: {formatWhen(status.nextAttempt)}.</p>
         {status.lastRun ? <div>
-          <p>Last attempt: {new Date(status.lastRun.at).toLocaleString()}. Remote deposit: {status.lastRun.deposited ? "confirmed" : "not confirmed"}.</p>
+          <p>Last attempt: {formatWhen(status.lastRun.at)}. Remote deposit: {status.lastRun.deposited ? "confirmed" : "not confirmed"}.</p>
           {status.lastRun.localPath ? <p>Local copy: {status.lastRun.localPath}</p> : null}
           {status.lastRun.localError ? <p role="alert">{status.lastRun.localError}</p> : null}
           {status.lastRun.error ? <p role="alert">{status.lastRun.error}</p> : null}
         </div> : <p>No backup attempt recorded.</p>}
-        <form onSubmit={(event) => { event.preventDefault(); void act(async () => {
-          await putJSON("/api/backup/schedule", { intervalSec: intervalMinutes * 60 });
-          setMessage("Backup schedule saved.");
-        }); }}>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          const minutes = Number(intervalInput);
+          if (intervalInput.trim() === "" || !Number.isInteger(minutes) || minutes < 0 || (minutes > 0 && minutes < 15)) {
+            setError("Enter 0 to turn the schedule off, or 15 or more minutes.");
+            return;
+          }
+          void act(async () => {
+            await putJSON("/api/backup/schedule", { intervalSec: minutes * 60 });
+            scheduleDirty.current = false;
+            setMessage("Backup schedule saved.");
+          });
+        }}>
           <label htmlFor="backup-interval">Interval in minutes (0 turns the schedule off; otherwise 15–527040)</label>
-          <input id="backup-interval" className="input" type="number" min={0} max={527040} step={1} required value={intervalMinutes}
-            onChange={(event) => setIntervalMinutes(Number(event.target.value))} />
-          <button className="btn btn-secondary" disabled={busy || (intervalMinutes > 0 && intervalMinutes < 15)}>Save schedule</button>
+          <input id="backup-interval" className="input" type="number" min={0} max={527040} step={1} value={intervalInput}
+            onChange={(event) => { setIntervalInput(event.target.value); scheduleDirty.current = true; }} />
+          <button className="btn btn-secondary" disabled={busy}>Save schedule</button>
         </form>
       </div> : null}
 
@@ -226,7 +234,7 @@ export function AdminBackup() {
           ) : (
             <button className="btn btn-secondary" type="button" disabled><Download size={16} /> Download .kycap</button>
           )}
-          <button className="btn btn-secondary" type="button" onClick={runDrill} disabled={busy}><ArchiveRestore size={16} /> Run restore drill</button>
+          <button className="btn btn-secondary" type="button" onClick={runDrill} disabled={busy || !status?.keyHealthy}><ArchiveRestore size={16} /> Run restore drill</button>
         </div>
         <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: 0 }}>
           The drill opens a throwaway capsule, verifies the audit chain and encrypted KDBX checksums, but cannot decrypt user credentials because the server holds no vault key.

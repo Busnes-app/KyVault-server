@@ -24,6 +24,9 @@ async function request(path: string, options: RequestInit = {}): Promise<Respons
   });
 
   if (!res.ok) {
+    if (res.status === 401 && path !== "/api/auth/me" && path !== "/api/auth/logout" && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("kyvault:unauthorized"));
+    }
     const text = await res.text();
     throw new HttpError(res.status, text || res.statusText);
   }

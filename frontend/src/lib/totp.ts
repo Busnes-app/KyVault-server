@@ -17,17 +17,25 @@ function base32Decode(input: string): Uint8Array {
   return bytes;
 }
 
-export async function generateTOTP(secretOrURI: string, timeStep = 30, digits = 6): Promise<{ code: string; secondsRemaining: number }> {
+export type TotpAlgorithm = "SHA-1" | "SHA-256" | "SHA-512";
+
+function parseAlgorithm(value: string | null): TotpAlgorithm | undefined {
+  const v = (value ?? "").toUpperCase().replace("-", "");
+  return v === "SHA1" ? "SHA-1" : v === "SHA256" ? "SHA-256" : v === "SHA512" ? "SHA-512" : undefined;
+}
+
+export async function generateTOTP(secretOrURI: string, timeStep = 30, digits = 6, algorithm: TotpAlgorithm = "SHA-1", nowMs = Date.now()): Promise<{ code: string; secondsRemaining: number }> {
   let secret = secretOrURI.trim();
   if (secret.startsWith("otpauth://")) {
     try {
       const url = new URL(secret);
       const s = url.searchParams.get("secret");
       if (s) secret = s;
-      const d = url.searchParams.get("digits");
-      if (d) digits = parseInt(d, 10);
-      const p = url.searchParams.get("period");
-      if (p) timeStep = parseInt(p, 10);
+      const d = parseInt(url.searchParams.get("digits") ?? "", 10);
+      if (d >= 6 && d <= 10) digits = d;
+      const p = parseInt(url.searchParams.get("period") ?? "", 10);
+      if (p > 0) timeStep = p;
+      algorithm = parseAlgorithm(url.searchParams.get("algorithm")) ?? algorithm;
     } catch {
       // Fallback to raw string
     }
@@ -38,7 +46,7 @@ export async function generateTOTP(secretOrURI: string, timeStep = 30, digits = 
     return { code: "------", secondsRemaining: 30 };
   }
 
-  const epoch = Math.floor(Date.now() / 1000);
+  const epoch = Math.floor(nowMs / 1000);
   const timeCount = Math.floor(epoch / timeStep);
   const secondsRemaining = timeStep - (epoch % timeStep);
 
@@ -52,7 +60,7 @@ export async function generateTOTP(secretOrURI: string, timeStep = 30, digits = 
   const key = await crypto.subtle.importKey(
     "raw",
     keyBytes as BufferSource,
-    { name: "HMAC", hash: "SHA-1" },
+    { name: "HMAC", hash: algorithm },
     false,
     ["sign"]
   );

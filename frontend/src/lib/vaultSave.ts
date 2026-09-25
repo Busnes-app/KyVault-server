@@ -4,7 +4,7 @@ import type { KeePassVault } from "./kdbx";
 export type SaveState =
   | { kind: "saved"; version: number }
   | { kind: "saving"; version: number }
-  | { kind: "error"; version: number; message: string };
+  | { kind: "error"; version: number; message: string; conflict?: boolean };
 
 export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, signal?: AbortSignal): Promise<number> {
   const headers: Record<string, string> = {
@@ -36,6 +36,7 @@ export class VaultSaveQueue {
   private listeners = new Set<() => void>();
   private state: SaveState;
   private exporting: Promise<unknown> = Promise.resolve();
+  private onlineRetry: (() => void) | undefined;
 
   constructor(private vault: KeePassVault | null, version: number) {
     this.state = { kind: "saved", version };
@@ -71,6 +72,7 @@ export class VaultSaveQueue {
   // from uploading after a new unlock/session. A request already accepted cannot be undone.
   discard = (): void => {
     clearTimeout(this.timer);
+    this.clearOnlineRetry();
     this.controller.abort();
     this.vault = null;
     this.listeners.clear();
@@ -86,12 +88,20 @@ export class VaultSaveQueue {
     this.timer = setTimeout(() => { void this.save(); }, 1500);
   };
 
-  save = async (): Promise<void> => {
+  save = async (options: { overwrite?: boolean } = {}): Promise<void> => {
     clearTimeout(this.timer);
+    this.clearOnlineRetry();
     if (this.controller.signal.aborted || this.running || this.revision === this.savedRevision) return;
+    if (this.state.kind === "error" && this.state.conflict && !options.overwrite) return;
     this.running = true;
     this.publish({ kind: "saving", version: this.state.version });
     try {
+      if (options.overwrite) {
+        // The server's copy stays in version history; ours becomes the head.
+        const meta = await requestJSON<{ version?: unknown }>("/api/vault/metadata", { method: "GET", signal: this.controller.signal });
+        if (typeof meta.version !== "number" || !Number.isSafeInteger(meta.version)) throw new Error("The server did not report its vault version.");
+        this.state = { ...this.state, version: meta.version };
+      }
       while (this.savedRevision < this.revision) {
         const revision = this.revision;
         const binary = await this.exportBinary();
@@ -103,12 +113,21 @@ export class VaultSaveQueue {
       }
     } catch (err) {
       if (this.controller.signal.aborted) return;
-      this.publish({ kind: "error", version: this.state.version, message:
-        err instanceof HttpError && err.status === 409
-          ? "A newer vault exists on the server. Your edits are unsaved here. Download this copy before reloading to compare changes."
-          : toErrorMessage(err, "Unable to save vault. Your edits are still here.") });
+      const conflict = err instanceof HttpError && err.status === 409;
+      if (!conflict && typeof window !== "undefined") {
+        this.onlineRetry = () => { this.clearOnlineRetry(); void this.save(); };
+        window.addEventListener("online", this.onlineRetry);
+      }
+      this.publish({ kind: "error", version: this.state.version, conflict, message: conflict
+        ? "A newer vault exists on the server. Overwrite it with this copy (the server copy stays in Version History) or reload the server copy and lose these edits."
+        : toErrorMessage(err, "Unable to save vault. Your edits are still here.") });
     } finally {
       this.running = false;
     }
   };
+
+  private clearOnlineRetry() {
+    if (this.onlineRetry && typeof window !== "undefined") window.removeEventListener("online", this.onlineRetry);
+    this.onlineRetry = undefined;
+  }
 }

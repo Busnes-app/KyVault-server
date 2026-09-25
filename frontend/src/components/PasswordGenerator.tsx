@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Copy, RefreshCw, Check } from "lucide-react";
+import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 
 type Props = {
   onSelect: (password: string) => void;
@@ -39,10 +40,10 @@ export function PasswordGenerator({ onSelect, onClose }: Props) {
     generate();
   }, [length, useUpper, useLower, useNumbers, useSymbols]);
 
-  const copy = () => {
-    navigator.clipboard.writeText(generated);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copy = async () => {
+    const ok = await copyText(generated, { clearAfterMs: SECRET_CLIPBOARD_MS });
+    setCopied(ok);
+    if (ok) setTimeout(() => setCopied(false), 2000);
   };
 
   return (

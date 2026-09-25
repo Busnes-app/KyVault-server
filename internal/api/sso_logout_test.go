@@ -232,8 +232,8 @@ func TestBackchannelLogoutFencesInFlightLogin(t *testing.T) {
 			req.AddCookie(stateCookie)
 			rec := httptest.NewRecorder()
 			f.srv.Routes().ServeHTTP(rec, req)
-			if rec.Code != http.StatusForbidden || hasSessionCookie(rec) {
-				t.Fatalf("callback after logout = %d, cookie=%v; want 403 and no session", rec.Code, hasSessionCookie(rec))
+			if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/?sso_error=signed_out" || hasSessionCookie(rec) {
+				t.Fatalf("callback after logout = %d %q, cookie=%v; want 302 to /?sso_error=signed_out and no session", rec.Code, rec.Header().Get("Location"), hasSessionCookie(rec))
 			}
 			if !f.auditContains(t, "auth.sso_login_fenced") {
 				t.Error("fenced login not audited")

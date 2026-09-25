@@ -214,8 +214,8 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 		}
 
 		rec := driveSSOCallback(t, srv)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("callback status = %d, want 403", rec.Code)
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/?sso_error=not_linked" {
+			t.Fatalf("callback = %d %q, want 302 to /?sso_error=not_linked", rec.Code, rec.Header().Get("Location"))
 		}
 		if hasSessionCookie(rec) {
 			t.Error("no session may be issued for an unlinked identity")
@@ -250,8 +250,8 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 		}
 
 		rec := driveSSOCallback(t, srv)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("callback status = %d, want 403", rec.Code)
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/?sso_error=not_linked" {
+			t.Fatalf("callback = %d %q, want 302 to /?sso_error=not_linked", rec.Code, rec.Header().Get("Location"))
 		}
 		if hasSessionCookie(rec) {
 			t.Error("no session may be issued for an unlinked identity")
@@ -297,5 +297,28 @@ func TestSSOCallbackStillMatchesOnSub(t *testing.T) {
 	}
 	if got, _ := srv.users.GetBySSOSub("alice-real-sub"); got.ID != alice.ID {
 		t.Errorf("resolved account = %q, want alice", got.ID)
+	}
+}
+
+func TestSSOCallbackDeactivatedAccountRedirectsToLogin(t *testing.T) {
+	srv := newTestServer(t)
+	u, err := srv.users.CreateSSOUser("dora", users.RoleUser, "dora-sub", "dora", "dora@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.users.CreateSSOUser("admin", users.RoleAdmin, "admin-sub", "admin", "admin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.users.Deactivate(u.ID); err != nil {
+		t.Fatal(err)
+	}
+	idp := mockIdP(t, map[string]any{"sub": "dora-sub", "preferred_username": "dora"})
+	srv.oidcHTTP = idp.Client()
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := driveSSOCallback(t, srv)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/?sso_error=deactivated" || hasSessionCookie(rec) {
+		t.Fatalf("callback = %d %q cookie=%v", rec.Code, rec.Header().Get("Location"), hasSessionCookie(rec))
 	}
 }

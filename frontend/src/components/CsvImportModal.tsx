@@ -27,9 +27,10 @@ type Props = {
   groups: VaultGroup[];
   onClose: () => void;
   onImportComplete: (importedCount: number, foldersCreated: string[], skippedDuplicates: number) => void;
+  onImportFailed: (message: string) => void;
 };
 
-export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Props) {
+export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImportFailed }: Props) {
   const [inputMode, setInputMode] = useState<"file" | "paste">("file");
   const [csvContent, setCsvContent] = useState<string>("");
   const [fileName, setFileName] = useState<string>("");
@@ -130,8 +131,11 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
 
       onImportComplete(res.importedCount, res.foldersCreated, res.skippedDuplicates);
       onClose();
-    } catch (err: any) {
-      alert("Failed to import entries: " + (err?.message || String(err)));
+    } catch (err: unknown) {
+      // Entries and folders created before the failure are already in the vault; the
+      // caller schedules a save so they are not lost with the next unrelated edit.
+      onImportFailed(err instanceof Error ? err.message : String(err));
+      onClose();
     } finally {
       setIsImporting(false);
     }
