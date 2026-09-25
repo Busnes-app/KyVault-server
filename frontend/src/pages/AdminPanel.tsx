@@ -32,12 +32,14 @@ type AuditEntry = {
   hash: string;
 };
 
+type AuditVerify = { valid: boolean; writeFailures: number; error: string };
+
 export function AdminPanel({ currentUserId }: { currentUserId: string }) {
   const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit" | "backup">("sso");
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
   const [provisioning, setProvisioning] = useState<{ configured: boolean; basePath: string } | null>(null);
-  const [auditValid, setAuditValid] = useState<boolean | null>(null);
+  const [auditVerify, setAuditVerify] = useState<AuditVerify | "loading" | "unavailable">("loading");
 
   const [ssoSettings, setSsoSettings] = useState<SSOSettings | null>(null);
 
@@ -50,13 +52,14 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
       getJSON<User[]>("/api/admin/users"),
       getJSON<SSOSettings>("/api/admin/sso"),
       getJSON<AuditEntry[]>("/api/audit?limit=50"),
-      getJSON<{ valid: boolean }>("/api/audit/verify"),
+      getJSON<AuditVerify>("/api/audit/verify"),
       getJSON<{ configured: boolean; basePath: string }>("/api/admin/provisioning"),
     ]);
     if (u.status === "fulfilled") setUsersList(u.value || []);
     if (s.status === "fulfilled") setSsoSettings(s.value);
     if (a.status === "fulfilled") setAuditLogs(a.value || []);
-    if (v.status === "fulfilled") setAuditValid(v.value.valid);
+    if (v.status === "fulfilled") setAuditVerify(v.value);
+    else setAuditVerify("unavailable");
     if (p.status === "fulfilled") setProvisioning(p.value);
     const failed = [u, s, a, v, p].filter((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failed.length) setError(toErrorMessage(failed[0].reason, "Some admin data could not be loaded"));
@@ -329,15 +332,10 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
               <h3 style={{ margin: 0 }}>Cryptographic Audit Chain</h3>
-              {auditValid ? (
-                <span className="badge badge-green" style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                  <ShieldCheck size={12} /> Chain Verified
-                </span>
-              ) : (
-                <span className="badge" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
-                  <AlertCircle size={12} /> Integrity Warning
-                </span>
-              )}
+              {auditVerify === "loading" ? <span className="badge">Checking chain…</span>
+               : auditVerify === "unavailable" ? <span className="badge">Could not verify</span>
+               : auditVerify.valid && auditVerify.writeFailures === 0 ? <span className="badge badge-green" style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}><ShieldCheck size={12} /> Chain Verified</span>
+               : <span className="badge" style={{ background: "var(--danger-soft)", color: "var(--danger)" }} title={auditVerify.error || undefined}><AlertCircle size={12} /> {auditVerify.valid ? `${auditVerify.writeFailures} audit writes failed` : "Integrity Warning"}</span>}
             </div>
           </div>
 
@@ -364,7 +362,7 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
                   {log.details || "—"}
                 </div>
                 <div style={{ fontSize: "0.75rem", color: "var(--ink-muted)" }}>
-                  IP: {log.ipAddress} • User: {log.userId || "anon"} • Hash: {log.hash.slice(0, 16)}…
+                  IP: {log.ipAddress} • User: {log.userId || "anon"} • Hash: {(log.hash ?? "").slice(0, 16)}…
                 </div>
               </div>
             ))}
