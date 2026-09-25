@@ -486,7 +486,7 @@ export function App() {
         />
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (
-        <AdminPanel />
+        <AdminPanel currentUserId={user.id} />
       ) : vault ? (
         navTab === "security" ? <SecuritySettings
           user={user}

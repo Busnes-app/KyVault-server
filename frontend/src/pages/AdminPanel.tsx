@@ -32,7 +32,7 @@ type AuditEntry = {
   hash: string;
 };
 
-export function AdminPanel() {
+export function AdminPanel({ currentUserId }: { currentUserId: string }) {
   const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit" | "backup">("sso");
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
@@ -310,6 +310,8 @@ export function AdminPanel() {
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => handleToggleDeactivate(u)}
+                    disabled={u.id === currentUserId}
+                    title={u.id === currentUserId ? "You cannot deactivate your own account" : undefined}
                   >
                     {u.active ? "Deactivate" : "Reactivate"}
                   </button>

@@ -101,7 +101,11 @@ func TestLinkSSORejectsAnUnknownUsername(t *testing.T) {
 }
 
 func TestDeactivateRetiresAnAccountAndIsIdempotent(t *testing.T) {
-	dir := seedUsers(t, `[{"id":"u1","username":"alice","role":"admin","active":true}]`)
+	// A second admin exists so retiring alice is not blocked by the last-admin guard.
+	dir := seedUsers(t, `[
+		{"id":"u1","username":"alice","role":"admin","active":true},
+		{"id":"u2","username":"bob","role":"admin","active":true,"ssoSub":"sub-bob"}
+	]`)
 
 	var out bytes.Buffer
 	if err := runDeactivate(dir, []string{"--username", "alice"}, &out); err != nil {

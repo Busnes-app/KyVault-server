@@ -58,6 +58,7 @@ yourself adding one, the design has been misread.
   browser and is never transmitted. Changing it is a client-side re-wrap against
   `PUT /api/vault/envelopes`.
 - Paper recovery unlocks the vault, not the site.
+- Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.

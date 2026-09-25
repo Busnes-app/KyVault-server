@@ -2,6 +2,7 @@ package users
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,10 @@ func TestStoreLoadsLegacyFileAndDropsCredentialFields(t *testing.T) {
 	    "passwordHash":"deadbeef","authSalt":"abc123","authIterations":600000,
 	    "recoveryHash":"cafebabe","mustChangePassword":true,
 	    "ssoSub":"sub-1","ssoUsername":"alice","ssoEmail":"alice@example.com"
+	  },
+	  {
+	    "id":"u2","username":"bob","role":"admin","active":true,
+	    "ssoSub":"sub-2","ssoUsername":"bob","ssoEmail":"bob@example.com"
 	  }
 	]`)
 
@@ -125,7 +130,11 @@ func TestUserStoreCRUD(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 
-	// 3. Role and activation changes.
+	// 3. Role and activation changes. A second admin exists so demoting u is not
+	// blocked by the last-admin guard.
+	if _, err := store.CreateSSOUser("bob", RoleAdmin, "sso-uuid-bob", "bob_sso", "bob@urlxl.com"); err != nil {
+		t.Fatalf("CreateSSOUser bob failed: %v", err)
+	}
 	if err := store.SetRole(u.ID, RoleUser); err != nil {
 		t.Fatalf("SetRole failed: %v", err)
 	}
@@ -204,5 +213,30 @@ func TestDirectoryUpdateFailureKeepsPreviousRecord(t *testing.T) {
 	after, _ = reloaded.Get(original.ID)
 	if after != original {
 		t.Fatal("failed write changed durable record")
+	}
+}
+
+func TestLastActiveAdminCannotBeRemoved(t *testing.T) {
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	a, _ := s.CreateSSOUser("a", RoleAdmin, "sub-a", "a", "a@x")
+	b, _ := s.CreateSSOUser("b", RoleAdmin, "sub-b", "b", "b@x")
+
+	if err := s.Deactivate(a.ID); err != nil {
+		t.Fatalf("first admin deactivate: %v", err)
+	}
+	if err := s.Deactivate(b.ID); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("last admin deactivate = %v, want ErrLastAdmin", err)
+	}
+	if err := s.SetRole(b.ID, RoleUser); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("last admin demote = %v, want ErrLastAdmin", err)
+	}
+	if err := s.Reactivate(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Deactivate(b.ID); err != nil {
+		t.Fatalf("with two admins deactivate = %v", err)
 	}
 }

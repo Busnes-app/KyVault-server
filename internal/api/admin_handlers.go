@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -35,6 +36,10 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	if err := s.users.SetRole(id, req.Role); err != nil {
+		if errors.Is(err, users.ErrLastAdmin) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, "failed to update role: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -45,7 +50,15 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request, adm
 
 func (s *Server) handleAdminUserDeactivate(w http.ResponseWriter, r *http.Request, admin users.User) {
 	id := r.PathValue("id")
+	if id == admin.ID {
+		http.Error(w, "you cannot deactivate your own account", http.StatusBadRequest)
+		return
+	}
 	if err := s.users.Deactivate(id); err != nil {
+		if errors.Is(err, users.ErrLastAdmin) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, "failed to deactivate user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

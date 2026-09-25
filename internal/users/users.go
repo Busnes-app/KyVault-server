@@ -16,6 +16,8 @@ import (
 var (
 	ErrNotFound      = errors.New("user not found")
 	ErrUsernameTaken = errors.New("username already taken")
+	// ErrLastAdmin: the change would leave no active admin, and there is no local login to fix that.
+	ErrLastAdmin = errors.New("the last active admin cannot be removed")
 )
 
 type Role string
@@ -283,6 +285,16 @@ func (s *Store) LinkSSO(id, sub, username, email string) error {
 	return s.saveLocked()
 }
 
+func (s *Store) activeAdminsLocked() int {
+	n := 0
+	for _, u := range s.users {
+		if u.Active && u.Role == RoleAdmin {
+			n++
+		}
+	}
+	return n
+}
+
 // SetRole updates a user's role.
 func (s *Store) SetRole(id string, role Role) error {
 	s.mu.Lock()
@@ -291,6 +303,10 @@ func (s *Store) SetRole(id string, role Role) error {
 	u, exists := s.users[id]
 	if !exists {
 		return ErrNotFound
+	}
+
+	if u.Active && u.Role == RoleAdmin && role != RoleAdmin && s.activeAdminsLocked() <= 1 {
+		return ErrLastAdmin
 	}
 
 	u.Role = role
@@ -307,6 +323,10 @@ func (s *Store) Deactivate(id string) error {
 	u, exists := s.users[id]
 	if !exists {
 		return ErrNotFound
+	}
+
+	if u.Active && u.Role == RoleAdmin && s.activeAdminsLocked() <= 1 {
+		return ErrLastAdmin
 	}
 
 	u.Active = false
