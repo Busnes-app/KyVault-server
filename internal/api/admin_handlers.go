@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -137,7 +138,14 @@ func (s *Server) handleAuditList(w http.ResponseWriter, r *http.Request, admin u
 		}
 	}
 
-	entries, err := s.audit.List(limit)
+	before := int64(math.MaxInt64)
+	if b := r.URL.Query().Get("before"); b != "" {
+		if val, err := strconv.ParseInt(b, 10, 64); err == nil {
+			before = val
+		}
+	}
+
+	entries, err := s.audit.ListBefore(before, limit)
 	if err != nil {
 		http.Error(w, "failed to read audit logs: "+err.Error(), http.StatusInternalServerError)
 		return

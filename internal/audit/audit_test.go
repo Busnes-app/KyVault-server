@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -532,6 +533,29 @@ func loggedStore(t *testing.T, dir, keyDir string, n int) *Store {
 		}
 	}
 	return store
+}
+
+func TestListBeforePagesWithoutOverlap(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	store := loggedStore(t, dir, keyDir, 7)
+	first, err := store.ListBefore(math.MaxInt64, 3)
+	if err != nil || len(first) != 3 {
+		t.Fatalf("first page: %v %d", err, len(first))
+	}
+	second, err := store.ListBefore(first[len(first)-1].Index, 3)
+	if err != nil || len(second) != 3 {
+		t.Fatalf("second page: %v %d", err, len(second))
+	}
+	if second[0].Index >= first[len(first)-1].Index {
+		t.Fatalf("pages overlap: %d >= %d", second[0].Index, first[len(first)-1].Index)
+	}
+	third, _ := store.ListBefore(second[len(second)-1].Index, 3)
+	if len(third) != 1 {
+		t.Fatalf("last page = %d entries, want 1", len(third))
+	}
+	if rest, _ := store.ListBefore(third[0].Index, 3); len(rest) != 0 {
+		t.Fatalf("beyond the oldest = %d, want 0", len(rest))
+	}
 }
 
 // A mark several writes behind the log is a config volume that was unwritable for a

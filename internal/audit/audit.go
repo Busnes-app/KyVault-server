@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -734,6 +735,12 @@ func (s *Store) Log(ctx context.Context, action, userID, deviceID, ip, details s
 
 // List returns the latest N audit entries.
 func (s *Store) List(limit int) ([]Entry, error) {
+	return s.ListBefore(math.MaxInt64, limit)
+}
+
+// ListBefore returns up to limit entries with Index < before, newest first, letting a
+// caller page backward from the last entry of the previous page without overlap.
+func (s *Store) ListBefore(before int64, limit int) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -760,6 +767,14 @@ func (s *Store) List(limit int) ([]Entry, error) {
 	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
 		entries[i], entries[j] = entries[j], entries[i]
 	}
+
+	filtered := entries[:0]
+	for _, e := range entries {
+		if e.Index < before {
+			filtered = append(filtered, e)
+		}
+	}
+	entries = filtered
 
 	if limit > 0 && len(entries) > limit {
 		entries = entries[:limit]

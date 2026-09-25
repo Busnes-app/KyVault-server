@@ -11,7 +11,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 4. **Bounded Version History & Rollback**: Keep up to 100 snapshots per user spread across a default 90-day age window, with one-click rollback. Saves and rollbacks prune synchronously under the store lock. After age expiry, preserve the oldest/newest snapshots and thin the closest-spaced interior snapshots so a burst of writes cannot erase the pre-session recovery window.
 5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side user credential. See "Replication" and "Authentication" below.
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
-7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
+7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
 8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
 
@@ -62,6 +62,7 @@ yourself adding one, the design has been misread.
 - A version-0 vault shows a create dialog with a confirm field (`lib/unlockMode.ts`); the unlock dialog auto-opens only on the vault tab.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
+- Admin → User Directory changes roles through `PUT /api/admin/users/{id}/role`; the caller's row is disabled and the last-admin 409 is shown inline.
 - User-facing callback failures (identity not linked, account deactivated, login fenced by a logout) redirect to `/?sso_error=<code>`; the login page explains the code. Token and configuration failures keep their status codes.
 - A 401 from any API call except the session probe and logout raises `kyvault:unauthorized`; the app locks the vault and shows the login page with a notice.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing

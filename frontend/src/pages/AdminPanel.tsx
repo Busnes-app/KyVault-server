@@ -1,9 +1,10 @@
 import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
-import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore } from "lucide-react";
+import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore, Copy, Check } from "lucide-react";
 import { AdminBackup } from "../components/AdminBackup";
 import { formatWhen } from "../lib/format";
 import { useDialogs } from "../components/DialogHost";
+import { copyText } from "../lib/clipboard";
 import type { Route } from "../lib/route";
 
 type User = {
@@ -41,7 +42,9 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
   const dialogs = useDialogs();
   const activeTab = route.admin ?? "sso";
   const [usersList, setUsersList] = useState<User[]>([]);
+  const [usersLoaded, setUsersLoaded] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
+  const [auditDone, setAuditDone] = useState(false);
   const [provisioning, setProvisioning] = useState<{ configured: boolean; basePath: string } | null>(null);
   const [auditVerify, setAuditVerify] = useState<AuditVerify | "loading" | "unavailable">("loading");
 
@@ -50,28 +53,68 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [roleError, setRoleError] = useState("");
+  const [scimCopied, setScimCopied] = useState(false);
+  const [redirectCopied, setRedirectCopied] = useState(false);
 
   const loadData = async () => {
-    const [u, s, a, v, p] = await Promise.allSettled([
+    const [u, s, a, p] = await Promise.allSettled([
       getJSON<User[]>("/api/admin/users"),
       getJSON<SSOSettings>("/api/admin/sso"),
       getJSON<AuditEntry[]>("/api/audit?limit=50"),
-      getJSON<AuditVerify>("/api/audit/verify"),
       getJSON<{ configured: boolean; basePath: string }>("/api/admin/provisioning"),
     ]);
-    if (u.status === "fulfilled") setUsersList(u.value || []);
+    if (u.status === "fulfilled") { setUsersList(u.value || []); setUsersLoaded(true); }
     if (s.status === "fulfilled") setSsoSettings(s.value);
-    if (a.status === "fulfilled") setAuditLogs(a.value || []);
-    if (v.status === "fulfilled") setAuditVerify(v.value);
-    else setAuditVerify("unavailable");
+    if (a.status === "fulfilled") { setAuditLogs(a.value || []); setAuditDone((a.value || []).length < 50); }
     if (p.status === "fulfilled") setProvisioning(p.value);
-    const failed = [u, s, a, v, p].filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    const failed = [u, s, a, p].filter((r): r is PromiseRejectedResult => r.status === "rejected");
     if (failed.length) setError(toErrorMessage(failed[0].reason, "Some admin data could not be loaded"));
   };
 
   useEffect(() => {
     loadData();
   }, []);
+
+  // Verification is a full chain walk; only pay for it while the tab is open.
+  useEffect(() => {
+    if (activeTab !== "audit") return;
+    let cancelled = false;
+    setAuditVerify("loading");
+    getJSON<AuditVerify>("/api/audit/verify")
+      .then((v) => { if (!cancelled) setAuditVerify(v); })
+      .catch(() => { if (!cancelled) setAuditVerify("unavailable"); });
+    return () => { cancelled = true; };
+  }, [activeTab]);
+
+  const loadOlderAudit = async () => {
+    const last = auditLogs[auditLogs.length - 1];
+    if (!last) return;
+    try {
+      const older = await getJSON<AuditEntry[]>(`/api/audit?limit=50&before=${last.index}`);
+      setAuditLogs((prev) => [...prev, ...older]);
+      if (older.length < 50) setAuditDone(true);
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to load older audit entries"));
+    }
+  };
+
+  const handleRoleChange = async (u: User, role: "admin" | "user") => {
+    if (role === u.role) return;
+    if (!await dialogs.confirm({
+      title: "Change role?",
+      message: `Make ${u.username} an ${role}?`,
+      confirmLabel: "Change",
+    })) return;
+
+    setRoleError("");
+    try {
+      await putJSON(`/api/admin/users/${u.id}/role`, { role });
+      setUsersList((prev) => prev.map((item) => (item.id === u.id ? { ...item, role } : item)));
+    } catch (err) {
+      setRoleError(toErrorMessage(err, "Failed to change role"));
+    }
+  };
 
   const handleSaveSSO = async (e: FormEvent) => {
     e.preventDefault();
@@ -141,7 +184,7 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
           className={`nav-link-btn ${activeTab === "users" ? "active" : ""}`}
           onClick={() => navigate({ tab: "admin", admin: "users" })}
         >
-          <Users size={16} /> User Directory ({usersList.length})
+          <Users size={16} /> User Directory{usersLoaded ? ` (${usersList.length})` : ""}
         </button>
         <button
           className={`nav-link-btn ${activeTab === "audit" ? "active" : ""}`}
@@ -203,6 +246,25 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
               + KySignOn Preset
             </button>
           </div>
+
+          <label className="input-group">
+            <span className="input-label">Redirect URI to register with KySignOn</span>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <input className="input font-mono" readOnly value={`${window.location.origin}/api/auth/oidc/callback`} />
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={async () => {
+                  if (await copyText(`${window.location.origin}/api/auth/oidc/callback`)) {
+                    setRedirectCopied(true);
+                    setTimeout(() => setRedirectCopied(false), 2000);
+                  }
+                }}
+              >
+                {redirectCopied ? <Check size={14} color="#10b981" /> : <Copy size={14} />} Copy
+              </button>
+            </div>
+          </label>
 
           {ssoSettings ? (
             <form onSubmit={handleSaveSSO}>
@@ -272,7 +334,21 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
             {provisioning ? (
               <label className="input-group">
                 <span className="input-label">SCIM base URL</span>
-                <input className="input font-mono" readOnly value={new URL(provisioning.basePath, window.location.origin).href} />
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <input className="input font-mono" readOnly value={new URL(provisioning.basePath, window.location.origin).href} />
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={async () => {
+                      if (await copyText(new URL(provisioning.basePath, window.location.origin).href)) {
+                        setScimCopied(true);
+                        setTimeout(() => setScimCopied(false), 2000);
+                      }
+                    }}
+                  >
+                    {scimCopied ? <Check size={14} color="#10b981" /> : <Copy size={14} />} Copy
+                  </button>
+                </div>
               </label>
             ) : null}
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>
@@ -292,6 +368,12 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
               local overrides.
             </p>
           </div>
+
+          {roleError ? (
+            <div role="alert" className="field-card" style={{ color: "var(--danger)", marginBottom: "1rem" }}>
+              {roleError}
+            </div>
+          ) : null}
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {usersList.map((u) => (
@@ -319,7 +401,17 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
                     ID: <code>{u.id}</code> {u.ssoSub ? `• Linked SSO: ${u.ssoSub}` : ""}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: "0.5rem" }}>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <select
+                    className="input font-mono"
+                    value={u.role}
+                    disabled={u.id === currentUserId}
+                    title={u.id === currentUserId ? "You cannot change your own role" : undefined}
+                    onChange={(e) => void handleRoleChange(u, e.target.value as "admin" | "user")}
+                  >
+                    <option value="user">user</option>
+                    <option value="admin">admin</option>
+                  </select>
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => handleToggleDeactivate(u)}
@@ -376,6 +468,11 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
               </div>
             ))}
           </div>
+          {!auditDone && auditLogs.length ? (
+            <button className="btn btn-secondary btn-sm" style={{ marginTop: "1rem" }} onClick={() => void loadOlderAudit()}>
+              Load older
+            </button>
+          ) : null}
         </div>
       )}
     </div>

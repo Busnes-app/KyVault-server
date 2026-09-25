@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -437,5 +438,33 @@ func TestAdminCannotDeactivateSelfOrLastAdmin(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("demote last admin = %d, want 409", rec.Code)
+	}
+}
+
+func TestAuditListBefore(t *testing.T) {
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+	get := func(q string) []map[string]any {
+		req := httptest.NewRequest(http.MethodGet, "/api/audit?"+q, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		var out []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v %s", err, rec.Body)
+		}
+		return out
+	}
+	all := get("limit=100")
+	if len(all) < 2 {
+		t.Skip("need at least two audit rows")
+	}
+	last := int64(all[0]["index"].(float64))
+	older := get(fmt.Sprintf("limit=1&before=%d", last))
+	if len(older) != 1 || int64(older[0]["index"].(float64)) >= last {
+		t.Fatalf("before did not page: %v", older)
+	}
+	if bad := get("limit=1&before=x"); len(bad) == 0 {
+		t.Fatalf("an invalid before must be ignored, not fail")
 	}
 }
