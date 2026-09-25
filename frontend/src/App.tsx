@@ -21,6 +21,7 @@ import { SecuritySettings } from "./pages/SecuritySettings";
 import { AdminPanel } from "./pages/AdminPanel";
 import { HistoryModal } from "./components/HistoryModal";
 import { Dialog } from "./components/Dialog";
+import { useDialogs } from "./components/DialogHost";
 import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
 import "./styles/styles.css";
 
@@ -47,6 +48,7 @@ const noSubscribe = () => () => {};
 const idleSnapshot = () => idleSave;
 
 export function App() {
+  const dialogs = useDialogs();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [navTab, setNavTab] = useState<"vault" | "security" | "admin">("vault");
@@ -80,7 +82,12 @@ export function App() {
   }, [unsaved]);
 
   const confirmDiscardVault = () => canDiscardVault(saveState, hasDraft, () =>
-    confirm("Some edits are unsaved or still saving. Continue and discard unsaved edits? An upload already accepted by the server cannot be undone."));
+    dialogs.confirm({
+      title: "Discard unsaved edits?",
+      message: "Some edits are unsaved or still saving. Continue and discard unsaved edits? An upload already accepted by the server cannot be undone.",
+      confirmLabel: "Discard",
+      danger: true,
+    }));
 
   // Replacing or closing a vault must never leave a timer/old upload able to save later.
   useEffect(() => () => { saveQueue?.discard(); }, [saveQueue]);
@@ -366,7 +373,7 @@ export function App() {
 
   const changeAutoLock = (minutes: AutoLockMinutes) => {
     setAutoLockMinutes(minutes);
-    try { storeAutoLockMinutes(minutes); } catch { alert("The timeout applies to this tab, but browser storage could not save the preference."); }
+    try { storeAutoLockMinutes(minutes); } catch { void dialogs.notify({ title: "Setting not saved", message: "The timeout applies to this tab, but browser storage could not save the preference." }); }
   };
 
   const logout = async () => {
@@ -382,12 +389,12 @@ export function App() {
   };
 
   const handleLogout = async () => {
-    if (!confirmDiscardVault()) return;
-    try { await logout(); } catch { alert("Vault locked locally, but server logout failed. Retry signing out when the connection returns."); }
+    if (!await confirmDiscardVault()) return;
+    try { await logout(); } catch { await dialogs.notify({ title: "Sign-out did not reach the server", message: "Vault locked locally, but server logout failed. Retry signing out when the connection returns." }); }
   };
 
   const handleForgetDevice = async () => {
-    if (!confirmDiscardVault()) return;
+    if (!await confirmDiscardVault()) return;
     const username = user?.username;
     closeVault();
     // Neither storage failure nor a stalled logout may prevent the other action starting.
@@ -406,13 +413,13 @@ export function App() {
       }),
       logout(),
     ]);
-    if (results[0].status === "rejected") alert("Could not forget this device. Clear this site's browser data to remove its saved vault key.");
-    if (results[1].status === "rejected") alert("Could not remove the local recovery copy. Clear this site’s browser data.");
-    if (results[2].status === "rejected") alert("Vault locked locally, but server logout failed.");
+    if (results[0].status === "rejected") await dialogs.notify({ title: "Could not complete that", message: "Could not forget this device. Clear this site's browser data to remove its saved vault key." });
+    if (results[1].status === "rejected") await dialogs.notify({ title: "Could not complete that", message: "Could not remove the local recovery copy. Clear this site’s browser data." });
+    if (results[2].status === "rejected") await dialogs.notify({ title: "Sign-out did not reach the server", message: "Vault locked locally, but server logout failed." });
   };
 
-  const handleLockVault = () => {
-    if (!confirmDiscardVault()) return;
+  const handleLockVault = async () => {
+    if (!await confirmDiscardVault()) return;
     closeVault();
     setShowUnlockModal(true);
   };
@@ -501,7 +508,7 @@ export function App() {
           vaultKey={vaultKey!}
           autoLockMinutes={autoLockMinutes}
           onAutoLockChange={changeAutoLock}
-          onUserUpdated={() => { if (confirmDiscardVault()) void checkAuth(); }}
+          onUserUpdated={async () => { if (await confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
         /> : null
       ) : (

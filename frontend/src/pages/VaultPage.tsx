@@ -12,6 +12,7 @@ import { HistoryModal } from "../components/HistoryModal";
 import { EntryHistoryModal } from "../components/EntryHistoryModal";
 import { EntryAttachments } from "../components/EntryAttachments";
 import { CsvImportModal } from "../components/CsvImportModal";
+import { useDialogs } from "../components/DialogHost";
 import {
   Folder,
   Plus,
@@ -50,6 +51,7 @@ type Props = {
 };
 
 export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft }: Props) {
+  const dialogs = useDialogs();
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
   const [recycledIds, setRecycledIds] = useState<Set<string>>(new Set());
@@ -116,7 +118,12 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     uuid: selectedEntryUuid, title: editTitle, username: editUsername, password: editPassword,
     url: editUrl, notes: editNotes, totpSeed: editTotp, groupUuid: editGroupUuid,
   } : null); }, [draftDirty, selectedEntryUuid, editTitle, editUsername, editPassword, editUrl, editNotes, editTotp, editGroupUuid, onDraftChange]);
-  const canChangeEntry = () => !draftDirty || confirm("Discard unapplied entry edits?");
+  const canChangeEntry = async () => !draftDirty || dialogs.confirm({
+    title: "Discard unsaved edits?",
+    message: "Discard unapplied entry edits?",
+    confirmLabel: "Discard",
+    danger: true,
+  });
 
   // Load selected entry into editor
   const loadEditor = () => {
@@ -193,8 +200,8 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     refreshVaultData();
   };
 
-  const handleCreateNewEntry = () => {
-    if (!canChangeEntry()) return;
+  const handleCreateNewEntry = async () => {
+    if (!await canChangeEntry()) return;
     const newEntry = vault.createEntry({
       title: "New Account",
       username: "",
@@ -210,18 +217,25 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     setIsEditing(true);
   };
 
-  const handleDeleteEntry = () => {
+  const handleDeleteEntry = async () => {
     if (!selectedEntryUuid) return;
-    const message = vault.recyclingEnabled ? "Move this entry to the Recycle Bin?" :
-      "Recycling is disabled for this vault. Permanently delete this entry from the current vault? Existing snapshots and backups may still contain it.";
-    if (!confirm(message)) return;
+    const permanent = !vault.recyclingEnabled;
+    const message = permanent ? "Recycling is disabled for this vault. Permanently delete this entry from the current vault? Existing snapshots and backups may still contain it." :
+      "Move this entry to the Recycle Bin?";
+    const ok = await dialogs.confirm({
+      title: permanent ? "Delete permanently?" : "Move to Recycle Bin?",
+      message,
+      confirmLabel: permanent ? "Delete" : "Move",
+      danger: permanent,
+    });
+    if (!ok) return;
     vault.deleteEntry(selectedEntryUuid);
     onChanged();
     setSelectedEntryUuid(null);
     refreshVaultData();
   };
 
-  const handleRestoreEntry = () => {
+  const handleRestoreEntry = async () => {
     if (!selectedEntryUuid) return;
     try {
       vault.restoreEntry(selectedEntryUuid);
@@ -230,26 +244,35 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       setSelectedGroupUuid("all");
       setShowReusedPasswords(false);
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to restore entry.");
+      await dialogs.notify({ title: "Entry not restored", message: error instanceof Error ? error.message : "Unable to restore entry." });
     }
   };
 
   const selectedFolder = groups.find(group => group.uuid === selectedGroupUuid);
-  const handleCreateGroup = () => {
-    const name = prompt(selectedFolder ? `New subfolder in "${selectedFolder.path}":` : "New folder name:");
+  const handleCreateGroup = async () => {
+    const name = await dialogs.prompt({
+      title: "New folder",
+      label: selectedFolder ? `New subfolder in "${selectedFolder.path}"` : "New folder name",
+      validate: (v) => v.trim() ? null : "Enter a folder name.",
+    });
     if (name === null) return;
     try {
       vault.createGroup(name, selectedFolder?.uuid);
       onChanged();
       refreshVaultData();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to create folder.");
+      await dialogs.notify({ title: "Folder not created", message: error instanceof Error ? error.message : "Unable to create folder." });
     }
   };
 
-  const handleRenameGroup = () => {
+  const handleRenameGroup = async () => {
     if (!selectedFolder) return;
-    const name = prompt("Rename folder:", selectedFolder.name);
+    const name = await dialogs.prompt({
+      title: "Rename folder",
+      label: "Folder name",
+      defaultValue: selectedFolder.name,
+      validate: (v) => v.trim() ? null : "Enter a folder name.",
+    });
     if (name === null) return;
     try {
       if (vault.renameGroup(selectedFolder.uuid, name)) {
@@ -257,7 +280,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         refreshVaultData();
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Unable to rename folder.");
+      await dialogs.notify({ title: "Folder not renamed", message: error instanceof Error ? error.message : "Unable to rename folder." });
     }
   };
 
@@ -306,7 +329,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         </div>
 
         <button type="button" className={`group-item ${selectedGroupUuid === "recycle" ? "active" : ""}`}
-          onClick={() => { if (canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); } }}>
+          onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); } }}>
           <span style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}><Trash2 size={16} /> Recycle Bin</span>
           <span>{recycledIds.size}</span>
         </button>
@@ -457,7 +480,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     <button className="btn btn-danger btn-sm" onClick={() => void onSave({ overwrite: true })}>Overwrite server copy</button>
                     <button
                       className="btn btn-secondary btn-sm"
-                      onClick={() => { if (confirm("Discard the unsaved edits in this tab and reload the server copy?")) void onReload(); }}
+                      onClick={async () => { if (await dialogs.confirm({ title: "Reload server copy?", message: "Discard the unsaved edits in this tab and reload the server copy?", confirmLabel: "Reload", danger: true })) void onReload(); }}
                     >
                       Reload server copy
                     </button>
@@ -488,7 +511,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={() => { if (canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); } }}
+                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); } }}
               >
                 <div className="entry-title">
                   <span>{e.title || "Untitled"}</span>

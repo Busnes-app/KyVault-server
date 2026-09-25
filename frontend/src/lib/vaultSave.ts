@@ -22,7 +22,7 @@ export async function uploadVault(binary: ArrayBuffer, version: number, password
 }
 
 // Security actions may proceed in every save state; only the user's refusal cancels them.
-export function canDiscardVault(state: SaveState, hasDraft: boolean, confirmDiscard: () => boolean): boolean {
+export async function canDiscardVault(state: SaveState, hasDraft: boolean, confirmDiscard: () => Promise<boolean>): Promise<boolean> {
   return (!hasDraft && state.kind === "saved") || confirmDiscard();
 }
 

@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { RotateCcw, AlertTriangle, Trash2, CheckCircle2 } from "lucide-react";
 import { Dialog } from "./Dialog";
+import { useDialogs } from "./DialogHost";
 
 type HistoryEntry = {
   id: string;
@@ -29,6 +30,7 @@ type Props = {
 };
 
 export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: Props) {
+  const dialogs = useDialogs();
   const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -61,7 +63,12 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
 
   const restoreSnapshot = async (id: string) => {
     if (!allowRollback || busyId !== null) return;
-    if (!confirm(`Are you sure you want to rollback to snapshot ${id}? Current changes will be archived.`)) return;
+    if (!await dialogs.confirm({
+      title: "Roll back the vault?",
+      message: `Roll back to snapshot ${id}? Current changes will be archived.`,
+      confirmLabel: "Roll back",
+      danger: true,
+    })) return;
     setBusyId(id);
     setMessage("");
     setError("");
@@ -78,7 +85,12 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
 
   const discardConflict = async (id: string) => {
     if (!allowRollback || busyId !== null) return;
-    if (!confirm("Are you sure you want to discard this conflict upload?")) return;
+    if (!await dialogs.confirm({
+      title: "Discard this conflict?",
+      message: "Discard this conflict upload?",
+      confirmLabel: "Discard",
+      danger: true,
+    })) return;
     setBusyId(id);
     setMessage("");
     setError("");

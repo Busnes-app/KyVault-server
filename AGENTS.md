@@ -319,7 +319,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   shared CSRF request helper. `App.tsx` retains
   the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
   rollback. Lock/logout/forget always allow the user to confirm discarding unsaved or in-flight
-  edits; saving cannot refuse those actions. Closing/replacing the queue cancels its timer,
+  edits; saving cannot refuse those actions. `canDiscardVault` takes an async confirmer (the
+  `useDialogs()` confirm dialog, never a native `confirm()`) so every caller awaits it.
+  Closing/replacing the queue cancels its timer,
   aborts transport and prevents later revisions uploading. An already accepted request cannot
   be undone. Logout clears the visible vault before network I/O; forgetting starts key removal
   independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.

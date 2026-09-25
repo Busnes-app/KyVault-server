@@ -4,6 +4,7 @@ import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCryp
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
+import { useDialogs } from "../components/DialogHost";
 
 import { AUTO_LOCK_MINUTES, parseAutoLockMinutes, type AutoLockMinutes } from "../lib/autoLock";
 import { formatWhen } from "../lib/format";
@@ -26,6 +27,7 @@ type Props = {
 };
 
 export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange }: Props) {
+  const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -111,7 +113,11 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   };
 
   const handleGeneratePaperRecovery = async () => {
-    if (!confirm("Generating a new paper recovery code will invalidate any previous paper backup. Proceed?")) return;
+    if (!await dialogs.confirm({
+      title: "Generate a new paper code?",
+      message: "Generating a new paper recovery code will invalidate any previous paper backup. Proceed?",
+      confirmLabel: "Generate",
+    })) return;
     setBusy(true);
     setMessage("");
     setError("");
@@ -155,11 +161,13 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       setShowVaultKey(false);
       return;
     }
-    if (!confirm(
-      "Your vault key unlocks everything, on any device, forever — and unlike your master " +
+    if (!await dialogs.confirm({
+      title: "Show the vault key?",
+      message: "Your vault key unlocks everything, on any device, forever — and unlike your master " +
       "password it cannot be changed without re-encrypting the vault. Only reveal it if you " +
-      "are printing it for offline recovery, and nobody can see your screen.\n\nShow it?",
-    )) return;
+      "are printing it for offline recovery, and nobody can see your screen.",
+      confirmLabel: "Show",
+    })) return;
     setBusy(true);
     setMessage("");
     setError("");
@@ -175,7 +183,12 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
   const handleRevokeDevice = async (id: string, name: string) => {
     if (revoking) return;
-    if (!confirm(`Revoke access for device "${name}"?`)) return;
+    if (!await dialogs.confirm({
+      title: "Revoke device?",
+      message: `Revoke access for device "${name}"?`,
+      confirmLabel: "Revoke",
+      danger: true,
+    })) return;
     setRevoking(id);
     setError("");
     setMessage("");

@@ -3,6 +3,7 @@ import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
 import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore } from "lucide-react";
 import { AdminBackup } from "../components/AdminBackup";
 import { formatWhen } from "../lib/format";
+import { useDialogs } from "../components/DialogHost";
 
 type User = {
   id: string;
@@ -36,6 +37,7 @@ type AuditEntry = {
 type AuditVerify = { valid: boolean; writeFailures: number; error: string };
 
 export function AdminPanel({ currentUserId }: { currentUserId: string }) {
+  const dialogs = useDialogs();
   const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit" | "backup">("sso");
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
@@ -100,7 +102,12 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
 
   const handleToggleDeactivate = async (u: User) => {
     const action = u.active ? "deactivate" : "reactivate";
-    if (!confirm(`${action === "deactivate" ? "Deactivate" : "Reactivate"} user "${u.username}"?`)) return;
+    if (!await dialogs.confirm({
+      title: action === "deactivate" ? "Deactivate user?" : "Reactivate user?",
+      message: `${action === "deactivate" ? "Deactivate" : "Reactivate"} user "${u.username}"?`,
+      confirmLabel: action === "deactivate" ? "Deactivate" : "Reactivate",
+      danger: action === "deactivate",
+    })) return;
 
     try {
       await postJSON(`/api/admin/users/${u.id}/${action}`, {});

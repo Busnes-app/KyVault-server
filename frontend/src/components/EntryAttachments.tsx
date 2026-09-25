@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { MAX_ATTACHMENT_BYTES, type KeePassVault } from "../lib/kdbx";
 import { downloadBlob } from "../lib/download";
+import { useDialogs } from "./DialogHost";
 
 type Props = {
   vault: KeePassVault;
@@ -10,6 +11,7 @@ type Props = {
 };
 
 export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Props) {
+  const dialogs = useDialogs();
   const inputId = useId();
   const pending = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,13 +54,14 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
     }
   };
 
-  const remove = (name: string) => {
+  const remove = async (name: string) => {
     if (readOnly || busy) return;
-    if (!confirm(removeFromHistory
+    const message = removeFromHistory
       ? "Remove this file and all copies with this name from this entry's history? Other entries, vault snapshots and backups may still contain copies."
       : vault.entryHistoryEnabled
       ? "Remove this attachment? The previous entry version is kept in Entry History. Existing snapshots and backups may also contain the file."
-      : "Remove this attachment? Entry history is disabled. Existing snapshots and backups may still contain the file.")) return;
+      : "Remove this attachment? Entry history is disabled. Existing snapshots and backups may still contain the file.";
+    if (!await dialogs.confirm({ title: "Remove attachment?", message, confirmLabel: "Remove", danger: true })) return;
     try {
       if (vault.removeAttachment(entryUuid, name, removeFromHistory)) onChanged();
       setError("");
@@ -67,8 +70,14 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
     }
   };
 
-  const clearHistory = () => {
-    if (readOnly || busy || !confirm("Remove all attachment copies from this entry's history? Current attachments and historical password fields will be kept. Other entries, snapshots and backups may still contain copies.")) return;
+  const clearHistory = async () => {
+    if (readOnly || busy) return;
+    if (!await dialogs.confirm({
+      title: "Clear attachment history?",
+      message: "Remove all attachment copies from this entry's history? Current attachments and historical password fields will be kept. Other entries, snapshots and backups may still contain copies.",
+      confirmLabel: "Clear",
+      danger: true,
+    })) return;
     try {
       if (vault.clearAttachmentHistory(entryUuid)) onChanged();
       setError("");

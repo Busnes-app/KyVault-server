@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { KeePassVault } from "../lib/kdbx";
 import { Dialog } from "./Dialog";
+import { useDialogs } from "./DialogHost";
 
 type Props = {
   vault: KeePassVault;
@@ -11,6 +12,7 @@ type Props = {
 };
 
 export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, onClose }: Props) {
+  const dialogs = useDialogs();
   const versions = vault.getEntryHistory(entryUuid);
   const [selectedIndex, setSelectedIndex] = useState(versions[0]?.index ?? -1);
   const [reveal, setReveal] = useState(false);
@@ -18,9 +20,13 @@ export function EntryHistoryModal({ vault, entryUuid, allowRestore, onRestored, 
   const selected = versions.find(version => version.index === selectedIndex);
   const preview = selected ? vault.getEntryHistoryVersion(entryUuid, selected.index) : null;
 
-  const restore = () => {
+  const restore = async () => {
     if (!allowRestore || !selected) return;
-    if (!confirm("Restore this entry version? The current version will be kept in entry history. The entry will stay in its current folder.")) return;
+    if (!await dialogs.confirm({
+      title: "Restore this version?",
+      message: "Restore this entry version? The current version will be kept in entry history. The entry will stay in its current folder.",
+      confirmLabel: "Restore",
+    })) return;
     try {
       vault.restoreEntryVersion(entryUuid, selected.index);
       onRestored();
