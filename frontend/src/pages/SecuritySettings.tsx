@@ -45,7 +45,12 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   // A lock cancels pending dialogs (App.tsx closeVault), but these handlers hold the
   // vault key in closure across awaits; a stale resume must not act on an unmounted page.
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  useEffect(() => {
+    // StrictMode mounts, cleans up, and mounts again on the same instance; re-arm on
+    // every mount so the replay does not leave the guard permanently tripped.
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
   const loadDevices = async () => {
     try {
