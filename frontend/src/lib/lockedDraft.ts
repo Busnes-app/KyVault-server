@@ -1,4 +1,5 @@
-// A per-tab encrypted checkpoint. It never contains a password or a vault key.
+// A per-tab encrypted checkpoint of the vault bytes and unapplied entry fields (which can
+// include an entry password). It never contains the master password or the vault key.
 export type EntryDraft = {
   uuid: string; title: string; username: string; password: string;
   url: string; notes: string; totpSeed: string; groupUuid: string;
@@ -28,13 +29,15 @@ export async function sealDraft(binary: ArrayBuffer, metadata: DraftMetadata, ke
 export async function openDraft(draft: LockedDraft, key: Uint8Array, account: string): Promise<{ binary: ArrayBuffer; metadata: DraftMetadata }> {
   const cryptoKey = await crypto.subtle.importKey("raw", new Uint8Array(key), "AES-GCM", false, ["decrypt"]);
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: draft.iv, additionalData: new TextEncoder().encode(account) }, cryptoKey, draft.ciphertext);
-  const length = new DataView(plain).getUint32(0);
-  if (length > plain.byteLength - 4) throw new Error("Invalid recovery copy");
-  const metadata: unknown = JSON.parse(new TextDecoder().decode(plain.slice(4, 4 + length)));
-  if (typeof metadata !== "object" || metadata === null || !("version" in metadata) || typeof metadata.version !== "number" ||
-      !Number.isSafeInteger(metadata.version) || metadata.version < 1 || !("dirty" in metadata) || typeof metadata.dirty !== "boolean" ||
-      !("entry" in metadata) || !isEntryDraft(metadata.entry)) throw new Error("Invalid recovery copy");
-  return { binary: plain.slice(4 + length), metadata: { version: metadata.version, dirty: metadata.dirty, entry: metadata.entry } };
+  try {
+    const length = new DataView(plain).getUint32(0);
+    if (length > plain.byteLength - 4) throw new Error("Invalid recovery copy");
+    const metadata: unknown = JSON.parse(new TextDecoder().decode(plain.slice(4, 4 + length)));
+    if (typeof metadata !== "object" || metadata === null || !("version" in metadata) || typeof metadata.version !== "number" ||
+        !Number.isSafeInteger(metadata.version) || metadata.version < 1 || !("dirty" in metadata) || typeof metadata.dirty !== "boolean" ||
+        !("entry" in metadata) || !isEntryDraft(metadata.entry)) throw new Error("Invalid recovery copy");
+    return { binary: plain.slice(4 + length), metadata: { version: metadata.version, dirty: metadata.dirty, entry: metadata.entry } };
+  } finally { new Uint8Array(plain).fill(0); }
 }
 
 function isEntryDraft(value: unknown): value is EntryDraft | null {

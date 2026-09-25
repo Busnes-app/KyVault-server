@@ -45,3 +45,14 @@ test("recovery storage outages resolve as degraded results rather than aborting 
   assert.equal(await removeDraft("account:checkpoint"), false);
   assert.deepEqual(await readDraft(undefined), { kind: "available", draft: undefined });
 });
+
+test("openDraft returns copies and does not keep the decrypted buffer", async () => {
+  const key = new Uint8Array(32).fill(1);
+  const binary = new Uint8Array([9, 8, 7]).buffer;
+  const draft = await sealDraft(binary, { version: 3, dirty: true, entry: null }, key, "acct");
+  const opened = await openDraft(draft, key, "acct");
+  assert.deepEqual(new Uint8Array(opened.binary), new Uint8Array([9, 8, 7]));
+  assert.equal(opened.metadata.version, 3);
+  // The returned buffers are slices, so zeroing the internal plaintext cannot touch them.
+  assert.notEqual(opened.binary.byteLength, 0);
+});
