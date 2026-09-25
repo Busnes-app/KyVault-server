@@ -57,8 +57,8 @@ yourself adding one, the design has been misread.
 - The master password is not a credential. It unwraps the vault key envelope in the
   browser and is never transmitted. Changing it is a client-side re-wrap against
   `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
-  offline vault key each require the current master password, verified in the browser
-  against the stored envelope (`verifyMasterPassword`).
+  offline vault key each require the current master password or paper code, verified in
+  the browser against the stored envelope (`verifyMasterPassword`).
 - Paper recovery unlocks the vault, not the site.
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
@@ -329,7 +329,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts` and `frontend/src/lib/deviceKey.ts`: manages the IndexedDB
   `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)
   under a non-extractable per-browser CryptoKey held in the same store; legacy plain-hex
-  records are ignored and replaced on the next password unlock. Forget This Device clears it.
+  records are deleted on sight, and the next password unlock writes a sealed record.
+  Forget This Device clears it.
 - `frontend/src/lib/vaultCrypto.ts`: the vault key envelope — **the only place a
   human-chosen secret is stretched**. Everything else is keyed on a 256-bit random vault
   key, where the KDF is near-irrelevant; here it is the whole defence, and the envelope is

@@ -1,6 +1,6 @@
-// The cached vault key is encrypted at rest under a per-browser AES-GCM key that
-// WebCrypto refuses to export. A copy of the IndexedDB files alone no longer yields the
-// vault key; a script running on this origin still can, which is what the CSP is for.
+// The cached vault key is no longer a greppable hex string, and page script cannot export
+// the wrapping key through this API. An attacker who copies the profile and parses the
+// IndexedDB store still recovers both; that is why the CSP exists.
 export type SealedKey = { iv: Uint8Array; ciphertext: Uint8Array };
 
 export function newWrappingKey(): Promise<CryptoKey> {

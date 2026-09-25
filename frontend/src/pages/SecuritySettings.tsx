@@ -55,13 +55,19 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   // Every action below either changes what protects the vault key or shows it.
   // Prove the current master password first; it never leaves the browser.
   const proveCurrentPassword = async (): Promise<boolean> => {
-    const meta = await getJSON<{ passwordEnvelope?: string }>("/api/vault/metadata");
-    if (!meta.passwordEnvelope) { setError("No master password envelope is stored for this vault."); return false; }
-    if (!(await verifyMasterPassword(meta.passwordEnvelope, currentPassword, vaultKey))) {
-      setError("The current master password is incorrect.");
+    const meta = await getJSON<{ passwordEnvelope?: string; recoveryEnvelope?: string }>("/api/vault/metadata");
+    if (!meta.passwordEnvelope && !meta.recoveryEnvelope) {
+      setError("No master password or paper code envelope is stored for this vault.");
       return false;
     }
-    return true;
+    if (meta.passwordEnvelope && (await verifyMasterPassword(meta.passwordEnvelope, currentPassword, vaultKey))) {
+      return true;
+    }
+    if (meta.recoveryEnvelope && (await verifyMasterPassword(meta.recoveryEnvelope, currentPassword, vaultKey))) {
+      return true;
+    }
+    setError("The current master password or paper code is incorrect.");
+    return false;
   };
 
   const handleChangePassword = async (e: FormEvent) => {
@@ -88,7 +94,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         passwordEnvelope: newEnvelope,
       });
 
-      setMessage("Master password changed and vault key re-wrapped successfully.");
+      setMessage("Master password changed and vault key re-wrapped.");
       setNewPassword("");
       setConfirmPassword("");
       setCurrentPassword("");
@@ -240,7 +246,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </p>
 
         <div className="input-group">
-          <label className="input-label" htmlFor="current-master-password">Current Master Password</label>
+          <label className="input-label" htmlFor="current-master-password">Current Master Password or Paper Code</label>
           <input id="current-master-password" type="password" className="input" autoComplete="current-password"
             value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
           <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>Needed to change the password, generate a paper code or show the vault key. Checked in this browser only.</p>

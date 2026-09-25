@@ -67,8 +67,11 @@ export async function getDeviceVaultKey(username: string): Promise<string | unde
   const db = await openDatabase();
   try {
     const record = await run<KeyRecord | undefined>(db, "readonly", (s) => s.get(username));
-    // A legacy plain-hex record is ignored and replaced on the next password unlock.
-    if (!record?.sealed) return undefined;
+    // A legacy plain-hex record is deleted on sight; the next password unlock writes a sealed record.
+    if (!record?.sealed) {
+      await run(db, "readwrite", (s) => s.delete(username));
+      return undefined;
+    }
     return await openKeyHex(await wrappingKey(db), record.sealed);
   } finally {
     db.close();
@@ -79,15 +82,6 @@ export async function clearDeviceVaultKey(username: string): Promise<void> {
   const db = await openDatabase();
   try {
     await run(db, "readwrite", (s) => s.delete(username));
-  } finally {
-    db.close();
-  }
-}
-
-export async function clearAllDeviceVaultKeys(): Promise<void> {
-  const db = await openDatabase();
-  try {
-    await run(db, "readwrite", (s) => s.clear());
   } finally {
     db.close();
   }

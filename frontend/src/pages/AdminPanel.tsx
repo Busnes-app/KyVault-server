@@ -75,6 +75,7 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
 
     try {
       await putJSON("/api/admin/sso", { ...ssoSettings, enabled: true });
+      setSsoSettings({ ...ssoSettings, clientSecret: "", clientSecretSet: true });
       setMessage("SSO settings saved.");
     } catch (err) {
       setError(toErrorMessage(err, "Failed to save SSO settings"));
@@ -248,7 +249,7 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
               </button>
             </form>
           ) : (
-            <p>Loading SSO settings…</p>
+            <p>{error ? "SSO settings could not be loaded." : "Loading SSO settings…"}</p>
           )}
         </div>
       ) : activeTab === "users" ? (
