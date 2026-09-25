@@ -37,6 +37,18 @@ export class DialogQueue {
     this.notify();
   }
 
+  // Answers every open question with its kind's cancel value and clears the queue,
+  // so a handler suspended mid-question cannot be resumed later.
+  cancelAll(): void {
+    const rest = this.pending;
+    this.pending = [];
+    for (const item of rest) {
+      const cancelValue = item.request.kind === "confirm" ? false : item.request.kind === "prompt" ? null : undefined;
+      item.resolve(cancelValue);
+    }
+    if (rest.length) this.notify();
+  }
+
   // Arrow property so React can hold a stable reference for useSyncExternalStore.
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);

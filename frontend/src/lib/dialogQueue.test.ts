@@ -23,3 +23,15 @@ test("settle without a current dialog is a no-op", () => {
   q.settle(true);
   assert.equal(q.current(), null);
 });
+
+test("cancelAll answers every pending question with its cancel value", async () => {
+  const q = new DialogQueue();
+  const a = q.ask<boolean>({ kind: "confirm", title: "A" });
+  const b = q.ask<string | null>({ kind: "prompt", title: "B" });
+  const c = q.ask<void>({ kind: "notify", title: "C" });
+  q.cancelAll();
+  assert.equal(await a, false);
+  assert.equal(await b, null);
+  assert.equal(await c, undefined);
+  assert.equal(q.current(), null);
+});

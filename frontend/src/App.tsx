@@ -296,6 +296,9 @@ export function App() {
   };
 
   const closeVault = () => {
+    // A question asked before the lock must not be answerable after it: the handler
+    // that asked still holds the vault key in its closure.
+    dialogs.cancelAll();
     unlockGeneration.current++;
     if (user) {
       try { sessionStorage.setItem(`kyvault.locked:${user.id}`, "1"); } catch {}

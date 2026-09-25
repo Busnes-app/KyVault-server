@@ -341,6 +341,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   and `alert` are banned in `frontend/src`. `noNativeDialogs.test.ts` fails the suite if one comes back.
   Autofocus inside a `Dialog` uses `data-autofocus`, not the React `autoFocus` prop: React
   never emits an `autofocus` DOM attribute, so `Dialog`'s `[autofocus]` lookup was dead code.
+  Locking the vault cancels every pending question (`cancelAll`) so a handler that captured
+  the vault key cannot be resumed from a locked screen.
 
 - `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;

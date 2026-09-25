@@ -1,4 +1,4 @@
-import React, { useState, useEffect, FormEvent } from "react";
+import React, { useState, useEffect, useRef, FormEvent } from "react";
 import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCrypto";
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
@@ -41,6 +41,11 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [revoking, setRevoking] = useState<string | null>(null);
+
+  // A lock cancels pending dialogs (App.tsx closeVault), but these handlers hold the
+  // vault key in closure across awaits; a stale resume must not act on an unmounted page.
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
 
   const loadDevices = async () => {
     try {
@@ -90,15 +95,18 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
     try {
       if (!(await proveCurrentPassword())) return;
+      if (!alive.current) return;
 
       // Changing the master password is entirely a re-wrap of the vault key envelope.
       // There is no password on the server to update: it never had one, and the new
       // password is not sent anywhere — only the envelope it encrypts is.
       const newEnvelope = await wrapVaultKey(vaultKey, newPassword);
+      if (!alive.current) return;
 
       await putJSON("/api/vault/envelopes", {
         passwordEnvelope: newEnvelope,
       });
+      if (!alive.current) return;
 
       setMessage("Master password changed and vault key re-wrapped.");
       setNewPassword("");
@@ -118,12 +126,14 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       message: "Generating a new paper recovery code will invalidate any previous paper backup. Proceed?",
       confirmLabel: "Generate",
     })) return;
+    if (!alive.current) return;
     setBusy(true);
     setMessage("");
     setError("");
 
     try {
       if (!(await proveCurrentPassword())) return;
+      if (!alive.current) return;
 
       // Generate 16-character alphanumeric code
       const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -139,10 +149,12 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       // onto the user record so it could start a session; that made it a second way to
       // authenticate, which SSO-only does not allow. It unlocks the vault, not the site.
       const recoveryEnv = await wrapVaultKey(vaultKey, code);
+      if (!alive.current) return;
 
       await putJSON("/api/vault/envelopes", {
         recoveryEnvelope: recoveryEnv,
       });
+      if (!alive.current) return;
 
       setPaperCode(code);
       setMessage("Paper recovery backup generated. Print or write this down.");
@@ -168,11 +180,13 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       "are printing it for offline recovery, and nobody can see your screen.",
       confirmLabel: "Show",
     })) return;
+    if (!alive.current) return;
     setBusy(true);
     setMessage("");
     setError("");
     try {
       if (!(await proveCurrentPassword())) return;
+      if (!alive.current) return;
       setShowVaultKey(true);
     } catch (err) {
       setError(toErrorMessage(err, "Failed to verify the current master password"));

@@ -6,6 +6,7 @@ type Api = {
   confirm: (opts: Omit<DialogRequest, "kind">) => Promise<boolean>;
   prompt: (opts: Omit<DialogRequest, "kind">) => Promise<string | null>;
   notify: (opts: Omit<DialogRequest, "kind">) => Promise<void>;
+  cancelAll: () => void;
 };
 
 const Context = createContext<Api | null>(null);
@@ -23,6 +24,7 @@ export function DialogHost({ children }: { children: ReactNode }) {
     confirm: (opts) => queue.ask<boolean>({ ...opts, kind: "confirm" }),
     prompt: (opts) => queue.ask<string | null>({ ...opts, kind: "prompt" }),
     notify: (opts) => queue.ask<void>({ ...opts, kind: "notify" }),
+    cancelAll: () => queue.cancelAll(),
   }), [queue]);
   return (
     <Context.Provider value={api}>
