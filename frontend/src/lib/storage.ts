@@ -41,8 +41,16 @@ async function wrappingKey(db: IDBDatabase): Promise<CryptoKey> {
   const existing = await run<WrappingRecord | undefined>(db, "readonly", (s) => s.get(WRAPPING_RECORD));
   if (existing?.cryptoKey) return existing.cryptoKey;
   const cryptoKey = await newWrappingKey();
-  await run(db, "readwrite", (s) => s.put({ username: WRAPPING_RECORD, cryptoKey } satisfies WrappingRecord));
-  return cryptoKey;
+  try {
+    // add (not put) so a concurrent first writer fails instead of overwriting; the loser
+    // re-reads and uses the winner's key so both tabs seal under the same wrapping key.
+    await run(db, "readwrite", (s) => s.add({ username: WRAPPING_RECORD, cryptoKey } satisfies WrappingRecord));
+    return cryptoKey;
+  } catch {
+    const stored = await run<WrappingRecord | undefined>(db, "readonly", (s) => s.get(WRAPPING_RECORD));
+    if (!stored?.cryptoKey) throw new Error("Unable to establish the device wrapping key");
+    return stored.cryptoKey;
+  }
 }
 
 export async function storeDeviceVaultKey(username: string, keyHex: string): Promise<void> {
