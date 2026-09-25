@@ -419,3 +419,5 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   to SHA-1). `totp.test.ts` pins the RFC 6238 Appendix B vectors for all three algorithms.
 
 - `frontend/src/lib/format.ts`: `formatInterval` (Off, minutes, Hourly, hours, Daily, days) and `formatWhen` (never renders Invalid Date). `format.test.ts` covers both.
+
+- `frontend/src/lib/clipboard.ts`: every copy goes through `copyText`; passwords, TOTP codes and generated passwords are cleared after 30 seconds if the clipboard still holds them (or, where reading is refused, if nothing newer was copied through the helper). `clipboard.test.ts` covers both.

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import QRCode from "qrcode";
 import { postJSON, toErrorMessage } from "../lib/api";
 import { Smartphone, Laptop, Check, Copy } from "lucide-react";
+import { copyText } from "../lib/clipboard";
 
 type Props = {
   onClose: () => void;
@@ -57,11 +58,11 @@ export function DevicePairingModal({ onClose }: Props) {
   const secondsRemaining = expiresAt === null ? null : Math.max(0, Math.ceil((expiresAt - now) / 1000));
 
   const copyPIN = async () => {
-    try {
-      await navigator.clipboard.writeText(pin);
+    const ok = await copyText(pin);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } else {
       setError("Could not copy the PIN. Your browser blocked clipboard access.");
     }
   };

@@ -5,6 +5,7 @@ import type { SaveState } from "../lib/vaultSave";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { generateTOTP } from "../lib/totp";
 import { safeHref } from "../lib/safeHref";
+import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
@@ -166,10 +167,12 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     };
   }, [selectedEntry?.totpSeed]);
 
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
+  const copyToClipboard = async (text: string, field: string) => {
+    const secret = field === "pass" || field === "totp";
+    const ok = await copyText(text, secret ? { clearAfterMs: SECRET_CLIPBOARD_MS } : {});
+    setCopiedField(ok ? field : null);
+    if (!ok) setImportError("Could not copy. Your browser blocked clipboard access.");
+    if (ok) setTimeout(() => setCopiedField(null), 2000);
   };
 
   const handleSaveEntry = () => {
@@ -652,6 +655,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     >
                       {copiedField === "pass" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
                     </button>
+                    {copiedField === "pass" ? (
+                      <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)" }}>
+                        Cleared from the clipboard after 30 seconds.
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               )}
@@ -687,6 +695,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                         {copiedField === "totp" ? <Check size={16} color="#10b981" /> : <Copy size={16} />}
                       </button>
                     </div>
+                    {copiedField === "totp" ? (
+                      <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)" }}>
+                        Cleared from the clipboard after 30 seconds.
+                      </span>
+                    ) : null}
                   </div>
                 ) : (
                   <span style={{ color: "var(--ink-muted)" }}>—</span>
