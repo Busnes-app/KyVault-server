@@ -640,3 +640,19 @@ dialog.dialog-lg { max-width: 760px; }
 /* Keep the header controls reachable when the theme picker wraps. */
 .app-nav { flex-wrap: wrap; gap: 12px; }
 .app-nav > div { flex-wrap: wrap; }
+
+.vault-only-narrow { display: none; }
+.vault-layout--narrow { grid-template-columns: 1fr; height: calc(100dvh - var(--nav-height, 57px)); }
+.vault-layout--narrow .vault-only-narrow { display: inline-flex; }
+.vault-layout--narrow .vault-sidebar, .vault-layout--narrow .vault-list-pane, .vault-layout--narrow .vault-detail-pane { display: none; border-right: 0; }
+.vault-layout--narrow[data-pane="folders"] .vault-sidebar { display: flex; }
+.vault-layout--narrow[data-pane="list"] .vault-list-pane { display: flex; }
+.vault-layout--narrow[data-pane="detail"] .vault-detail-pane { display: block; padding: 1rem; }
+.vault-layout--narrow .detail-header { flex-wrap: wrap; gap: 0.5rem; }
+.vault-layout--narrow .field-row { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .app-nav { padding: 0.5rem 0.75rem; }
+  .nav-link-btn span, .nav-user-name { display: none; }
+  .settings-page { padding: 1rem 0.75rem; }
+  .vault-detail-pane .font-mono { overflow-wrap: anywhere; }
+}

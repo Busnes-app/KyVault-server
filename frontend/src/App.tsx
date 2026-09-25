@@ -132,7 +132,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!loading && route.tab === "admin" && user?.role !== "admin") navigate({ tab: "vault" });
+    if (!loading && user && route.tab === "admin" && user.role !== "admin") navigate({ tab: "vault" });
   }, [loading, route.tab, user?.role]);
 
   useEffect(() => {
@@ -455,28 +455,31 @@ export function App() {
         <div className="nav-links">
           <button
             className={`nav-link-btn ${navTab === "vault" ? "active" : ""}`}
+            aria-label="Vault"
             onClick={() => navigate({ tab: "vault" })}
           >
-            <Shield size={16} /> Vault
+            <Shield size={16} /> <span>Vault</span>
           </button>
           <button
             className={`nav-link-btn ${navTab === "security" ? "active" : ""}`}
+            aria-label="Security"
             onClick={() => navigate({ tab: "security" })}
           >
-            <KeyRound size={16} /> Security
+            <KeyRound size={16} /> <span>Security</span>
           </button>
           {user.role === "admin" ? (
             <button
               className={`nav-link-btn ${navTab === "admin" ? "active" : ""}`}
+              aria-label="Admin"
               onClick={() => navigate({ tab: "admin", admin: "sso" })}
             >
-              <Settings size={16} /> Admin
+              <Settings size={16} /> <span>Admin</span>
             </button>
           ) : null}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-          <span style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
+          <span className="nav-user-name" style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
             {user.username}
           </span>
           <button className="btn btn-quiet btn-sm" onClick={handleLockVault} title="Lock Vault">

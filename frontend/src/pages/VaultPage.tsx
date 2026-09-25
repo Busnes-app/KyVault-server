@@ -14,6 +14,7 @@ import { EntryAttachments } from "../components/EntryAttachments";
 import { CsvImportModal } from "../components/CsvImportModal";
 import { useDialogs } from "../components/DialogHost";
 import type { Route } from "../lib/route";
+import { useMediaQuery, NARROW } from "../lib/useMediaQuery";
 import {
   Folder,
   Plus,
@@ -35,6 +36,7 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   AlertCircle,
+  ChevronLeft,
 } from "lucide-react";
 
 type Props = {
@@ -55,6 +57,8 @@ type Props = {
 
 export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate }: Props) {
   const dialogs = useDialogs();
+  const narrow = useMediaQuery(NARROW);
+  const [pane, setPane] = useState<"folders" | "list" | "detail">("list");
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
   const [recycledIds, setRecycledIds] = useState<Set<string>>(new Set());
@@ -136,6 +140,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       if (await canChangeEntry()) {
         setIsEditing(false);
         setSelectedEntryUuid(route.entry ?? null);
+        if (route.entry) setPane("detail");
       } else {
         navigate({ tab: "vault", entry: selectedEntryUuid ?? undefined });
       }
@@ -232,6 +237,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     if (selectedGroupUuid === "recycle") setSelectedGroupUuid("all");
     setSelectedEntryUuid(newEntry.uuid);
     navigate({ tab: "vault", entry: newEntry.uuid });
+    setPane("detail");
     setIsEditing(true);
   };
 
@@ -321,22 +327,28 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   }, [entries, selectedGroupUuid, searchQuery, showReusedPasswords, reusedPasswords, recycledIds]);
 
   return (
-    <div className="vault-layout" style={hidden ? { display: "none" } : undefined}>
+    <div className={`vault-layout${narrow ? " vault-layout--narrow" : ""}`} data-pane={pane} style={hidden ? { display: "none" } : undefined}>
       {/* 1. Sidebar Folders */}
       <aside className="vault-sidebar">
         <div className="sidebar-header">
           <span style={{ fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase", color: "var(--ink)" }}>
             Folders
           </span>
-          <button type="button" className="btn btn-quiet btn-sm" onClick={handleCreateGroup}
-            title={selectedFolder ? "Add Subfolder" : "Add Folder"} aria-label={selectedFolder ? "Add Subfolder" : "Add Folder"}>
-            <Plus size={16} />
-          </button>
+          <div style={{ display: "flex", gap: "0.25rem" }}>
+            <button type="button" className="btn btn-quiet btn-sm" onClick={handleCreateGroup}
+              title={selectedFolder ? "Add Subfolder" : "Add Folder"} aria-label={selectedFolder ? "Add Subfolder" : "Add Folder"}>
+              <Plus size={16} />
+            </button>
+            <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Close folders"
+              onClick={() => setPane("list")}>
+              <ChevronLeft size={16} />
+            </button>
+          </div>
         </div>
 
         <div
           className={`group-item ${selectedGroupUuid === "all" ? "active" : ""}`}
-          onClick={() => setSelectedGroupUuid("all")}
+          onClick={() => { setSelectedGroupUuid("all"); setPane("list"); }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Shield size={16} />
@@ -348,7 +360,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         </div>
 
         <button type="button" className={`group-item ${selectedGroupUuid === "recycle" ? "active" : ""}`}
-          onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); navigate({ tab: "vault", entry: undefined }); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); } }}>
+          onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); navigate({ tab: "vault", entry: undefined }); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); setPane("list"); } }}>
           <span style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}><Trash2 size={16} /> Recycle Bin</span>
           <span>{recycledIds.size}</span>
         </button>
@@ -362,7 +374,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             title={g.path}
             aria-label={g.path} aria-pressed={selectedGroupUuid === g.uuid}
             style={{ paddingLeft: `${1 + Math.min(g.depth, 6) * 0.75}rem` }}
-            onClick={() => setSelectedGroupUuid(g.uuid)}
+            onClick={() => { setSelectedGroupUuid(g.uuid); setPane("list"); }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <Folder size={16} />
@@ -396,6 +408,10 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       <section className="vault-list-pane">
         <div className="list-search-bar">
           <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
+            <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Folders"
+              onClick={() => setPane("folders")}>
+              <Folder size={16} />
+            </button>
             <div style={{ position: "relative", flex: 1 }}>
               <Search
                 size={16}
@@ -530,7 +546,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); } }}
+                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); setPane("detail"); } }}
               >
                 <div className="entry-title">
                   <span>{e.title || "Untitled"}</span>
@@ -551,6 +567,10 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         {selectedEntry ? (
           <div>
             <div className="detail-header">
+              <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Back to list"
+                onClick={() => setPane("list")}>
+                <ChevronLeft size={16} />
+              </button>
               <div>
                 <h2>{isEditing ? "Edit Entry" : selectedEntry.title || "Untitled"}</h2>
                 <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>
@@ -880,6 +900,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             setShowReusedPasswords(false);
             setSelectedEntryUuid(uuid);
             navigate({ tab: "vault", entry: uuid });
+            setPane("detail");
           } }}
           onClose={() => setShowHistory(false)}
           onRestored={async () => {
