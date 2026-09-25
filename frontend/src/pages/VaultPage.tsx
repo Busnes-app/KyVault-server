@@ -923,7 +923,12 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         />
       ) : null}
 
-      {showPairing ? <DevicePairingModal onClose={() => setShowPairing(false)} /> : null}
+      {showPairing ? (
+        <DevicePairingModal
+          onClose={() => setShowPairing(false)}
+          onPaired={() => setImportMessage("Device paired.")}
+        />
+      ) : null}
 
       {showCsvImport ? (
         <CsvImportModal
@@ -962,6 +967,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             setPane("detail");
           } }}
           onClose={() => setShowHistory(false)}
+          onNotice={setImportMessage}
           onRestored={async () => {
             setShowHistory(false);
             await onReload();

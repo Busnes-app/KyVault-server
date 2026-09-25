@@ -682,6 +682,7 @@ export function App() {
         <HistoryModal
           allowRollback={!vault && !saveQueue}
           onClose={() => setShowHistoryModal(false)}
+          onNotice={setLockNotice}
           onRestored={async () => {
             setShowHistoryModal(false);
             if (user) {

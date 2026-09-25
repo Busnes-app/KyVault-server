@@ -1,15 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import QRCode from "qrcode";
-import { postJSON, toErrorMessage } from "../lib/api";
+import { getJSON, postJSON, toErrorMessage } from "../lib/api";
 import { Smartphone, Laptop, Check, Copy } from "lucide-react";
 import { copyText } from "../lib/clipboard";
 import { Dialog } from "./Dialog";
 
 type Props = {
   onClose: () => void;
+  onPaired?: () => void;
 };
 
-export function DevicePairingModal({ onClose }: Props) {
+const DEVICE_POLL_MS = 3000;
+
+export function DevicePairingModal({ onClose, onPaired }: Props) {
   const [pin, setPin] = useState("");
   const [qrUrl, setQrUrl] = useState("");
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
@@ -60,6 +63,33 @@ export function DevicePairingModal({ onClose }: Props) {
     return () => clearInterval(t);
   }, []);
   const secondsRemaining = expiresAt === null ? null : Math.max(0, Math.ceil((expiresAt - now) / 1000));
+
+  const baselineCount = useRef<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const devices = await getJSON<unknown[]>("/api/devices");
+        if (cancelled) return;
+        const count = devices?.length ?? 0;
+        if (baselineCount.current === null) {
+          baselineCount.current = count;
+        } else if (count > baselineCount.current) {
+          onPaired?.();
+          onClose();
+        }
+      } catch {
+        // Silent: keep polling, a transient failure is not worth surfacing.
+      }
+    };
+    poll();
+    const t = setInterval(poll, DEVICE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
 
   const copyPIN = async () => {
     const ok = await copyText(pin);

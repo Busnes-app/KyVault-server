@@ -597,7 +597,12 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         )}
       </section>
 
-      {showPairing ? <DevicePairingModal onClose={() => { setShowPairing(false); loadDevices(); }} /> : null}
+      {showPairing ? (
+        <DevicePairingModal
+          onClose={() => { setShowPairing(false); loadDevices(); }}
+          onPaired={() => setMessage("Device paired.")}
+        />
+      ) : null}
     </div>
   );
 }
