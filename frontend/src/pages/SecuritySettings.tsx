@@ -47,6 +47,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [paperCodeCopied, setPaperCodeCopied] = useState(false);
   const [paperConfirmInput, setPaperConfirmInput] = useState("");
   const [paperConfirmed, setPaperConfirmed] = useState(false);
+  const [printTarget, setPrintTarget] = useState<"key" | "paper" | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -57,6 +58,14 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const hidePaperCode = useCallback(() => setPaperCode(null), []);
   useHideAfter(60_000, showVaultKey, hideVaultKey);
   useHideAfter(120_000, paperCode !== null, hidePaperCode);
+
+  // Only one secret block should carry the print-only class at a time; render with the
+  // class applied first, then print, so a single block never depends on stacking order.
+  useEffect(() => {
+    if (!printTarget) return;
+    window.print();
+    setPrintTarget(null);
+  }, [printTarget]);
 
   // A lock cancels pending dialogs (App.tsx closeVault), but these handlers hold the
   // vault key in closure across awaits; a stale resume must not act on an unmounted page.
@@ -156,6 +165,14 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       if (!(await proveCurrentPassword())) return;
       if (!alive.current) return;
 
+      // Clear any shown code first (and its confirmation) so the hide timer re-arms even
+      // when regenerating while a code is already visible: the awaits below give React a
+      // render in between, so `paperCode !== null` genuinely flips false, then true again.
+      setPaperCode(null);
+      setPaperConfirmInput("");
+      setPaperConfirmed(false);
+      setPaperCodeCopied(false);
+
       // Generate 16-character alphanumeric code
       const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
       const bytes = new Uint8Array(16);
@@ -178,9 +195,6 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       if (!alive.current) return;
 
       setPaperCode(code);
-      setPaperConfirmInput("");
-      setPaperConfirmed(false);
-      setPaperCodeCopied(false);
       setMessage("Paper recovery backup generated. Print or write this down.");
     } catch (err) {
       setError(toErrorMessage(err, "Failed to generate paper recovery code"));
@@ -359,7 +373,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
         {paperCode ? (
           <div
-            className="print-only-secret"
+            className={printTarget === "paper" ? "print-only-secret" : undefined}
             style={{
               background: "var(--bg)",
               border: "1px solid var(--accent)",
@@ -386,7 +400,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
               >
                 {paperCodeCopied ? <CheckCircle2 size={14} /> : null} Copy
               </button>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => window.print()}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPrintTarget("paper")}>
                 Print
               </button>
             </div>
@@ -400,6 +414,9 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
                 id="paper-code-confirm"
                 type="text"
                 className="input"
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
                 value={paperConfirmInput}
                 onChange={(e) => setPaperConfirmInput(e.target.value)}
               />
@@ -438,7 +455,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
         {showVaultKey ? (
           <div
-            className="print-only-secret"
+            className={printTarget === "key" ? "print-only-secret" : undefined}
             style={{
               background: "var(--bg)",
               border: "1px solid var(--accent)",
@@ -468,7 +485,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
               >
                 {vaultKeyCopied ? <CheckCircle2 size={14} /> : null} Copy
               </button>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => window.print()}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPrintTarget("key")}>
                 Print
               </button>
             </div>

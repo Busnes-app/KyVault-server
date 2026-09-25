@@ -94,7 +94,7 @@ code, pre, .font-mono {
 @media print {
   body * { visibility: hidden; }
   .print-only-secret, .print-only-secret * { visibility: visible; }
-  .print-only-secret { position: absolute; left: 0; top: 0; font-family: var(--font-mono); font-size: 14pt; }
+  .print-only-secret { position: static; font-family: var(--font-mono); font-size: 14pt; }
 }
 
 /* Header Navbar */
