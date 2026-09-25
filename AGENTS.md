@@ -348,7 +348,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   (native `<dialog>`, Escape closes, backdrop click never closes, focus returns to the
   opener). Questions go through `useDialogs().confirm/prompt/notify`, sequenced by
   `lib/dialogQueue.ts` so a second question waits for the first. Native `confirm`, `prompt`
-  and `alert` are banned in `frontend/src`. `noNativeDialogs.test.ts` fails the suite if one comes back.
+  and `alert` are banned in `frontend/src`, including `window.confirm`. `noNativeDialogs.test.ts` fails the suite if one comes back.
   Autofocus inside a `Dialog` uses `data-autofocus`, not the React `autoFocus` prop: React
   never emits an `autofocus` DOM attribute, so `Dialog`'s `[autofocus]` lookup was dead code.
   Locking the vault cancels every pending question (`cancelAll`) so a handler that captured

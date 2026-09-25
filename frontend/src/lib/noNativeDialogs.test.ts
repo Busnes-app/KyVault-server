@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const srcDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const NATIVE_DIALOG_CALL = /(?<![.\w])(confirm|prompt|alert)\(/;
+const NATIVE_DIALOG_CALL = /(?<!dialogs\.)\b(confirm|prompt|alert)\(/;
 
 function tsxFiles(dir: string): string[] {
   const found: string[] = [];

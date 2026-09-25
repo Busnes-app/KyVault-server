@@ -521,8 +521,8 @@ export function App() {
           <button className="btn btn-quiet btn-sm" onClick={handleLockVault} title="Lock Vault">
             <Lock size={16} /> Lock
           </button>
-          <button className="btn btn-quiet btn-sm" onClick={handleLogout} title="Log Out">
-            <LogOut size={16} />
+          <button className="btn btn-quiet btn-sm" onClick={handleLogout} title="Log Out" aria-label="Log out">
+            <LogOut size={16} /> <span className="nav-icon-label">Log out</span>
           </button>
         </div>
       </header>
