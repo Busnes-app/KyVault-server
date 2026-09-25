@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -125,7 +126,7 @@ func TestVaultOperationsAndConflicts(t *testing.T) {
 	// 1. Initial vault upload
 	v1Payload, _ := json.Marshal(VaultUploadRequest{
 		ExpectedVersion:  0,
-		KdbxBase64:       "ENCRYPTED-KDBX-V1",
+		KdbxBase64:       base64.StdEncoding.EncodeToString([]byte("ENCRYPTED-KDBX-V1")),
 		PasswordEnvelope: "pw-env-v1",
 		RecoveryEnvelope: "rec-env-v1",
 		DeviceID:         "chrome-ext",
@@ -158,7 +159,7 @@ func TestVaultOperationsAndConflicts(t *testing.T) {
 	// 3. Stale upload conflict (expectedVersion = 0 instead of 1)
 	vStalePayload, _ := json.Marshal(VaultUploadRequest{
 		ExpectedVersion: 0,
-		KdbxBase64:      "ENCRYPTED-KDBX-STALE",
+		KdbxBase64:      base64.StdEncoding.EncodeToString([]byte("ENCRYPTED-KDBX-STALE")),
 		DeviceID:        "phone-app",
 	})
 	req = httptest.NewRequest(http.MethodPost, "/api/vault/upload", bytes.NewReader(vStalePayload))

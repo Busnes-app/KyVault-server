@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,7 +89,12 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		pwEnv = req.PasswordEnvelope
 		recEnv = req.RecoveryEnvelope
 		devID = req.DeviceID
-		kdbxData = []byte(req.KdbxBase64)
+		decoded, err := base64.StdEncoding.DecodeString(req.KdbxBase64)
+		if err != nil || len(decoded) == 0 {
+			http.Error(w, "kdbxBase64 must be non-empty standard base64", http.StatusBadRequest)
+			return
+		}
+		kdbxData = decoded
 	} else {
 		// Raw binary stream
 		pwEnv = r.Header.Get("X-Password-Envelope")
