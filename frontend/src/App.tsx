@@ -76,6 +76,7 @@ export function App() {
   const checkpoint = useRef<Promise<void>>(Promise.resolve());
   const memoryDraft = useRef<LockedDraft | undefined>(undefined);
   const [lockNotice, setLockNotice] = useState("");
+  const restoreNotice = useRef("");
   const [sessionNotice, setSessionNotice] = useState("");
   const recoveryId = (u: User): string | undefined => {
     try { return draftPointer(sessionStorage, u.id); } catch { return undefined; }
@@ -682,11 +683,15 @@ export function App() {
         <HistoryModal
           allowRollback={!vault && !saveQueue}
           onClose={() => setShowHistoryModal(false)}
-          onNotice={setLockNotice}
+          onNotice={(text) => { restoreNotice.current = text; }}
           onRestored={async () => {
             setShowHistoryModal(false);
             if (user) {
+              // initVault owns lockNotice on its success paths, so the rollback
+              // text is merged in after it settles rather than passed straight through.
               await initVault(user);
+              setLockNotice((prev) => [restoreNotice.current, prev].filter(Boolean).join(" "));
+              restoreNotice.current = "";
             }
           }}
         />

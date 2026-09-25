@@ -68,6 +68,7 @@ export function DevicePairingModal({ onClose, onPaired }: Props) {
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
+      // Timer keeps ticking, but skip the network call while hidden so a backgrounded tab sends no requests.
       if (document.visibilityState === "hidden") return;
       try {
         const devices = await getJSON<unknown[]>("/api/devices");
