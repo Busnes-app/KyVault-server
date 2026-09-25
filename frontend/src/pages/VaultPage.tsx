@@ -4,6 +4,7 @@ import type { EntryDraft } from "../lib/lockedDraft";
 import type { SaveState } from "../lib/vaultSave";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { generateTOTP } from "../lib/totp";
+import { safeHref } from "../lib/safeHref";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
@@ -663,25 +664,28 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               ) : (
                 <div className="field-row">
                   <span className="font-mono">{selectedEntry.url || "—"}</span>
-                  {selectedEntry.url ? (
-                    <div style={{ display: "flex", gap: "0.4rem" }}>
-                      <a
-                        href={selectedEntry.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="btn btn-quiet btn-sm"
-                        title="Open in new tab"
-                      >
-                        <ExternalLink size={14} />
-                      </a>
-                      <button
-                        className="btn btn-quiet btn-sm"
-                        onClick={() => copyToClipboard(selectedEntry.url, "url")}
-                      >
-                        {copiedField === "url" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
-                      </button>
-                    </div>
-                  ) : null}
+                  {(() => {
+                    const href = safeHref(selectedEntry.url);
+                    return href ? (
+                      <div style={{ display: "flex", gap: "0.4rem" }}>
+                        <a
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn btn-quiet btn-sm"
+                          title="Open in new tab"
+                        >
+                          <ExternalLink size={14} />
+                        </a>
+                        <button
+                          className="btn btn-quiet btn-sm"
+                          onClick={() => copyToClipboard(selectedEntry.url, "url")}
+                        >
+                          {copiedField === "url" ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    ) : null;
+                  })()}
                 </div>
               )}
             </div>

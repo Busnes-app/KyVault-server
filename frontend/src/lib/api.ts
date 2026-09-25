@@ -12,7 +12,7 @@ async function request(path: string, options: RequestInit = {}): Promise<Respons
   }
 
   // Double-submit CSRF protection
-  const csrfMatch = document.cookie.match(/csrf_token=([^;]+)/);
+  const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
   if (csrfMatch && !headers.has("X-CSRF-Token")) {
     headers.set("X-CSRF-Token", csrfMatch[1]);
   }
