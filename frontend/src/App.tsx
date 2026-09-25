@@ -689,9 +689,12 @@ export function App() {
             if (user) {
               // initVault owns lockNotice on its success paths, so the rollback
               // text is merged in after it settles rather than passed straight through.
-              await initVault(user);
-              setLockNotice((prev) => [restoreNotice.current, prev].filter(Boolean).join(" "));
-              restoreNotice.current = "";
+              try {
+                await initVault(user);
+                setLockNotice((prev) => [restoreNotice.current, prev].filter(Boolean).join(" "));
+              } finally {
+                restoreNotice.current = "";
+              }
             }
           }}
         />
