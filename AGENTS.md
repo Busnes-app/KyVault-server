@@ -62,7 +62,7 @@ yourself adding one, the design has been misread.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - User-facing callback failures (identity not linked, account deactivated, login fenced by a logout) redirect to `/?sso_error=<code>`; the login page explains the code. Token and configuration failures keep their status codes.
-- A 401 from any API call except the session probe raises `kyvault:unauthorized`; the app locks the vault and shows the login page with a notice.
+- A 401 from any API call except the session probe and logout raises `kyvault:unauthorized`; the app locks the vault and shows the login page with a notice.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.
@@ -424,4 +424,4 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/lib/format.ts`: `formatInterval` (Off, minutes, Hourly, hours, Daily, days) and `formatWhen` (never renders Invalid Date). `format.test.ts` covers both.
 
-- `frontend/src/lib/clipboard.ts`: every copy goes through `copyText`; passwords, TOTP codes and generated passwords are cleared after 30 seconds if the clipboard still holds them (or, where reading is refused, if nothing newer was copied through the helper). `clipboard.test.ts` covers both.
+- `frontend/src/lib/clipboard.ts`: every copy goes through `copyText`; passwords, TOTP codes and generated passwords are cleared after 30 seconds if the clipboard still holds them (or, where reading is refused, if nothing newer was copied through the helper). The timed clear is best effort: browsers may refuse clipboard access from a timer, and the UI says so. `clipboard.test.ts` covers both.

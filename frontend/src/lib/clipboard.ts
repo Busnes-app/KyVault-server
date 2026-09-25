@@ -1,5 +1,7 @@
 // Secrets leave the clipboard after a delay. Reading the clipboard back needs a permission
 // some browsers refuse; then we only clear if nothing newer was copied through this helper.
+// Browsers may refuse the timed clear (no user activation, or the tab is not focused); the
+// failure is swallowed, so the clear is best effort.
 let generation = 0;
 
 export async function copyText(text: string, options: { clearAfterMs?: number; clipboard?: Clipboard; setTimer?: typeof setTimeout } = {}): Promise<boolean> {

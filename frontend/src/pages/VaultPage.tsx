@@ -657,7 +657,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     </button>
                     {copiedField === "pass" ? (
                       <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)" }}>
-                        Cleared from the clipboard after 30 seconds.
+                        Cleared from the clipboard after 30 seconds when the browser allows it.
                       </span>
                     ) : null}
                   </div>
@@ -697,7 +697,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     </div>
                     {copiedField === "totp" ? (
                       <span style={{ fontSize: "0.75rem", color: "var(--ink-muted)" }}>
-                        Cleared from the clipboard after 30 seconds.
+                        Cleared from the clipboard after 30 seconds when the browser allows it.
                       </span>
                     ) : null}
                   </div>

@@ -23,7 +23,10 @@ export function DevicePairingModal({ onClose }: Props) {
       setExpiresAt(null);
       const res = await postJSON<{ pin: string; secret: string; expiresAt: string }>("/api/devices/pairing/start", {});
       setPin(res.pin);
-      setExpiresAt(new Date(res.expiresAt).getTime());
+      // The server value drives expiry, but a client clock ahead of the server must not
+      // read the code as already expired; the client clock is not trusted beyond 90s either.
+      const server = new Date(res.expiresAt).getTime();
+      setExpiresAt(Number.isNaN(server) ? Date.now() + 90_000 : Math.min(server, Date.now() + 90_000));
 
       const qrPayload = JSON.stringify({
         server: window.location.origin,

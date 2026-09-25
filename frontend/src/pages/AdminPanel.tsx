@@ -2,6 +2,7 @@ import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
 import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore } from "lucide-react";
 import { AdminBackup } from "../components/AdminBackup";
+import { formatWhen } from "../lib/format";
 
 type User = {
   id: string;
@@ -355,7 +356,7 @@ export function AdminPanel({ currentUserId }: { currentUserId: string }) {
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.3rem" }}>
                   <strong style={{ color: "var(--accent)" }}>{log.action}</strong>
                   <span style={{ color: "var(--ink-muted)", fontSize: "0.75rem" }}>
-                    {new Date(log.timestamp).toLocaleString()}
+                    {formatWhen(log.timestamp)}
                   </span>
                 </div>
                 <div style={{ color: "var(--ink-strong)", marginBottom: "0.3rem" }}>

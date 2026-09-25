@@ -2,6 +2,7 @@ import { ThemeSwitcher } from '../components/ThemeSwitcher';
 import React, { useState, useEffect } from "react";
 import { getJSON } from "../lib/api";
 import { ShieldCheck, Lock, AlertTriangle, Info } from "lucide-react";
+import { explainSsoError } from "../lib/ssoError";
 
 // KySignOn is the only way in. There is no local password to type here, because the
 // master password is not a credential: it unwraps the vault key in your browser, after a
@@ -9,15 +10,9 @@ import { ShieldCheck, Lock, AlertTriangle, Info } from "lucide-react";
 
 type SsoState = "loading" | "ready" | "disabled" | "unreachable";
 
-const ERRORS: Record<string, string> = {
-  not_linked: "Your KySignOn identity is not linked to a KyVault account. Ask your administrator to provision it.",
-  deactivated: "This account is deactivated. Ask your administrator to reactivate it.",
-  signed_out: "KySignOn signed you out. Sign in again.",
-};
-
 export function LoginPage({ notice }: { notice?: string }) {
   const [sso, setSso] = useState<SsoState>("loading");
-  const ssoError = ERRORS[new URLSearchParams(window.location.search).get("sso_error") ?? ""];
+  const ssoError = explainSsoError(new URLSearchParams(window.location.search).get("sso_error"));
 
   const load = () => {
     setSso("loading");
