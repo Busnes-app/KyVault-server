@@ -146,6 +146,7 @@ code, pre, .font-mono {
 .nav-link-btn.active {
   color: var(--accent);
   background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
 }
 
 /* Button variants */
