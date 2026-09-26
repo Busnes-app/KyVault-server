@@ -112,3 +112,29 @@ checks.
   `runtime.getURL("")`). The popup imports `frontend/src/ky-ui/tokens.css`
   for the Busnes themes. `vaultState.test.ts` holds the one real crypto round
   trip (Argon2id envelope, Argon2d KDBX) plus the state machine on fakes.
+- `src/lib/domain.ts`, `src/lib/rank.ts`, `src/lib/vaultState.ts` (`listEntries`,
+  `secret`), `src/background.ts`, `src/popup/main.ts` (Task 4): the popup list, site
+  ranking, search and copy.
+  - `registrableDomain`/`sameSite` are a suffix heuristic (last two labels, or three
+    under a listed second-level suffix such as `co.uk`), not the Public Suffix List.
+    `ponytail:` a site under an unlisted multi-label suffix (`example.github.io`) ranks
+    its neighbours as matches; upgrade path is vendoring the PSL's ICANN section as a
+    generated module like `effWordlist.ts` when a report shows it matters.
+  - `rankEntries` without a query keeps only exact-host and same-registrable-domain
+    entries (tier 0/1), site tier first, each tier sorted by title. With a query it
+    searches every entry (`entryMatches`, so tags and custom field names match too) and
+    still sorts site matches first. `EntryView` never carries the password or TOTP seed.
+  - The popup only ever holds `EntryView`s and one secret at a time. `entries` message
+    reads the active tab's host through `activeTab` (no `tabs` permission) and calls
+    `vaultState.listEntries`, which also extends the idle deadline. `copy` message
+    generates one field (`generateTOTP` for TOTP) on demand; the popup, not the
+    background, writes the clipboard, since clipboard access needs a document.
+  - Copy clear: the popup's `copyText(..., {clearAfterMs})` timer dies with the popup,
+    so it also sends `{type: "copied", digest}` (a SHA-256 of the value, never the value
+    itself) and the background arms alarm `clipboard` for 30 seconds. On Chrome the
+    alarm opens `offscreen.html`, which blind-writes a space over the clipboard via
+    `execCommand("copy")` and closes; Firefox has no offscreen API, so there the clear
+    only happens while the popup stays open. The toast says which is true for the
+    running browser (checked via `typeof ext.offscreen`, since @types/chrome always
+    types the namespace but only Chrome populates it at runtime).
+  - `domain.test.ts` and `rank.test.ts` are the plan's pinned tests.

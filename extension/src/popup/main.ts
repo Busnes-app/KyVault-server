@@ -1,7 +1,12 @@
 // Plain DOM. The popup is a view: it asks the background worker for state and
 // sends the typed password there once. It never receives the vault key.
 import { ext } from "../ext";
+import type { EntryView } from "../lib/rank";
+import type { SecretField } from "../lib/vaultState";
 import type { Request, Response } from "../messages";
+import { copyText, SECRET_CLIPBOARD_MS } from "../../../frontend/src/lib/clipboard";
+
+const SEARCH_DEBOUNCE_MS = 150;
 
 const root = document.getElementById("root")!;
 const lockButton = document.getElementById("lock") as HTMLButtonElement;
@@ -40,11 +45,95 @@ async function render(): Promise<void> {
   } else if (!res.status.unlocked) {
     renderLocked();
   } else {
-    // Reopens the vault if the worker was evicted, and counts as activity.
-    const opened = await send({ type: "ensure" });
-    if (opened.type === "error") return showError(opened);
-    root.replaceChildren(text("p", "The vault is unlocked."));
+    await renderVault();
   }
+}
+
+// hasOffscreen is Chrome only (Firefox has no offscreen API): the background can
+// blind-clear the clipboard after the popup closes there, so the toast differs.
+const hasOffscreen = typeof ext.offscreen !== "undefined";
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function copyButton(label: string, uuid: string, field: SecretField, status: HTMLElement): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", () => void copyField(uuid, field, status));
+  return button;
+}
+
+async function copyField(uuid: string, field: SecretField, status: HTMLElement): Promise<void> {
+  const res = await send({ type: "copy", uuid, field });
+  if (res.type === "error") return showError(res);
+  if (res.type !== "secret") return;
+  const copied = await copyText(res.value, { clearAfterMs: SECRET_CLIPBOARD_MS });
+  if (!copied) {
+    status.className = "error";
+    status.textContent = "Could not copy to the clipboard.";
+    return;
+  }
+  // Keep the deadline armed even if this popup closes before the local timer fires.
+  await send({ type: "copied", digest: await sha256Hex(res.value) });
+  status.className = "muted";
+  status.textContent = hasOffscreen
+    ? "Copied. Clears in 30 seconds."
+    : "Copied. Clears in 30 seconds while this window is open.";
+}
+
+function renderRows(entries: EntryView[], list: HTMLElement, status: HTMLElement): void {
+  list.replaceChildren();
+  if (entries.length === 0) {
+    list.append(text("p", "No logins for this site.", "muted"));
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "entry-row";
+    const heading = document.createElement("div");
+    heading.className = "entry-heading";
+    heading.append(text("p", entry.title));
+    if (entry.reused > 1) heading.append(text("p", "Reused", "badge"));
+    const actions = document.createElement("div");
+    actions.className = "entry-actions";
+    actions.append(copyButton("Copy user", entry.uuid, "username", status), copyButton("Copy password", entry.uuid, "password", status));
+    if (entry.hasTotp) actions.append(copyButton("Copy TOTP", entry.uuid, "totp", status));
+    row.append(heading, text("p", entry.username, "muted"), actions);
+    list.append(row);
+  }
+}
+
+async function renderVault(): Promise<void> {
+  const container = document.createElement("div");
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Search logins";
+  search.setAttribute("aria-label", "Search logins");
+  const list = document.createElement("div");
+  list.className = "entries";
+  const status = text("p", "", "muted");
+  status.setAttribute("role", "status");
+  container.append(search, list, status);
+  root.replaceChildren(container);
+
+  const load = async (query: string): Promise<void> => {
+    const res = await send({ type: "entries", query });
+    if (res.type === "error") return showError(res);
+    if (res.type !== "entries") return;
+    renderRows(res.entries, list, status);
+  };
+
+  let debounce: ReturnType<typeof setTimeout> | undefined;
+  search.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => void load(search.value), SEARCH_DEBOUNCE_MS);
+  });
+
+  await load("");
+  search.focus();
 }
 
 function renderLocked(): void {

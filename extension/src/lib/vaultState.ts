@@ -3,8 +3,14 @@
 // of one open call, in memory, where it is zeroed afterwards.
 import { KeePassVault, isWrongVaultKey } from "../../../frontend/src/lib/kdbx";
 import { bytesToHex, hexToBytes, unwrapVaultKey } from "../../../frontend/src/lib/vaultCrypto";
+import { entryMatches } from "../../../frontend/src/lib/entryMeta";
+import { findReusedPasswords } from "../../../frontend/src/lib/passwordReuse";
+import { generateTOTP } from "../../../frontend/src/lib/totp";
 import { isLocked, lockDeadline } from "./lock";
+import { rankEntries, type EntryView } from "./rank";
 import { readBody, RevokedError, serverFetch, type SessionIO } from "./session";
+
+export type SecretField = "username" | "password" | "totp";
 
 export class LockedError extends Error {
   constructor() {
@@ -189,5 +195,35 @@ export function createVaultState(deps: VaultDeps) {
     return { unlocked: false, lockAt: undefined };
   }
 
-  return { unlock, ensure, lock, status };
+  // Entries ranked for the popup, never the password or TOTP seed. Also extends the
+  // idle deadline: this is the popup's own activity.
+  async function listEntries(query: string, tabHost: string | undefined): Promise<EntryView[]> {
+    const { vault } = await ensure();
+    const reused = findReusedPasswords(vault);
+    const entries = vault.getLiveEntries();
+    const byUuid = new Map(entries.map((e) => [e.uuid, e]));
+    const views: EntryView[] = entries.map((e) => ({
+      uuid: e.uuid,
+      title: e.title,
+      username: e.username,
+      url: e.url,
+      hasPassword: e.password !== "",
+      hasTotp: Boolean(e.totpSeed),
+      reused: reused.get(e.uuid) ?? 0,
+    }));
+    return rankEntries(views, tabHost, query, (view, q) => entryMatches(byUuid.get(view.uuid)!, q));
+  }
+
+  // One secret field, generated on demand. The popup writes the clipboard; this never does.
+  async function secret(uuid: string, field: SecretField): Promise<string> {
+    const { vault } = await ensure();
+    const entry = vault.getLiveEntries().find((e) => e.uuid === uuid);
+    if (!entry) throw new Error("That entry no longer exists.");
+    if (field === "username") return entry.username;
+    if (field === "password") return entry.password;
+    if (!entry.totpSeed) throw new Error("This entry has no TOTP code.");
+    return (await generateTOTP(entry.totpSeed)).code;
+  }
+
+  return { unlock, ensure, lock, status, listEntries, secret };
 }
