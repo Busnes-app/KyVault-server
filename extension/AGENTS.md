@@ -147,10 +147,12 @@ checks.
     they only order the list. `ponytail:` a site under an unlisted multi-label suffix
     (`example.github.io`) ranks its neighbours as matches; upgrade path is vendoring the
     PSL's ICANN and PRIVATE sections as a generated module like `effWordlist.ts`.
-  - `mayFill(entryHost, pageHost)` is the only fill authorization: the page host must
-    equal the entry host or be a subdomain of it. No suffix guessing, so two tenants under
-    a shared suffix (`victim.github.io` and `evil.github.io`, or registrants under a suffix
-    the heuristic does not list) never authorize each other (`domain.test.ts`).
+  - `mayFill(entryHost, pageHost)` is the only fill authorization: exact host equality,
+    nothing else. No suffix guessing and no subdomain inheritance, so tenants under a
+    shared suffix (`victim.github.io` and `evil.github.io`) and tenant sites under a
+    service's own domain (`evil.neocities.org` for a `neocities.org` login) never receive
+    another host's credentials (`domain.test.ts`, `fillTab.test.ts`). `ponytail:` per-entry
+    extra hosts are the upgrade path for multi-host services.
   - `rankEntries` without a query keeps only exact-host and same-registrable-domain
     entries (tier 0/1), site tier first, each tier sorted by title. With a query it
     searches every entry (`entryMatches`, so tags and custom field names match too) and

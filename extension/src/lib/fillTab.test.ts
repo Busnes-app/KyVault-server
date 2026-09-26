@@ -33,6 +33,14 @@ test("refuses an entry for another site before injecting anything", async () => 
   assert.equal(sent.length, 0);
 });
 
+test("a parent-service login is refused on a tenant subdomain before any injection", async () => {
+  const service = { url: "https://neocities.org/signin", username: "alice", password: "hunter2" };
+  const { fake, sent, probed } = io("https://evil.neocities.org/", [probe(0, "https://evil.neocities.org")]);
+  await assert.rejects(fillTab(fake, service), /^Error: This login is for neocities\.org, not evil\.neocities\.org\.$/);
+  assert.equal(probed(), 0);
+  assert.equal(sent.length, 0);
+});
+
 test("refuses tabs that are not web pages", async () => {
   for (const url of [undefined, "chrome://settings", "file:///etc/passwd", "about:blank", "data:text/html,x"]) {
     const { fake, sent, probed } = io(url, [probe(0, "https://example.com")]);

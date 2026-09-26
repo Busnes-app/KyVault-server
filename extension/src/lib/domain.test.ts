@@ -19,10 +19,12 @@ test("sameSite is registrable-domain equality", () => {
   assert.equal(sameSite("evil-example.com", "example.com"), false);
 });
 
-test("mayFill needs the page to be the entry host or under it, never a shared-suffix neighbour", () => {
+test("mayFill is exact host equality: no shared-suffix neighbours, no tenant subdomains", () => {
   assert.equal(mayFill("example.com", "example.com"), true);
-  assert.equal(mayFill("example.com", "mail.example.com"), true);
-  assert.equal(mayFill("EXAMPLE.com", "Mail.Example.COM."), true);
+  assert.equal(mayFill("EXAMPLE.com", "Example.COM."), true);
+  // A service that hosts user sites under its domain: the tenant must not get the login.
+  assert.equal(mayFill("neocities.org", "evil.neocities.org"), false);
+  assert.equal(mayFill("example.com", "mail.example.com"), false);
   // Private suffix: two tenants that sameSite treats as one site.
   assert.equal(sameSite("victim.github.io", "evil.github.io"), true);
   assert.equal(mayFill("victim.github.io", "evil.github.io"), false);

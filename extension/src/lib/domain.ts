@@ -23,13 +23,13 @@ export function sameSite(a: string, b: string): boolean {
 }
 
 // mayFill decides whether a login saved for entryHost may be filled into a page at
-// pageHost. No suffix guessing here: the page must be that host, or a subdomain of it,
-// which the entry's registrant controls. Two tenants under a shared suffix
-// (victim.github.io and evil.github.io, or two registrants under a suffix the
-// heuristic above does not know) never authorize each other.
+// pageHost: the hosts must be the same, nothing else. No suffix guessing, and no
+// subdomain inheritance either: a service that hosts user sites under its own domain
+// (tenant.neocities.org) must not hand the service login to a tenant page. Tenants under
+// a shared suffix (victim.github.io and evil.github.io) never authorize each other.
+// ponytail: an entry can name only one host; per-entry extra hosts are the upgrade path.
 export function mayFill(entryHost: string, pageHost: string): boolean {
   const entry = entryHost.toLowerCase().replace(/\.$/, "");
   const page = pageHost.toLowerCase().replace(/\.$/, "");
-  if (!entry || !page) return false;
-  return page === entry || page.endsWith("." + entry);
+  return entry !== "" && page === entry;
 }
