@@ -3,7 +3,7 @@ import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback }
 import { getJSON, postJSON, putJSON, toErrorMessage, HttpError } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
-import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
+import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
 import {
@@ -283,6 +283,7 @@ export function App() {
       if (recovered) notices.unshift("Recovered local edits. Review them before saving.");
       setLockNotice(notices.join(" "));
       if (masterPassword) { try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {} }
+      void pruneDrafts(u.id, id);
       setLockedReason(null);
       setShowUnlockModal(false);
     } catch (err) {

@@ -323,8 +323,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Cache-key write failure does not block password unlock. Storage failure retains encrypted
   memory recovery and an unload warning; encryption failure locks anyway and reports the loss.
   Manual lock/logout still ask before discarding unsaved edits. Forget removes this tab's copy.
-  ponytail: closing a tab without restoring it loses the reference to its encrypted checkpoint;
-  a cross-tab recovery inventory and retention policy are future work. No offline login/unlock.
+  Drafts record `sealedAt`; after each unlock `pruneDrafts` scans this account's key prefix
+  and deletes drafts older than 7 days, stamps legacy drafts without a timestamp so they age
+  out, and never touches the current tab's pointer. `planDraftCleanup` is the tested decision;
+  the IndexedDB walk is exercised in the browser pass. No offline login/unlock.
   An unreadable checkpoint (corrupt or undecryptable) is deleted and reported rather than
   blocking unlock (`App.tsx`).
 
