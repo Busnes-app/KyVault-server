@@ -57,7 +57,7 @@ checks.
   `https:` origin (no user/password, path dropped). The options page runs
   `parseServerOrigin` then `ext.permissions.request` then the redeem fetch
   all inside the Pair button's click handler, with no `await` before the
-  permission request other than parsing the typed address — Chrome and
+  permission request other than parsing the typed address. Chrome and
   Firefox refuse `permissions.request` outside a user gesture, and a gesture
   does not survive a hop through `runtime.sendMessage`. On success the
   options page writes `serverOrigin`, `sessionToken`, `deviceId`,
@@ -67,9 +67,14 @@ checks.
   makes a best-effort `DELETE /api/devices/{id}` with the bearer token, then
   clears the four pairing keys (keeping the `autoLockMinutes` preference),
   clears `storage.session`, and releases the granted host permission. The
-  device stays listed in Security, then Devices, until revoked there — the
+  device stays listed in Security, then Devices, until revoked there. The
   options page says so. `{type: "status"}` reports `paired`/`unlocked`/
-  `serverOrigin`/`deviceName` from `storage.local`. `serverUrl.test.ts` and
+  `serverOrigin`/`deviceName` from `storage.local`; the options page's own
+  paired-or-not render decision asks the background worker for this instead
+  of reading `sessionToken` into page memory for a truthiness check.
+  `pair()` rejects a device name outside 1 to 64 code points or containing a
+  control character, matching the server's rename rule; the input also gets
+  `maxlength="64"`. `serverUrl.test.ts` and
   `pairing.test.ts` are the plan's pinned tests; `pairing.ts`'s `PairIO` is
   the seam that lets them run without a browser.
 - `src/lib/session.ts`, `src/lib/lock.ts`, `src/lib/vaultState.ts`,

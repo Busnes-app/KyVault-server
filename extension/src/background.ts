@@ -89,6 +89,7 @@ async function unpair(): Promise<void> {
         headers: { Authorization: `Bearer ${settings.sessionToken}` },
         credentials: "omit",
         redirect: "error",
+        signal: AbortSignal.timeout(15_000),
       });
     } catch {
       // Best effort: the device stays listed in Security -> Devices if this fails.

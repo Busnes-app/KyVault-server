@@ -27,7 +27,18 @@ test("requests exactly the server origin and posts platform extension", async ()
 
 test("denied permission, expired code and inactive account are distinct messages", async () => {
   await assert.rejects(pair(io({ grant: false, status: 200, body: {} }), "https://v.example", "1", "n"), /needs access/);
-  await assert.rejects(pair(io({ grant: true, status: 400, body: "pairing code expired or invalid\n" }), "https://v.example", "1", "n"), /expired or invalid/);
+  await assert.rejects(pair(io({ grant: true, status: 400, body: "pairing code expired or invalid\n" }), "https://v.example", "1", "n"), /wrong or has expired/);
   await assert.rejects(pair(io({ grant: true, status: 401, body: "x" }), "https://v.example", "1", "n"), /inactive or signed out/);
+  await assert.rejects(pair(io({ grant: true, status: 429, body: "x" }), "https://v.example", "1", "n"), /too many attempts/i);
   await assert.rejects(pair(io({ grant: true, status: 200, body: { ok: true } }), "https://v.example", "1", "n"), /did not return a session/);
+});
+
+test("network failure and bad device names are refused before the request completes", async () => {
+  const failing = io({ grant: true, status: 200, body: {} });
+  failing.fetch = () => Promise.reject(new Error("network down"));
+  await assert.rejects(pair(failing, "https://v.example", "1", "n"), /could not reach https:\/\/v\.example/i);
+
+  await assert.rejects(pair(io({ grant: true, status: 200, body: {} }), "https://v.example", "1", ""), /1 to 64 characters/);
+  await assert.rejects(pair(io({ grant: true, status: 200, body: {} }), "https://v.example", "1", "a".repeat(65)), /1 to 64 characters/);
+  await assert.rejects(pair(io({ grant: true, status: 200, body: {} }), "https://v.example", "1", "bad\u0000name"), /1 to 64 characters/);
 });

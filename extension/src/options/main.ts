@@ -6,9 +6,9 @@
 import { ext } from "../ext";
 import { parseServerOrigin } from "../lib/serverUrl";
 import { pair } from "../lib/pairing";
-import { loadSettings, saveSettings } from "../lib/settings";
+import { saveSettings } from "../lib/settings";
 import { AUTO_LOCK_MINUTES, parseAutoLockMinutes } from "../../../frontend/src/lib/autoLock";
-import type { Request } from "../messages";
+import type { Request, Response, StatusResponse } from "../messages";
 
 const root = document.getElementById("root")!;
 
@@ -22,11 +22,19 @@ async function notifyBackground(message: Request): Promise<void> {
   await ext.runtime.sendMessage(message);
 }
 
+async function getStatus(): Promise<StatusResponse> {
+  const response = (await ext.runtime.sendMessage({ type: "status" } satisfies Request)) as Response;
+  if (response.type !== "status") throw new Error("Could not read the extension's status.");
+  return response.status;
+}
+
 async function render(): Promise<void> {
   root.textContent = "";
-  const settings = await loadSettings();
-  if (settings.serverOrigin && settings.sessionToken) {
-    renderPaired(settings.serverOrigin, settings.deviceName || "this device");
+  // The options page never reads the session token into page memory; it asks
+  // the background worker whether it is paired instead.
+  const status = await getStatus();
+  if (status.paired && status.serverOrigin) {
+    renderPaired(status.serverOrigin, status.deviceName || "this device");
   } else {
     renderPairingForm();
   }
@@ -64,7 +72,7 @@ function renderPairingForm(): void {
 
   const nameLabel = el("label");
   nameLabel.textContent = "Device name";
-  const nameInput = el("input", { type: "text" });
+  const nameInput = el("input", { type: "text", maxlength: "64" });
   nameInput.value = "Browser extension";
 
   const lockLabel = el("label");
