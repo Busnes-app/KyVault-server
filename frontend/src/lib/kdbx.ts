@@ -134,7 +134,10 @@ function foldFavoriteTag(tags: string[], favorite: boolean): string[] {
 function writeEntryMeta(e: kdbxweb.KdbxEntry, meta: Pick<VaultEntry, "tags" | "favorite" | "expiresAt" | "custom">): void {
   e.tags = foldFavoriteTag(meta.tags, meta.favorite);
   e.times.expires = !!meta.expiresAt;
-  e.times.expiryTime = meta.expiresAt;
+  // KeePassXC always writes an ExpiryTime element, even with Expires=False; an empty
+  // element there is what an unset expiry looks like to it. Never null the field out,
+  // only the flag.
+  e.times.expiryTime = meta.expiresAt ?? e.times.expiryTime ?? new Date();
   const keep = new Set(meta.custom.map((f) => f.name));
   for (const name of [...e.fields.keys()]) {
     if (!RESERVED_FIELDS.has(name) && !keep.has(name)) e.fields.delete(name);
@@ -146,6 +149,16 @@ function writeEntryMeta(e: kdbxweb.KdbxEntry, meta: Pick<VaultEntry, "tags" | "f
 
 function customFieldsEqual(a: CustomField[], b: CustomField[]): boolean {
   return a.length === b.length && a.every((f, i) => f.name === b[i].name && f.value === b[i].value && f.protected === b[i].protected);
+}
+
+// Order and case of a stored tag list are not meaningful to the user; only membership is.
+// A KeePassXC-written "Favorite,work" must compare equal to a re-typed "work" plus the
+// Favourite checkbox, or every foreign entry gets rewritten the first time it is touched.
+function sameTagSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((t, i) => t === sortedB[i]);
 }
 
 export class KeePassVault {
@@ -250,22 +263,48 @@ export class KeePassVault {
     return copy.uuid.toString();
   }
 
-  // Copy a foreign vault's live tree (recycled entries/groups excluded) under a new
-  // folder named after its root, or targetGroupUuid if given. Existing UUIDs win: a
-  // clashing group or entry is skipped rather than overwritten.
+  // Copy a foreign vault's live tree (recycled entries/groups excluded) into an existing
+  // same-named top-level folder, reusing it across repeat imports, or under a new one
+  // named after the source root; targetGroupUuid picks the destination explicitly.
+  // Existing UUIDs win for entries: a clashing entry is skipped rather than overwritten.
+  // A group UUID that already exists live is not skipped: import recurses into it, so
+  // entries added to a previously imported folder are picked up on a repeat import.
   public importFrom(source: KeePassVault, targetGroupUuid?: string): ImportReport {
     const report: ImportReport = { entries: 0, groups: 0, skippedEntries: 0, skippedGroups: 0, attachments: 0 };
     const srcRoot = source.db.getDefaultGroup();
     const rootName = folderName(srcRoot.name || "Imported");
-    const root = this.db.getDefaultGroup();
-    const existingRoot = root.groups.find((g) => (g.name || "") === rootName);
-    const parent = (targetGroupUuid && this.findGroup(targetGroupUuid)) || existingRoot || this.db.createGroup(root, rootName);
     const recycled = source.recycledGroupIds();
+
+    // Validate the whole source tree before mutating anything: a bad name discovered
+    // halfway through would otherwise leave a half-imported tree with no onChanged().
+    const validateNames = (g: kdbxweb.KdbxGroup) => {
+      for (const child of g.groups) {
+        if (recycled.has(child.uuid.toString())) continue;
+        folderName(child.name || "Folder");
+        validateNames(child);
+      }
+    };
+    validateNames(srcRoot);
+
+    const targetRecycled = this.recycledGroupIds();
+    if (targetGroupUuid && (targetRecycled.has(targetGroupUuid) || !this.findGroup(targetGroupUuid))) {
+      throw new Error("No live vault folder is available.");
+    }
+
+    const root = this.db.getDefaultGroup();
+    // Never match the target's own recycle bin: it can share a name with a foreign root.
+    const existingRoot = root.groups.find((g) => !targetRecycled.has(g.uuid.toString()) && (g.name || "") === rootName);
+    const parent = (targetGroupUuid && this.findGroup(targetGroupUuid)) || existingRoot || this.db.createGroup(root, rootName);
     const copyGroup = (from: kdbxweb.KdbxGroup, into: kdbxweb.KdbxGroup) => {
       for (const child of from.groups) {
         const id = child.uuid.toString();
         if (recycled.has(id)) continue;
-        if (this.findGroup(id)) { report.skippedGroups++; continue; }
+        const existing = this.findGroup(id);
+        if (existing) {
+          if (targetRecycled.has(id)) { report.skippedGroups++; continue; }
+          copyGroup(child, existing);
+          continue;
+        }
         const made = this.db.createGroup(into, folderName(child.name || "Folder"));
         made.uuid = child.uuid;
         report.groups++;
@@ -573,13 +612,13 @@ export class KeePassVault {
     if (!e) return false;
 
     const currentMeta = readEntryMeta(e);
-    const desiredTags = foldFavoriteTag(entry.tags, entry.favorite);
     if (entryFieldText(e, "Title") === entry.title && entryFieldText(e, "UserName") === entry.username &&
         entryFieldText(e, "Password") === entry.password && entryFieldText(e, "URL") === entry.url &&
         entryFieldText(e, "Notes") === entry.notes &&
         (entryFieldText(e, "otp") || entryFieldText(e, "TOTP")) === (entry.totpSeed || "") &&
         (!entry.groupUuid || e.parentGroup?.uuid.toString() === entry.groupUuid) &&
-        currentMeta.tags.join("\u0000") === desiredTags.join("\u0000") &&
+        currentMeta.favorite === entry.favorite &&
+        sameTagSet(foldFavoriteTag(currentMeta.tags, false), foldFavoriteTag(entry.tags, false)) &&
         currentMeta.expiresAt?.getTime() === entry.expiresAt?.getTime() &&
         customFieldsEqual(currentMeta.custom, entry.custom)) return false;
     this.pushEntryHistory(e);

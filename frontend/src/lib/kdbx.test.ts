@@ -107,6 +107,33 @@ describe("KDBX vault round-trip", () => {
 
     assert.equal(reopened.getGroups()[0].name, "KyAuth Passwords");
   });
+
+  // KeePassXC writes the favourite tag wherever it falls alphabetically or was typed,
+  // not always last. updateEntry's own no-op check must not treat a differently-ordered
+  // but otherwise identical tag list as a change, or every foreign entry gets rewritten
+  // (and re-history'd) the moment it is touched.
+  test("reordered tags from a foreign client are not treated as a change", async () => {
+    const key = vaultKey();
+    const credentials = new Credentials(ProtectedValue.fromString(bytesToHex(key)));
+    const db = Kdbx.create(credentials, "Foreign Vault");
+    db.header.setKdf(Consts.KdfId.Aes);
+    const entry = db.createEntry(db.getDefaultGroup());
+    entry.fields.set("Title", "Work login");
+    entry.fields.set("UserName", "u");
+    entry.fields.set("Password", ProtectedValue.fromString("p"));
+    entry.fields.set("URL", "");
+    entry.fields.set("Notes", "");
+    entry.tags = ["Favorite", "work"]; // favourite first, capitalized, unlike our own writer
+
+    const vault = await KeePassVault.open(await db.save(), key);
+    const before = vault.getEntries()[0];
+    assert.equal(before.favorite, true);
+    assert.deepEqual(before.tags, ["Favorite", "work"]);
+
+    const historyBefore = vault.getEntryHistory(before.uuid).length;
+    assert.equal(vault.updateEntry({ ...before }), false, "identical metadata in a different order is a no-op");
+    assert.equal(vault.getEntryHistory(before.uuid).length, historyBefore, "no history revision was created");
+  });
 });
 
 // A vault only reaches its owner during a KySignOn outage if they can actually open the

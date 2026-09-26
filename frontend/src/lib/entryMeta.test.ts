@@ -2,6 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { KeePassVault } from "./kdbx";
 import { parseTags, hasReservedTag, isExpired, expiresWithin, sortEntries, entryMatches, FAVORITE_TAG } from "./entryMeta";
+import * as kdbxweb from "kdbxweb";
+
+const { Kdbx, Credentials, ProtectedValue } = (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
+const bytesToHex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 
 test("tags parse, dedupe and cap", () => {
   assert.deepEqual(parseTags(" work, Work ;home,, "), ["work", "home"]);
@@ -34,6 +38,14 @@ test("metadata round-trips through an encrypted export", async () => {
   const again = reopened.getEntries().find((x) => x.uuid === e.uuid)!;
   assert.deepEqual(again.tags, ["finance"]);
   assert.equal(again.expiresAt, undefined);
+
+  // Clearing an expiry must leave Expires=False with a real ExpiryTime element, matching
+  // what KeePassXC writes. An empty <ExpiryTime/> (kdbxweb's rendering of undefined) is
+  // not read the same by every client.
+  const raw = await Kdbx.load(await reopened.exportBinary(), new Credentials(ProtectedValue.fromString(bytesToHex(key))));
+  const nativeEntry = [...raw.getDefaultGroup().allEntries()].find((x) => x.uuid.toString() === e.uuid)!;
+  assert.equal(nativeEntry.times.expires, false);
+  assert.ok(nativeEntry.times.expiryTime instanceof Date);
 });
 
 test("sorting, expiry windows and search", () => {
