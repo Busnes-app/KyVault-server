@@ -27,9 +27,10 @@ type Props = {
   allowRollback: boolean;
   onClose: () => void;
   onRestored: () => void;
+  onNotice: (text: string) => void;
 };
 
-export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: Props) {
+export function HistoryModal({ onClose, onRestored, onNotice, recovery, allowRollback }: Props) {
   const dialogs = useDialogs();
   const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
@@ -74,7 +75,7 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
     setError("");
     try {
       await postJSON(`/api/vault/history/${id}/restore`, {});
-      setMessage("Vault successfully restored.");
+      onNotice("Vault restored to the selected version.");
       onRestored();
     } catch (err) {
       setError(toErrorMessage(err, "Failed to restore snapshot"));
@@ -177,6 +178,7 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
                   <button
                     className="btn btn-secondary btn-sm"
                     disabled={busyId !== null || !allowRollback}
+                    title={!allowRollback ? "Save or discard your unsaved edits first." : undefined}
                     onClick={() => restoreSnapshot(h.id)}
                   >
                     <RotateCcw size={14} /> Rollback
@@ -220,6 +222,7 @@ export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: P
                 <button
                   className="btn btn-danger btn-sm"
                   disabled={busyId !== null || !allowRollback}
+                  title={!allowRollback ? "Save or discard your unsaved edits first." : undefined}
                   onClick={() => discardConflict(c.id)}
                 >
                   <Trash2 size={14} /> Discard

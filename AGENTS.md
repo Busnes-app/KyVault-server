@@ -11,7 +11,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 4. **Bounded Version History & Rollback**: Keep up to 100 snapshots per user spread across a default 90-day age window, with one-click rollback. Saves and rollbacks prune synchronously under the store lock. After age expiry, preserve the oldest/newest snapshots and thin the closest-spaced interior snapshots so a burst of writes cannot erase the pre-session recovery window.
 5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side user credential. See "Replication" and "Authentication" below.
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
-7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
+7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
 8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
 
@@ -59,8 +59,11 @@ yourself adding one, the design has been misread.
   `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
   offline vault key each require the current master password or paper code, verified in
   the browser against the stored envelope (`verifyMasterPassword`).
+- A version-0 vault shows a create dialog with a confirm field (`lib/unlockMode.ts`); the unlock dialog auto-opens only on the vault tab.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
+- Admin → User Directory changes roles through `PUT /api/admin/users/{id}/role`; the caller's row is disabled and the last-admin 409 is shown inline.
+- Admin → Backup: pinning a recovery key asks for confirmation first; the server still refuses a second, different key.
 - User-facing callback failures (identity not linked, account deactivated, login fenced by a logout) redirect to `/?sso_error=<code>`; the login page explains the code. Token and configuration failures keep their status codes.
 - A 401 from any API call except the session probe and logout raises `kyvault:unauthorized`; the app locks the vault and shows the login page with a notice.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
@@ -217,6 +220,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   nested paths, unchanged contents/history/binaries, no-ops, invalid targets and recycle guards.
   CSV prevalidates all prospective folder names before mutation so an invalid later row cannot
   leave earlier rows imported without a save revision; the same test file covers that boundary.
+  A new entry is a draft in the editor until Apply Edits creates it; Cancel leaves no entry and
+  no save revision. Selecting a folder clears an entry that is not in it.
+  A typed but unapplied new entry is not checkpointed on auto-lock and does not trigger the
+  unload warning; the discard confirm still asks.
 
 - `frontend/src/components/EntryAttachments.tsx` and `frontend/src/lib/kdbx.ts`:
   entries support adding one file at a time (10 MiB maximum), downloading decrypted
@@ -344,7 +351,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   (native `<dialog>`, Escape closes, backdrop click never closes, focus returns to the
   opener). Questions go through `useDialogs().confirm/prompt/notify`, sequenced by
   `lib/dialogQueue.ts` so a second question waits for the first. Native `confirm`, `prompt`
-  and `alert` are banned in `frontend/src`. `noNativeDialogs.test.ts` fails the suite if one comes back.
+  and `alert` are banned in `frontend/src`, including `window.confirm`. `noNativeDialogs.test.ts` fails the suite if one comes back.
   Autofocus inside a `Dialog` uses `data-autofocus`, not the React `autoFocus` prop: React
   never emits an `autofocus` DOM attribute, so `Dialog`'s `[autofocus]` lookup was dead code.
   Locking the vault cancels every pending question (`cancelAll`) so a handler that captured
@@ -358,7 +365,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)
   under a non-extractable per-browser CryptoKey held in the same store; legacy plain-hex
   records are deleted on sight, and the next password unlock writes a sealed record.
-  Forget This Device clears it.
+  Forget This Device clears it. The pairing modal polls `GET /api/devices` every 3 seconds
+  while open and visible and closes when the device count grows.
 - `frontend/src/lib/vaultCrypto.ts`: the vault key envelope — **the only place a
   human-chosen secret is stretched**. Everything else is keyed on a 256-bit random vault
   key, where the KDF is near-irrelevant; here it is the whole defence, and the envelope is
@@ -394,6 +402,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Both implementations must produce that. Unit tests per repo only prove each side is
   self-consistent; agreeing on a vector is what proves they interoperate — the same lesson
   the silently-mismatched replication format taught. The client refuses master passwords under 12 characters (lib/masterPassword.ts) on create and change; the server never sees one so it cannot enforce this.
+  The Security page shows the paper code and vault key with Copy (cleared after 30 seconds when allowed), Print (print-only region), auto-hide (`lib/secretDisplay.ts`) and a type-it-back confirmation for the paper code.
 
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
@@ -449,3 +458,5 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `App.tsx` remembers the last vault route (`lastVault` ref) so the Vault nav button restores the selected entry instead of deselecting it. `VaultPage`'s route-follow effect syncs the mobile pane (`list` when the hash drops the entry, `detail` when it names one) and treats a recycled entry's uuid as unknown, correcting the hash back to `#/vault` rather than reopening it.
 
 - `frontend/src/lib/useMediaQuery.ts` and `VaultPage` panes: under 900px the vault is one pane at a time (folders, list, detail) with Folders and Back controls; under 600px nav labels collapse to icons with aria-labels. Desktop keeps the three-column grid.
+
+- `frontend/src/lib/generatePassword.ts`: uniform rejection sampling, one guaranteed character per selected class, length 8 to 128, optional look-alike exclusion, settings persisted under `kyvault.generator`. `generatePassword.test.ts` pins class coverage and the error cases.

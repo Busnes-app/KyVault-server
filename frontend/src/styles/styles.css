@@ -91,6 +91,14 @@ code, pre, .font-mono {
   overflow-y: auto;
 }
 
+/* Print media: single block pinned to top of page. */
+@media print {
+  body * { visibility: hidden; }
+  .print-only-secret, .print-only-secret * { visibility: visible; }
+  .print-only-secret { position: fixed; top: 0; left: 0; width: 100%; font-family: var(--font-mono); font-size: 14pt; }
+  .app-container, .settings-page { height: auto; overflow: visible; }
+}
+
 /* Header Navbar */
 .app-nav {
   display: flex;
@@ -628,7 +636,7 @@ dialog.dialog-lg { max-width: 760px; }
   background: var(--panel); color: var(--ink-strong);
 }
 .theme-selector:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.auth-theme { padding: 12px; text-align: right; }
+.auth-theme { position: fixed; top: 12px; right: 12px; }
 
 :root[data-theme^="busnes-"] .btn-primary { color: var(--button-text); }
 
@@ -647,7 +655,7 @@ dialog.dialog-lg { max-width: 760px; }
 .vault-layout--narrow .field-row { flex-wrap: wrap; }
 @media (max-width: 600px) {
   .app-nav { padding: 0.5rem 0.75rem; }
-  .nav-link-btn span, .nav-user-name { display: none; }
+  .nav-link-btn span, .nav-icon-label, .nav-user-name { display: none; }
   .settings-page { padding: 1rem 0.75rem; }
   .vault-detail-pane .font-mono { overflow-wrap: anywhere; }
 }

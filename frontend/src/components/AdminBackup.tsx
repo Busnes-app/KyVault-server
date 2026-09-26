@@ -190,10 +190,19 @@ export function AdminBackup() {
       </div> : null}
 
       <form className="field-card" style={{ marginBottom: "1rem" }} onSubmit={(event) => {
-        event.preventDefault(); void act(async () => {
-          await postJSON("/api/backup/pin-key", { publicKey, threshold, totalShares });
-          setPublicKey(""); setMessage("Recovery public key pinned. Compare its fingerprint with the ceremony page.");
-        });
+        event.preventDefault();
+        void (async () => {
+          if (!await dialogs.confirm({
+            title: "Pin this recovery key?",
+            message: "Pinning is write-once. Every backup from now on is sealed to this key and only its custodians can open them. Compare the fingerprint with the ceremony page before continuing.",
+            confirmLabel: "Pin",
+            danger: true,
+          })) return;
+          void act(async () => {
+            await postJSON("/api/backup/pin-key", { publicKey, threshold, totalShares });
+            setPublicKey(""); setMessage("Recovery public key pinned. Compare its fingerprint with the ceremony page.");
+          });
+        })();
       }}>
         <h4>Pin the suite public key by hand</h4>
         <p>Paste the public key from the ceremony page. Custodian shares and private keys stay with the custodians.</p>
