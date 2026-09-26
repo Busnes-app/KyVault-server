@@ -17,16 +17,20 @@ for (const [name, manifest] of [["chrome", chromeManifest()], ["firefox", firefo
     assert.equal("content_scripts" in manifest, false);
     assert.match(manifest.content_security_policy.extension_pages, /'wasm-unsafe-eval'/);
     assert.doesNotMatch(manifest.content_security_policy.extension_pages, /'unsafe-eval'|'unsafe-inline'|http/);
-    assert.equal(manifest.background.service_worker, "background.js");
     assert.equal(manifest.background.type, "module");
     assert.equal(JSON.parse(JSON.stringify(manifest)).name, "KyVault");
   });
 }
 
-test("chrome has no background.scripts; firefox has scripts and a gecko id", () => {
-  assert.equal("scripts" in chromeManifest().background, false);
+test("chrome background is a service worker only; firefox background is scripts only", () => {
+  // Chrome MV3 only understands service_worker; Firefox ignores it and warns
+  // (BACKGROUND_SERVICE_WORKER_IGNORED), so each browser gets only its own key.
+  const chrome = chromeManifest();
+  assert.equal(chrome.background.service_worker, "background.js");
+  assert.equal("scripts" in chrome.background, false);
   const ff = firefoxManifest();
   assert.deepEqual(ff.background.scripts, ["background.js"]);
+  assert.equal("service_worker" in ff.background, false);
   assert.equal(ff.browser_specific_settings.gecko.id, "kyvault@busnes.app");
   assert.deepEqual(ff.browser_specific_settings.gecko.data_collection_permissions, { required: ["none"] });
 });

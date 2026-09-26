@@ -25,7 +25,10 @@ export function chromeManifest() {
 export function firefoxManifest() {
   return {
     ...shared,
-    background: { scripts: ["background.js"], service_worker: "background.js", type: "module" },
+    // Firefox ignores service_worker (BACKGROUND_SERVICE_WORKER_IGNORED) and
+    // has run background.scripts regardless of that key's presence since
+    // Firefox 121, so scripts alone is enough and drops the warning.
+    background: { scripts: ["background.js"], type: "module" },
     browser_specific_settings: {
       gecko: { id: "kyvault@busnes.app", strict_min_version: "128.0", data_collection_permissions: { required: ["none"] } },
     },

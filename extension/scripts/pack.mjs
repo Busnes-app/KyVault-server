@@ -16,4 +16,14 @@ for (const [browser, manifest] of [
   const stray = `${dest}/manifest.json`;
   if (existsSync(stray)) unlinkSync(stray);
   writeFileSync(stray, JSON.stringify(manifest, null, 2));
+
+  if (browser === "firefox") {
+    // Firefox has no Offscreen API (background.ts already gates every call
+    // behind `typeof ext.offscreen`); shipping the unused offscreen.js is
+    // what makes web-ext lint flag offscreen.closeDocument as UNSUPPORTED_API.
+    for (const file of ["offscreen.js", "offscreen.html"]) {
+      const path = `${dest}/${file}`;
+      if (existsSync(path)) unlinkSync(path);
+    }
+  }
 }

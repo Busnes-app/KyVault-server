@@ -35,13 +35,54 @@ Open `chrome://extensions`, enable Developer mode, "Load unpacked", pick
 npm run run:firefox
 ```
 
-Launches a temporary Firefox profile with `dist/firefox` loaded. `npm run lint`
-runs `web-ext lint` against the same directory; expect 0 errors. The
-`BACKGROUND_SERVICE_WORKER_IGNORED` warning is expected: Firefox ignores
-`background.service_worker` and uses `background.scripts` instead, which the
-manifest also sets. Two warnings about `strict_min_version` predating
-`data_collection_permissions` support are also expected and harmless; Firefox
-ignores that key below the versions named rather than rejecting the manifest.
+Launches a temporary Firefox profile with `dist/firefox` loaded. Pair again
+each run: `web-ext run` uses a throwaway profile.
+
+### Install unsigned (about:debugging)
+
+Open `about:debugging#/runtime/this-firefox`, "Load Temporary Add-on", pick
+`dist/firefox/manifest.json`. This install is removed when Firefox closes.
+A permanent install needs the package signed by AMO (see Store submission
+below); Firefox refuses to load an unsigned `.xpi` permanently.
+
+### Lint
+
+`npm run lint` runs `web-ext lint` against `dist/firefox`; expect 0 errors
+and 2 warnings, both `KEY_FIREFOX_*_UNSUPPORTED_BY_MIN_VERSION`. They say
+`strict_min_version: "128.0"` is older than the Firefox versions that added
+`data_collection_permissions` support (140 desktop, 142 Android). Firefox
+ignores that manifest key below the version it needs rather than rejecting
+the manifest, so keeping `strict_min_version` at 128 (the earliest version
+this extension otherwise needs) is correct: raising it to 140 would refuse
+to install on Firefox 128 through 139 for no functional gain.
+
+## Manual test checklist
+
+Run this on both Chrome (`dist/chrome` loaded unpacked) and Firefox
+(`npm run run:firefox`) against a real KyVault server before each release:
+
+- Pair from the options page.
+- Unlock with the master password.
+- List entries for the current site.
+- Copy username, password and TOTP; confirm the 30 second clipboard clear
+  (Chrome: a space after the popup closes; Firefox: only while the popup
+  stays open).
+- Fill on a plain HTML form and on a React-controlled form.
+- Fill a same-site login iframe; confirm a cross-site iframe is not filled.
+- Confirm nothing fills merely from opening the popup, with no click.
+- Save a new login, then force a 409 (edit the vault elsewhere first) and
+  confirm the lock-and-refresh message.
+- Revoke the device from the KyVault web app, then confirm the extension's
+  next action shows the revoked message instead of retrying silently.
+- Leave the popup closed past the idle lock window, then confirm the next
+  open asks for the master password again.
+
+## Known limitations
+
+- Firefox has no Offscreen API, so the clipboard clears there only while the
+  popup stays open; Chrome clears it 30 seconds later regardless.
+- Fill does not reach a login form inside a cross-site iframe, by design:
+  filling only applies to the top frame and same-site frames.
 
 ## Store submission
 

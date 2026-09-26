@@ -51,7 +51,19 @@ checks.
 ## Child DOX Index
 
 - `src/manifest.ts` and `src/manifest.test.ts`: the manifest source and its
-  MV3 permission/CSP/background-shape test (Task 1).
+  MV3 permission/CSP/background-shape test (Task 1). Chrome's background
+  carries `service_worker` only; Firefox's carries `scripts` only (Firefox
+  ignores `service_worker` and warns `BACKGROUND_SERVICE_WORKER_IGNORED` if
+  it is present, and has run `background.scripts` regardless of that key
+  since Firefox 121). `scripts/pack.mjs` drops `offscreen.js`/`offscreen.html`
+  from `dist/firefox` only: Firefox has no Offscreen API, `background.ts`
+  already gates every call behind `typeof ext.offscreen`, and shipping the
+  unused file is what made `web-ext lint` flag `offscreen.closeDocument` as
+  `UNSUPPORTED_API`. `web-ext lint --source-dir dist/firefox` is 0 errors, 2
+  warnings (`KEY_FIREFOX_*_UNSUPPORTED_BY_MIN_VERSION`, explained in the
+  README); raising `strict_min_version` to silence them would drop Firefox
+  128 through 139 support for a manifest field with no runtime effect, so it
+  stays at 128 and the warnings are documented instead.
 - `src/lib/serverUrl.ts`, `src/lib/pairing.ts`, `src/lib/settings.ts`,
   `src/messages.ts`, `src/options/main.ts`, `src/background.ts` (Task 2):
   pairing from the options page. `parseServerOrigin` accepts only a bare
