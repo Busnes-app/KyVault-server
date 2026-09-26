@@ -49,11 +49,16 @@ directory imports from it read-only through `../frontend/src/lib`.
 `npm test && npm run build && npm run lint` in `extension/` (`build` runs
 `tsc` first, so it is the typecheck gate too; `lint` is `web-ext lint
 --source-dir dist/firefox` and must report 0 errors). No browser automation
-in CI; loading `dist/chrome` unpacked and `npm run run:firefox` are manual
-checks.
+in CI. Local browser runs: `npm run e2e:chromium` (the eleven-item checklist in
+Playwright's Chromium) and `npm run e2e:firefox` (LibreWolf, pairing to save);
+prerequisites, what each item proves and the headless limits are in
+`e2e/README.md`. They start and stop the mock (5200), proxy (5443) and test site
+(5444) themselves and never use 5199.
 
 ## Child DOX Index
 
+- `e2e/`: local browser e2e suites (Chromium via puppeteer-core, LibreWolf over
+  WebDriver BiDi) against the frontend mock; not in CI. See `e2e/README.md`.
 - `src/manifest.ts` and `src/manifest.test.ts`: the manifest source and its
   MV3 permission/CSP/background-shape test (Task 1). Chrome's background
   carries `service_worker` only; Firefox's carries `scripts` only (Firefox

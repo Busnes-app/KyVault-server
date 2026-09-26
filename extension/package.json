@@ -8,11 +8,14 @@
     "test": "tsx --test \"src/**/*.test.ts\"",
     "lint": "web-ext lint --source-dir dist/firefox",
     "run:firefox": "web-ext run --source-dir dist/firefox",
-    "watch": "vite build --watch"
+    "watch": "vite build --watch",
+    "e2e:chromium": "node e2e/chromium.mjs",
+    "e2e:firefox": "node e2e/firefox.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.3.0",
     "@types/node": "^26.6.1",
+    "puppeteer-core": "25.12.0",
     "tsx": "4.23.13",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",

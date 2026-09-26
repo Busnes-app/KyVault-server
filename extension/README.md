@@ -59,7 +59,8 @@ to install on Firefox 128 through 139 for no functional gain.
 ## Manual test checklist
 
 Run this on both Chrome (`dist/chrome` loaded unpacked) and Firefox
-(`npm run run:firefox`) against a real KyVault server before each release:
+(`npm run run:firefox`) against a real KyVault server before each release. `npm run e2e:chromium` and
+`npm run e2e:firefox` automate most of it against the mock (`e2e/README.md`):
 
 - Pair from the options page.
 - Unlock with the master password.
