@@ -35,6 +35,14 @@ export function generatePassword(opts: GeneratorOptions, random: (a: Uint32Array
   return chars.join("");
 }
 
+export function passwordEntropyBits(opts: GeneratorOptions): number {
+  const setFor = (k: keyof typeof SETS) => (opts.excludeLookalikes ? SETS[k].replace(LOOKALIKES, "") : SETS[k]);
+  const classes = (Object.keys(SETS) as Array<keyof typeof SETS>).filter((k) => opts[k] && setFor(k).length > 0);
+  if (classes.length === 0) return 0;
+  const pool = new Set(classes.flatMap((k) => setFor(k).split(""))).size;
+  return opts.length * Math.log2(pool);
+}
+
 const KEY = "kyvault.generator";
 const BOOL_KEYS = ["upper", "lower", "numbers", "symbols", "excludeLookalikes"] as const;
 export function loadGeneratorOptions(storage: Pick<Storage, "getItem"> = localStorage): GeneratorOptions {

@@ -8,7 +8,9 @@ export type EntryDraft = {
   tags: string[]; expiresAt: string | null; favorite: boolean; custom: CustomField[];
 };
 export type DraftMetadata = { version: number; dirty: boolean; entry: EntryDraft | null };
-export type LockedDraft = { iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer };
+export type LockedDraft = { iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer; sealedAt?: number };
+
+export const DRAFT_MAX_AGE_MS = 7 * 86_400_000;
 
 export function draftPointer(storage: Pick<Storage, "getItem">, userId: string): string | undefined {
   return storage.getItem(`kyvault.draft:${userId}`) ?? storage.getItem(`kypassword.draft:${userId}`) ?? undefined;
@@ -25,7 +27,7 @@ export async function sealDraft(binary: ArrayBuffer, metadata: DraftMetadata, ke
     const cryptoKey = await crypto.subtle.importKey("raw", new Uint8Array(key), "AES-GCM", false, ["encrypt"]);
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(account) }, cryptoKey, plain);
-    return { iv, ciphertext };
+    return { iv, ciphertext, sealedAt: Date.now() };
   } finally { plain.fill(0); }
 }
 
@@ -73,8 +75,9 @@ function isEntryDraft(value: unknown): value is EntryDraft | null {
     (!("custom" in value) || (Array.isArray(value.custom) && value.custom.every(isCustomField)));
 }
 
-// Separate database preserves compatibility with older clients opening the device-key DB.
-export async function draftStore(id: string, operation: "get" | "put" | "delete", value?: LockedDraft): Promise<LockedDraft | undefined> {
+// fn runs synchronously against the store; its return value (typically an IDBRequest,
+// read via a callback once the transaction completes) becomes the resolved value.
+async function withDraftStore<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore, resolve: (value: T) => void) => void): Promise<T> {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open("kypassword-locked-drafts", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("drafts");
@@ -82,15 +85,23 @@ export async function draftStore(id: string, operation: "get" | "put" | "delete"
     request.onerror = () => reject(request.error);
   });
   try {
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction("drafts", operation === "get" ? "readonly" : "readwrite");
-      const store = tx.objectStore("drafts");
-      const request = operation === "get" ? store.get(id) : operation === "put" ? store.put(value, id) : store.delete(id);
-      tx.oncomplete = () => resolve(operation === "get" ? request.result : undefined);
+    return await new Promise<T>((resolve, reject) => {
+      const tx = db.transaction("drafts", mode);
+      let result: T;
+      try { fn(tx.objectStore("drafts"), (value) => { result = value; }); } catch (err) { reject(err); return; }
+      tx.oncomplete = () => resolve(result);
       tx.onabort = () => reject(tx.error ?? new Error("Recovery storage failed"));
       tx.onerror = () => reject(tx.error);
     });
   } finally { db.close(); }
+}
+
+// Separate database preserves compatibility with older clients opening the device-key DB.
+export async function draftStore(id: string, operation: "get" | "put" | "delete", value?: LockedDraft): Promise<LockedDraft | undefined> {
+  return withDraftStore<LockedDraft | undefined>(operation === "get" ? "readonly" : "readwrite", (store, resolve) => {
+    const request = operation === "get" ? store.get(id) : operation === "put" ? store.put(value, id) : store.delete(id);
+    request.onsuccess = () => resolve(operation === "get" ? request.result : undefined);
+  });
 }
 
 // A recovery-store outage must not prevent opening the server vault. Keep failure
@@ -105,4 +116,45 @@ export async function readDraft(id: string | undefined): Promise<
 export async function removeDraft(id: string | undefined): Promise<boolean> {
   try { if (id) await draftStore(id, "delete"); return true; }
   catch { return false; }
+}
+
+// remove: drafts of this account older than DRAFT_MAX_AGE_MS, never the current pointer.
+// stamp: drafts with no usable sealedAt (missing, null, or otherwise not a finite
+// number) so they age out a week from now instead of being deleted on an unknown age.
+export function planDraftCleanup(entries: Array<{ id: string; sealedAt?: number | null }>, keep: string | undefined, now: number): { remove: string[]; stamp: string[] } {
+  const remove: string[] = [], stamp: string[] = [];
+  for (const { id, sealedAt } of entries) {
+    if (id === keep) continue;
+    if (typeof sealedAt !== "number" || !Number.isFinite(sealedAt)) stamp.push(id);
+    else if (now - sealedAt > DRAFT_MAX_AGE_MS) remove.push(id);
+  }
+  return { remove, stamp };
+}
+
+// Housekeeping after unlock: prune this account's stale drafts. Failures are swallowed
+// like removeDraft; a missed sweep just tries again next unlock.
+export async function pruneDrafts(userId: string, keep: string | undefined, now = Date.now()): Promise<void> {
+  try {
+    await withDraftStore<void>("readwrite", (store, resolve) => {
+      const entries: Array<{ id: string; sealedAt?: number; value: LockedDraft }> = [];
+      const request = store.openCursor(IDBKeyRange.bound(`${userId}:`, `${userId}:￿`));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          const { remove, stamp } = planDraftCleanup(entries, keep, now);
+          for (const id of remove) store.delete(id);
+          for (const id of stamp) {
+            const entry = entries.find((e) => e.id === id);
+            if (entry) store.put({ ...entry.value, sealedAt: now }, id);
+          }
+          resolve(undefined);
+          return;
+        }
+        const storedSealedAt = (cursor.value as LockedDraft).sealedAt;
+        const sealedAt = typeof storedSealedAt === "number" && Number.isFinite(storedSealedAt) ? storedSealedAt : undefined;
+        entries.push({ id: String(cursor.key), sealedAt, value: cursor.value as LockedDraft });
+        cursor.continue();
+      };
+    });
+  } catch { /* housekeeping only */ }
 }

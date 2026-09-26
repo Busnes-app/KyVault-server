@@ -85,3 +85,28 @@ func TestDevicesPairingAndRevoke(t *testing.T) {
 		t.Errorf("expected ErrPairingExpired on expired PIN, got: %v", err)
 	}
 }
+
+func TestStoreRename(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	sess, _ := store.CreatePairingSession("usr_1", "")
+	dev, _, err := store.RedeemPairing(sess.PIN, "Old Name", "android", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("RedeemPairing failed: %v", err)
+	}
+
+	if err := store.Rename(dev.ID, "New Name"); err != nil {
+		t.Fatalf("Rename failed: %v", err)
+	}
+	got, _ := store.Get(dev.ID)
+	if got.Name != "New Name" {
+		t.Errorf("name = %q, want New Name", got.Name)
+	}
+
+	if err := store.Rename("does-not-exist", "x"); err != ErrNotFound {
+		t.Errorf("Rename of unknown device = %v, want ErrNotFound", err)
+	}
+}

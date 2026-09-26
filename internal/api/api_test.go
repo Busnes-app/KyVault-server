@@ -182,17 +182,14 @@ func TestVaultOperationsAndConflicts(t *testing.T) {
 	}
 }
 
-func TestDevicePairingFlow(t *testing.T) {
-	srv := newTestServer(t)
-	handler := srv.Routes()
+// pairDeviceForTest performs the pairing start and redeem calls a browser session would
+// drive and returns the new device's ID and its bearer session token.
+func pairDeviceForTest(t *testing.T, handler http.Handler, cookie *http.Cookie) (deviceID, token string) {
+	t.Helper()
 
-	_, sessCookie := signedInUser(t, srv, "carol", users.RoleUser)
-	var rec *httptest.ResponseRecorder
-
-	// 1. User initiates pairing in UI
 	req := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/start", nil)
-	req.AddCookie(sessCookie)
-	rec = httptest.NewRecorder()
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /api/devices/pairing/start status = %d", rec.Code)
@@ -202,7 +199,6 @@ func TestDevicePairingFlow(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&pairInit)
 	pin := pairInit["pin"].(string)
 
-	// 2. Client redeems PIN
 	redeemBody, _ := json.Marshal(PairingRedeemRequest{
 		CodeOrPIN:      pin,
 		DeviceName:     "Carol's iPhone",
@@ -218,17 +214,108 @@ func TestDevicePairingFlow(t *testing.T) {
 
 	var redeemResp map[string]any
 	_ = json.NewDecoder(rec.Body).Decode(&redeemResp)
-	if redeemResp["deviceId"] == "" || redeemResp["sessionToken"] == "" {
-		t.Errorf("unexpected redeem response: %+v", redeemResp)
+	deviceID, _ = redeemResp["deviceId"].(string)
+	token, _ = redeemResp["sessionToken"].(string)
+	if deviceID == "" || token == "" {
+		t.Fatalf("unexpected redeem response: %+v", redeemResp)
+	}
+	return deviceID, token
+}
+
+func TestDevicePairingFlow(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+
+	_, sessCookie := signedInUser(t, srv, "carol", users.RoleUser)
+	pairDeviceForTest(t, handler, sessCookie)
+
+	// User lists devices
+	req := httptest.NewRequest(http.MethodGet, "/api/devices", nil)
+	req.AddCookie(sessCookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/devices status = %d", rec.Code)
+	}
+}
+
+func TestDeviceRevokeEndsSession(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	_, sessCookie := signedInUser(t, srv, "erin", users.RoleUser)
+	deviceID, token := pairDeviceForTest(t, handler, sessCookie)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/devices", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	var listed []map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&listed)
+	if len(listed) != 1 || listed[0]["current"] != true {
+		t.Fatalf("device session should see itself as current: %+v", listed)
 	}
 
-	// 3. User lists devices
-	req = httptest.NewRequest(http.MethodGet, "/api/devices", nil)
+	req = httptest.NewRequest(http.MethodDelete, "/api/devices/"+deviceID, nil)
 	req.AddCookie(sessCookie)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/devices status = %d", rec.Code)
+		t.Fatalf("revoke = %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/vault/metadata", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked device token still works: %d", rec.Code)
+	}
+}
+
+func TestDeviceRename(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	_, owner := signedInUser(t, srv, "fay", users.RoleUser)
+	_, other := signedInUser(t, srv, "gus", users.RoleUser)
+	deviceID, _ := pairDeviceForTest(t, handler, owner)
+	for _, tc := range []struct {
+		cookie *http.Cookie
+		body   string
+		want   int
+	}{
+		{owner, `{"name":"  Kitchen tablet "}`, http.StatusOK},
+		{owner, `{"name":""}`, http.StatusBadRequest},
+		{owner, `{"name":"bad\u0007name"}`, http.StatusBadRequest},
+		{owner, `{"name":"` + strings.Repeat("x", 65) + `"}`, http.StatusBadRequest},
+		{other, `{"name":"mine now"}`, http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(http.MethodPatch, "/api/devices/"+deviceID, strings.NewReader(tc.body))
+		req.AddCookie(tc.cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("PATCH %s with %s = %d, want %d", tc.cookie.Value[:4], tc.body, rec.Code, tc.want)
+		}
+	}
+	dev, _ := srv.devices.Get(deviceID)
+	if dev.Name != "Kitchen tablet" {
+		t.Fatalf("name = %q", dev.Name)
+	}
+}
+
+// TestStartSessionRefusesGoneDevice pins that a session cannot be minted for a device
+// that no longer exists, e.g. one revoked between RedeemPairing and startSessionWithToken.
+// Without this check the minted session's DeviceID would name nothing a later revoke
+// could find, leaving a bearer token no revoke could ever end.
+func TestStartSessionRefusesGoneDevice(t *testing.T) {
+	srv := newTestServer(t)
+	u, err := srv.users.CreateSSOUser("hank", users.RoleUser, "sub-hank", "hank", "hank@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sso.Identity{Issuer: "https://kysignon.test", ClientID: "kyvault-app", Subject: u.SSOSub, SessionID: "sid-hank", IssuedAt: time.Now().UTC()}
+
+	if _, err := srv.startSessionWithToken(u.ID, "device-that-does-not-exist", "", id); err == nil {
+		t.Fatal("expected an error minting a session for a nonexistent device")
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,7 +22,11 @@ const maxHistorySnapshots = 100
 
 var (
 	ErrNotFound = errors.New("vault not found")
-	ErrConflict = errors.New("vault version conflict: a newer version exists on the server")
+	// ErrStaleKey refuses a rollback to a snapshot encrypted under a retired vault key.
+	ErrStaleKey = errors.New("snapshot was saved under a previous vault key")
+	// ErrRotationEnvelopes refuses a rotation upload that lacks either new envelope.
+	ErrRotationEnvelopes = errors.New("a key rotation must carry both new envelopes")
+	ErrConflict          = errors.New("vault version conflict: a newer version exists on the server")
 )
 
 // ConflictError conveys details about a rejected upload.
@@ -54,6 +60,9 @@ type Metadata struct {
 	PasswordEnvelope string                    `json:"passwordEnvelope,omitempty"`
 	RecoveryEnvelope string                    `json:"recoveryEnvelope,omitempty"`
 	DeviceEnvelopes  map[string]DeviceEnvelope `json:"deviceEnvelopes,omitempty"`
+	// KeyEpochSince is the version the last key rotation wrote. Older snapshots are
+	// encrypted under a retired key and must not become the current vault.
+	KeyEpochSince int64 `json:"keyEpochSince,omitempty"`
 }
 
 // HistoryEntry represents a past vault snapshot.
@@ -63,6 +72,7 @@ type HistoryEntry struct {
 	SizeBytes int64     `json:"sizeBytes"`
 	Checksum  string    `json:"checksum"`
 	Timestamp time.Time `json:"timestamp"`
+	StaleKey  bool      `json:"staleKey"`
 }
 
 // ConflictEntry represents a preserved rejected save.
@@ -238,8 +248,10 @@ func (s *Store) OpenVault(userID string) (io.ReadCloser, Metadata, error) {
 	return f, meta, nil
 }
 
-// SaveEnvelopes updates the key envelopes without modifying the KDBX file.
-func (s *Store) SaveEnvelopes(userID string, passwordEnvelope, recoveryEnvelope string, deviceEnvelopes map[string]DeviceEnvelope) error {
+// SaveEnvelopes updates the key envelopes without modifying the KDBX file. It returns
+// ErrConflict unless expectedVersion is the current version, so an envelope wrapping a
+// retired key cannot land on a rotated vault.
+func (s *Store) SaveEnvelopes(userID string, expectedVersion int64, passwordEnvelope, recoveryEnvelope string, deviceEnvelopes map[string]DeviceEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -249,6 +261,9 @@ func (s *Store) SaveEnvelopes(userID string, passwordEnvelope, recoveryEnvelope 
 	}
 
 	meta, _ := s.getMetadataLocked(userID)
+	if meta.Version != expectedVersion {
+		return ErrConflict
+	}
 	if passwordEnvelope != "" {
 		meta.PasswordEnvelope = passwordEnvelope
 	}
@@ -335,6 +350,19 @@ func (s *Store) saveMetadataLocked(userID string, meta Metadata) error {
 
 // SaveVault saves a new encrypted KDBX version atomically.
 func (s *Store) SaveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string) (Metadata, error) {
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, false)
+}
+
+// RotateVault saves a vault re-encrypted under a new key with both new envelopes, and
+// marks the version it writes as the start of the new key epoch.
+func (s *Store) RotateVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string) (Metadata, error) {
+	if passwordEnvelope == "" || recoveryEnvelope == "" {
+		return Metadata{}, ErrRotationEnvelopes
+	}
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true)
+}
+
+func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated bool) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -400,6 +428,11 @@ func (s *Store) SaveVault(userID string, expectedVersion int64, kdbxData []byte,
 		PasswordEnvelope: current.PasswordEnvelope,
 		RecoveryEnvelope: current.RecoveryEnvelope,
 		DeviceEnvelopes:  current.DeviceEnvelopes,
+		KeyEpochSince:    current.KeyEpochSince,
+	}
+	if rotated {
+		nextMeta.KeyEpochSince = newVersion
+		nextMeta.DeviceEnvelopes = make(map[string]DeviceEnvelope)
 	}
 
 	if passwordEnvelope != "" {
@@ -423,6 +456,7 @@ func (s *Store) ListHistory(userID string) ([]HistoryEntry, error) {
 	defer s.mu.RUnlock()
 
 	entries := make([]HistoryEntry, 0)
+	meta, _ := s.getMetadataLocked(userID)
 	files, err := os.ReadDir(s.historyDir(userID))
 	if os.IsNotExist(err) {
 		return entries, nil
@@ -441,18 +475,14 @@ func (s *Store) ListHistory(userID string) ([]HistoryEntry, error) {
 		}
 
 		id := strings.TrimSuffix(f.Name(), ".kdbx")
-		// id format: {unixTimestamp}_v{version}
-		var version int64 = 0
-		if idx := strings.Index(id, "_v"); idx != -1 {
-			v, _ := strconv.ParseInt(id[idx+2:], 10, 64)
-			version = v
-		}
+		version := historyVersion(id)
 
 		entries = append(entries, HistoryEntry{
 			ID:        id,
 			Version:   version,
 			SizeBytes: info.Size(),
 			Timestamp: info.ModTime().UTC(),
+			StaleKey:  version < meta.KeyEpochSince,
 		})
 	}
 
@@ -468,6 +498,10 @@ func (s *Store) RestoreHistory(userID, historyID string) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	current, _ := s.getMetadataLocked(userID)
+	if historyVersion(historyID) < current.KeyEpochSince {
+		return Metadata{}, ErrStaleKey
+	}
 	file, err := openFileID(s.historyDir(userID), historyID)
 	if err != nil {
 		return Metadata{}, err
@@ -477,8 +511,6 @@ func (s *Store) RestoreHistory(userID, historyID string) (Metadata, error) {
 	if err != nil {
 		return Metadata{}, fmt.Errorf("read history file: %w", err)
 	}
-
-	current, _ := s.getMetadataLocked(userID)
 
 	// Archive current to history
 	if current.Version > 0 {
@@ -512,6 +544,7 @@ func (s *Store) RestoreHistory(userID, historyID string) (Metadata, error) {
 		PasswordEnvelope: current.PasswordEnvelope,
 		RecoveryEnvelope: current.RecoveryEnvelope,
 		DeviceEnvelopes:  current.DeviceEnvelopes,
+		KeyEpochSince:    current.KeyEpochSince,
 	}
 
 	if err := s.saveMetadataLocked(userID, nextMeta); err != nil {
@@ -560,6 +593,18 @@ func (s *Store) ListConflicts(userID string) ([]ConflictEntry, error) {
 	return entries, nil
 }
 
+// historyVersion reads N from ids written as {unix}_v{N} or {unix}_v{N}_before_rollback;
+// an id without one is 0, which counts as older than any key epoch.
+func historyVersion(id string) int64 {
+	_, rest, ok := strings.Cut(id, "_v")
+	if !ok {
+		return 0
+	}
+	digits, _, _ := strings.Cut(rest, "_")
+	v, _ := strconv.ParseInt(digits, 10, 64)
+	return v
+}
+
 // Conflict and snapshot IDs are filenames, never paths, even when supplied by an authenticated client.
 func validFileID(id string) bool {
 	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, "/\\\x00")
@@ -570,9 +615,12 @@ func openFileID(dir, id string) (io.ReadCloser, error) {
 	if !validFileID(id) {
 		return nil, ErrNotFound
 	}
-	// Missing files and symlinks escaping dir are equally not there.
+	// Missing files and symlinks escaping dir are equally not there to the client.
 	file, err := os.OpenInRoot(dir, id+".kdbx")
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("vault: open %s in %s: %v", id, dir, err)
+		}
 		return nil, ErrNotFound
 	}
 	info, err := file.Stat()
@@ -588,6 +636,13 @@ func (s *Store) OpenConflict(userID, conflictID string) (io.ReadCloser, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return openFileID(s.conflictsDir(userID), conflictID)
+}
+
+// OpenHistory exposes only ciphertext within this user's history directory.
+func (s *Store) OpenHistory(userID, historyID string) (io.ReadCloser, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return openFileID(s.historyDir(userID), historyID)
 }
 
 // DiscardConflict removes a conflict file.

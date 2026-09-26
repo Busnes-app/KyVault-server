@@ -6,12 +6,14 @@ export type SaveState =
   | { kind: "saving"; version: number }
   | { kind: "error"; version: number; message: string; conflict?: boolean };
 
-export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, signal?: AbortSignal): Promise<number> {
+export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false): Promise<number> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     "If-Match": `"${version}"`,
   };
+  if (keyRotated) headers["X-Vault-Key-Rotated"] = "1";
   if (passwordEnvelope) headers["X-Password-Envelope"] = passwordEnvelope;
+  if (recoveryEnvelope) headers["X-Recovery-Envelope"] = recoveryEnvelope;
   const data = await requestJSON<unknown>("/api/vault/upload", { method: "POST", headers, body: binary, signal });
   if (typeof data !== "object" || data === null || !("metadata" in data) ||
       typeof data.metadata !== "object" || data.metadata === null || !("version" in data.metadata) ||
@@ -38,20 +40,23 @@ export class VaultSaveQueue {
   private exporting: Promise<unknown> = Promise.resolve();
   private onlineRetry: (() => void) | undefined;
 
-  constructor(private vault: KeePassVault | null, version: number) {
+  // passwordEnvelope is the one this vault was unlocked against: a different stored one
+  // means another session rotated the key, and this copy must not overwrite the server's.
+  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string) {
     this.state = { kind: "saved", version };
   }
 
-  // Downloads and uploads share the same mutable KDBX serializer.
-  exportBinary = (): Promise<ArrayBuffer> => {
+  // Downloads, uploads and key rotation share the same mutable KDBX serializer.
+  exclusive = <T>(run: (vault: KeePassVault) => Promise<T>): Promise<T> => {
     const vault = this.vault;
     const result = this.exporting.then(() => {
       if (!vault) throw new Error("Vault is locked.");
-      return vault.exportBinary();
+      return run(vault);
     });
     this.exporting = result.catch(() => {});
     return result;
   };
+  exportBinary = (): Promise<ArrayBuffer> => this.exclusive((vault) => vault.exportBinary());
 
   recoverUnsaved = (): void => {
     this.revision++;
@@ -98,15 +103,16 @@ export class VaultSaveQueue {
     try {
       if (options.overwrite) {
         // The server's copy stays in version history; ours becomes the head.
-        const meta = await requestJSON<{ version?: unknown }>("/api/vault/metadata", { method: "GET", signal: this.controller.signal });
+        const meta = await requestJSON<{ version?: unknown; passwordEnvelope?: string }>("/api/vault/metadata", { method: "GET", signal: this.controller.signal });
         if (typeof meta.version !== "number" || !Number.isSafeInteger(meta.version)) throw new Error("The server did not report its vault version.");
+        if (meta.passwordEnvelope !== this.passwordEnvelope) throw new Error("The vault key was rotated in another session. Download this copy, then lock and unlock with your master password.");
         this.state = { ...this.state, version: meta.version };
       }
       while (this.savedRevision < this.revision) {
         const revision = this.revision;
         const binary = await this.exportBinary();
         if (this.controller.signal.aborted) return;
-        const version = await uploadVault(binary, this.state.version, undefined, this.controller.signal);
+        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal);
         if (this.controller.signal.aborted) return;
         this.savedRevision = revision;
         this.publish({ kind: this.savedRevision === this.revision ? "saved" : "saving", version });

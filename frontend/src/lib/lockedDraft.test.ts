@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { draftPointer, openDraft, sealDraft, type DraftMetadata } from "./lockedDraft";
+import { draftPointer, openDraft, sealDraft, planDraftCleanup, DRAFT_MAX_AGE_MS, type DraftMetadata } from "./lockedDraft";
 
 test("draft pointer reads the renamed key and falls back to the legacy key", () => {
   const values = new Map([["kypassword.draft:u1", "legacy-checkpoint"]]);
@@ -73,4 +73,18 @@ test("openDraft returns copies and does not keep the decrypted buffer", async ()
   assert.equal(opened.metadata.version, 3);
   // The returned buffers are slices, so zeroing the internal plaintext cannot touch them.
   assert.notEqual(opened.binary.byteLength, 0);
+});
+
+test("cleanup plan removes old drafts of this account, keeps the current pointer and stamps legacy ones", async () => {
+  const now = 1_800_000_000_000;
+  const plan = planDraftCleanup([
+    { id: "u1:old", sealedAt: now - DRAFT_MAX_AGE_MS - 1 },
+    { id: "u1:fresh", sealedAt: now - 1000 },
+    { id: "u1:legacy" },
+    { id: "u1:null-sealed", sealedAt: null },
+    { id: "u1:current", sealedAt: now - DRAFT_MAX_AGE_MS * 2 },
+  ], "u1:current", now);
+  assert.deepEqual(plan, { remove: ["u1:old"], stamp: ["u1:legacy", "u1:null-sealed"] });
+  const sealed = await sealDraft(new Uint8Array([1]).buffer, { version: 1, dirty: false, entry: null }, new Uint8Array(32).fill(1), "u1");
+  assert.ok(typeof sealed.sealedAt === "number" && Math.abs(sealed.sealedAt - Date.now()) < 5000);
 });

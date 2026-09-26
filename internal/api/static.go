@@ -1,10 +1,18 @@
 package api
 
 import (
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 )
+
+// Go's built-in mime table has no entry for .webmanifest.
+func init() {
+	if err := mime.AddExtensionType(".webmanifest", "application/manifest+json"); err != nil {
+		panic(err)
+	}
+}
 
 // SPAHandler serves the built frontend. Every directory and every unknown path gets
 // index.html so the client router can take over; http.FileServer's directory listing

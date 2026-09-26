@@ -256,3 +256,37 @@ test("a network failure retries once when the browser comes back online", async 
   listeners[0]();
   assert.deepEqual(await recovered, { kind: "saved", version: 2 });
 });
+
+test("key rotation upload carries both envelopes on the one versioned request", async (t) => {
+  browserCookie(t);
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, options: RequestInit) => {
+    const headers = new Headers(options.headers);
+    assert.equal(headers.get("If-Match"), '"4"');
+    assert.equal(headers.get("X-Password-Envelope"), "pw-env");
+    assert.equal(headers.get("X-Recovery-Envelope"), "rec-env");
+    return Response.json({ metadata: { version: 5 } });
+  });
+  assert.equal(await uploadVault(new ArrayBuffer(8), 4, "pw-env", "rec-env"), 5);
+});
+
+test("overwrite refuses when the key was rotated in another session", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(4));
+  const queue = new VaultSaveQueue(vault, 2, "envelope-at-unlock");
+  let uploads = 0;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
+    if (String(url).endsWith("/api/vault/metadata")) return Response.json({ version: 3, passwordEnvelope: "envelope-after-rotation" });
+    uploads++;
+    return new Response("conflict", { status: 409 });
+  });
+  const done = settled(queue);
+  queue.changed();
+  void queue.save();
+  await done;
+  await queue.save({ overwrite: true });
+  assert.equal(uploads, 1, "only the original conflicting upload; the old-key copy is never sent over the rotation");
+  const state = queue.getSnapshot();
+  assert.equal(state.kind, "error");
+  assert.equal(state.kind === "error" && state.message, "The vault key was rotated in another session. Download this copy, then lock and unlock with your master password.");
+  assert.equal(state.version, 2);
+});

@@ -3,9 +3,10 @@ import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback }
 import { getJSON, postJSON, putJSON, toErrorMessage, HttpError } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
-import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
-import { KeePassVault } from "./lib/kdbx";
+import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
+import { KeePassVault, isWrongVaultKey } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
+import { rotateAndUpload, RotationUnconfirmedError, uploadRotatedVault } from "./lib/keyRotation";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
@@ -16,6 +17,7 @@ import {
 import { checkMasterPassword } from "./lib/masterPassword";
 import { unlockMode, checkCreatePassword } from "./lib/unlockMode";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
+import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
@@ -186,10 +188,11 @@ export function App() {
         const version = await uploadVault(binary, 0, pwEnvelope);
         if (!current()) return;
         setMeta({ ...meta, version, passwordEnvelope: pwEnvelope });
-        await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
-        if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
+        const cached = await cacheDeviceKey({ store: () => storeDeviceVaultKey(u.username, bytesToHex(key)), clear: () => clearDeviceVaultKey(u.username), stillCurrent: current });
+        if (cached === "failed") notices.push("Could not cache the device key; you may need your master password again.");
+        if (!current()) return;
         try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {}
-        setSaveQueue(new VaultSaveQueue(newVault, version));
+        setSaveQueue(new VaultSaveQueue(newVault, version, pwEnvelope));
         setVaultKey(key);
         setVault(newVault);
         setLockedReason(null);
@@ -257,8 +260,9 @@ export function App() {
         } catch { setLockedReason("locked"); return; }
       }
       if (masterPassword) {
-        await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
-        if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
+        const cached = await cacheDeviceKey({ store: () => storeDeviceVaultKey(u.username, bytesToHex(key)), clear: () => clearDeviceVaultKey(u.username), stillCurrent: current });
+        if (cached === "failed") notices.push("Could not cache the device key; you may need your master password again.");
+        if (!current()) return;
       }
       if (recovered) {
         memoryDraft.current = stored;
@@ -274,7 +278,7 @@ export function App() {
       if (!current()) return;
       memoryDraft.current = undefined;
       setRecoveryPending(local.kind === "unavailable");
-      const queue = new VaultSaveQueue(loadedVault, recovered?.metadata.version ?? meta.version);
+      const queue = new VaultSaveQueue(loadedVault, recovered?.metadata.version ?? meta.version, meta.passwordEnvelope);
       if (recovered?.metadata.dirty) queue.recoverUnsaved();
       setInitialDraft(recovered?.metadata.entry ?? null);
       setSaveQueue(queue);
@@ -283,12 +287,20 @@ export function App() {
       if (recovered) notices.unshift("Recovered local edits. Review them before saving.");
       setLockNotice(notices.join(" "));
       if (masterPassword) { try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {} }
+      void pruneDrafts(u.id, id);
       setLockedReason(null);
       setShowUnlockModal(false);
     } catch (err) {
       if (!current()) return;
       console.error("Vault init error:", err);
-      setUnlockError(toErrorMessage(err, "Failed to unlock vault"));
+      // A cached key that no longer opens the vault was retired by a rotation elsewhere.
+      if (!masterPassword && isWrongVaultKey(err)) {
+        await clearDeviceVaultKey(u.username).catch(() => {});
+        if (!current()) return;
+        setUnlockError("The vault key changed on another device. Enter your master password or paper code.");
+      } else {
+        setUnlockError(toErrorMessage(err, "Failed to unlock vault"));
+      }
       setLockedReason(meta ? (meta.version ? "locked" : "new") : "locked");
     }
   };
@@ -319,6 +331,49 @@ export function App() {
     if (!saveQueue || saveState.kind === "saving") return;
     const binary = await saveQueue.exportBinary();
     downloadBlob(new Blob([binary], { type: "application/x-keepass2" }), `${user?.username || "vault"}.kdbx`);
+  };
+
+  // Key rotation. Runs inside the queue's serializer so no download or autosave can export
+  // while the live vault holds a key the server has not accepted yet.
+  const rotateKey = async (password: string, paperCode: string): Promise<void> => {
+    const queue = saveQueue, oldKey = vaultKey, u = user, generation = unlockGeneration.current;
+    if (!vault || !queue || !oldKey || !u) throw new Error("Unlock the vault first.");
+    let rotated: { key: Uint8Array; version: number; passwordEnvelope: string };
+    try {
+      rotated = await queue.exclusive((live) => {
+        if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
+        const version = queue.getSnapshot().version;
+        return rotateAndUpload(live, oldKey, password, paperCode, version, {
+          upload: (binary, pw, rec) => uploadRotatedVault(binary, version, pw, rec),
+          metadata: () => getJSON("/api/vault/metadata"),
+        });
+      });
+    } catch (err) {
+      if (err instanceof RotationUnconfirmedError) {
+        closeVault();
+        await clearDeviceVaultKey(u.username).catch(() => {});
+        setLockNotice("Could not confirm whether the new vault key reached the server, so the vault is locked. Unlock with your master password, then generate a new paper code from Security.");
+      }
+      throw err;
+    }
+    queue.discard();
+    const recache = clearDeviceVaultKey(u.username);
+    if (generation !== unlockGeneration.current) {
+      // Locked while the upload was in flight: the rotation stands, this tab keeps nothing.
+      await recache.catch(() => {});
+      setLockNotice("The vault key was rotated while the vault locked. Unlock with your master password, then generate a new paper code from Security.");
+      return;
+    }
+    setVaultKey(rotated.key);
+    setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
+    // Forget This Device or a lock can land while this write is pending; the helper
+    // undoes a write that lost that race so the forgotten device keeps nothing.
+    const cached = await recache.then(() => cacheDeviceKey({
+      store: () => storeDeviceVaultKey(u.username, bytesToHex(rotated.key)),
+      clear: () => clearDeviceVaultKey(u.username),
+      stillCurrent: () => generation === unlockGeneration.current,
+    }), () => "failed" as const);
+    if (cached === "failed") setLockNotice("Could not cache the new device key; you may need your master password again.");
   };
 
   const closeVault = () => {
@@ -572,6 +627,9 @@ export function App() {
           onAutoLockChange={changeAutoLock}
           onUserUpdated={async () => { if (await confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
+          canRotate={!unsaved}
+          onExport={handleExportKdbx}
+          onRotateKey={rotateKey}
         /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>

@@ -38,3 +38,23 @@ func TestSPAHandlerNeverListsDirectories(t *testing.T) {
 		t.Errorf("real file not served: %q", rec.Body.String())
 	}
 }
+
+func TestManifestContentType(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html>app"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.webmanifest"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := SPAHandler(dir)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
+		t.Errorf("Content-Type %q, want application/manifest+json prefix", ct)
+	}
+}

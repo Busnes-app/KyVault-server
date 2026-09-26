@@ -65,17 +65,13 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		return
 	}
 	// Support both the existing JSON payload and raw binary with headers.
-	var expectedVersion int64 = 0
+	var expectedVersion int64
 	var kdbxData []byte
 	var pwEnv string
 	var recEnv string
 	var devID string
 
-	if matchHeader := r.Header.Get("If-Match"); matchHeader != "" {
-		trimmed := strings.Trim(matchHeader, "\"")
-		v, _ := strconv.ParseInt(trimmed, 10, 64)
-		expectedVersion = v
-	}
+	expectedVersion = ifMatchVersion(r)
 
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		var req VaultUploadRequest
@@ -108,7 +104,16 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		return
 	}
 
-	meta, err := s.vault.SaveVault(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+	save := s.vault.SaveVault
+	rotated := r.Header.Get("X-Vault-Key-Rotated") == "1"
+	if rotated {
+		save = s.vault.RotateVault
+	}
+	meta, err := save(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+	if errors.Is(err, vault.ErrRotationEnvelopes) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		var confErr *vault.ConflictError
 		if errors.As(err, &confErr) {
@@ -123,10 +128,22 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 	}
 
 	s.record(r, "vault.saved", u.ID, devID, clientIP(r), fmt.Sprintf("saved vault v%d", meta.Version))
+	if rotated {
+		s.record(r, "vault.key_rotated", u.ID, devID, clientIP(r), fmt.Sprintf("rotated vault key at v%d", meta.Version))
+		// Every device holds the retired key, and a pending pairing code could mint a
+		// fresh 90-day session for one; end them all here, not in the browser's loop.
+		s.revokeAllDevices(r, u.ID, "key_rotated")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"metadata": meta,
 	})
+}
+
+// ifMatchVersion reads the vault version a write was based on; absent means 0, a new vault.
+func ifMatchVersion(r *http.Request) int64 {
+	v, _ := strconv.ParseInt(strings.Trim(r.Header.Get("If-Match"), "\""), 10, 64)
+	return v
 }
 
 func (s *Server) handleVaultEnvelopes(w http.ResponseWriter, r *http.Request, u users.User) {
@@ -140,7 +157,12 @@ func (s *Server) handleVaultEnvelopes(w http.ResponseWriter, r *http.Request, u 
 		return
 	}
 
-	if err := s.vault.SaveEnvelopes(u.ID, req.PasswordEnvelope, req.RecoveryEnvelope, req.DeviceEnvelopes); err != nil {
+	err := s.vault.SaveEnvelopes(u.ID, ifMatchVersion(r), req.PasswordEnvelope, req.RecoveryEnvelope, req.DeviceEnvelopes)
+	if errors.Is(err, vault.ErrConflict) {
+		http.Error(w, "The vault changed on the server since this key was checked. Reload the vault and try again.", http.StatusConflict)
+		return
+	}
+	if err != nil {
 		http.Error(w, "failed to save envelopes: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -166,6 +188,10 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 	}
 
 	meta, err := s.vault.RestoreHistory(u.ID, id)
+	if errors.Is(err, vault.ErrStaleKey) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "This snapshot was saved under a previous vault key. The current key cannot open it, so it cannot be rolled back to."})
+		return
+	}
 	if errors.Is(err, vault.ErrNotFound) {
 		http.Error(w, "snapshot not found", http.StatusNotFound)
 		return
@@ -180,6 +206,24 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 		"ok":       true,
 		"metadata": meta,
 	})
+}
+
+func (s *Server) handleVaultHistoryDownload(w http.ResponseWriter, r *http.Request, u users.User) {
+	id := r.PathValue("id")
+	rc, err := s.vault.OpenHistory(u.ID, id)
+	if err != nil {
+		if errors.Is(err, vault.ErrNotFound) {
+			http.Error(w, "snapshot not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "failed to open snapshot", http.StatusInternalServerError)
+		}
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/x-keepass2")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.Copy(w, rc)
+	s.record(r, "vault.snapshot_downloaded", u.ID, "", clientIP(r), "downloaded snapshot "+id)
 }
 
 func (s *Server) handleVaultConflicts(w http.ResponseWriter, r *http.Request, u users.User) {

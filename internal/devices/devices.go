@@ -232,6 +232,20 @@ func (s *Store) Touch(deviceID, ip string) {
 	}
 }
 
+// Rename sets a device's display name.
+func (s *Store) Rename(deviceID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	d, ok := s.devices[deviceID]
+	if !ok {
+		return ErrNotFound
+	}
+	d.Name = name
+	s.devices[deviceID] = d
+	return s.saveLocked()
+}
+
 // Revoke deactivates a device.
 func (s *Store) Revoke(deviceID string) error {
 	s.mu.Lock()

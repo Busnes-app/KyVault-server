@@ -386,7 +386,7 @@ func TestSessionMintingRequiresRevocableIdentity(t *testing.T) {
 	cookie := f.login(t)
 	user, _ := f.srv.users.GetBySSOSub("alice-sub")
 	for name, id := range map[string]sso.Identity{"empty": {}, "no subject": {Issuer: f.idp.URL, ClientID: "kyvault-app"}, "no issuer": {ClientID: "kyvault-app", Subject: "alice-sub"}} {
-		if _, err := f.srv.startSessionWithToken(user.ID, id); err == nil {
+		if _, err := f.srv.startSessionWithToken(user.ID, "", "", id); err == nil {
 			t.Errorf("%s identity minted an unrevocable device session", name)
 		}
 		if err := f.srv.startSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), user.ID, id, time.Now()); err == nil {

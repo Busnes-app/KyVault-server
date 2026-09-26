@@ -10,9 +10,9 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 3. **Atomic Sync & Conflict Preservation**: Optimistic concurrency via ETag / version check (`If-Match: "{version}"`). Conflicting uploads are rejected and preserved in `conflicts/` for client deconfliction.
 4. **Bounded Version History & Rollback**: Keep up to 100 snapshots per user spread across a default 90-day age window, with one-click rollback. Saves and rollbacks prune synchronously under the store lock. After age expiry, preserve the oldest/newest snapshots and thin the closest-spaced interior snapshots so a burst of writes cannot erase the pre-session recovery window.
 5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side user credential. See "Replication" and "Authentication" below.
-6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
+6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions. Device sessions carry `DeviceID`; revoking a device deletes its sessions. `GET /api/devices` marks the caller's own device `current`; `PATCH /api/devices/{id}` renames (1 to 64 characters, no control runes). `api_test.go` covers revoke ending the session and rename validation.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
-8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps.
+8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps. Installable as a PWA through `frontend/public/manifest.webmanifest` (icons from `logo.png` and a 512px export of `KyVault.png`; no service worker, so nothing works offline). `pwa.test.ts` validates the manifest and the `index.html` references; `static.go` serves `.webmanifest` as `application/manifest+json`.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
 
 ## Authentication
@@ -61,6 +61,7 @@ yourself adding one, the design has been misread.
   the browser against the stored envelope (`verifyMasterPassword`).
 - A version-0 vault shows a create dialog with a confirm field (`lib/unlockMode.ts`); the unlock dialog auto-opens only on the vault tab.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
+- Key rotation (`keyRotation.ts`, Security → Rotate Vault Key) proves the current master password (the paper code is refused there, since the typed value becomes the new password envelope secret), generates a new vault key, re-encrypts the KDBX and sends it with both new envelopes in one `POST /api/vault/upload` with `If-Match`, so `SaveVault` writes vault and envelopes under one lock; `PUT /api/vault/envelopes` is never used for rotation. It runs inside the save queue's serializer (`VaultSaveQueue.exclusive`) and is refused while edits are unsaved. A server error restores the old key in memory; a lost response is adopted only if the stored envelopes are ours at exactly the expected version + 1; otherwise (unreadable, or ours with a later save on top) the tab locks. On success the tab swaps key and queue, re-caches the device key, shows the new paper code with type-it-back, and revokes every device best effort (404 counts as done, failures offer Retry revoking). The server already revoked them: a successful rotation upload cancels the user's outstanding pairing codes and revokes every device, its envelope and its sessions in one critical section under the session lock (`revokeAllDevices`); a pairing code also names the device session that issued it (`pairingOrigin.issuerDeviceId`), and minting checks under the same lock that this device still exists, so a code issued by a device that a rotation later revoked cannot mint a replacement session (`TestRotationRefusesPairingsIssuedByRevokedDevice`), auditing `vault.key_rotated` and one `device.revoked` (`key_rotated`) per device, so the browser loop is only a safety net. A locked draft sealed under the pre-rotation key is unreadable after unlock, so the existing checkpoint path deletes it and reports it. A cached device key that fails with `InvalidKey` on a passwordless unlock is cleared before the error shows. Every device-key cache write goes through `lib/deviceKeyCache.ts`, which re-checks the unlock generation after the write and undoes a write that lost a race with Forget This Device or a lock (`deviceKeyCache.test.ts`). Snapshots and conflicts older than a rotation are encrypted with a retired key. The rotation upload sends `X-Vault-Key-Rotated: 1` (both envelope headers required, else 400) and `RotateVault` records its version as `Metadata.KeyEpochSince`; `ListHistory` flags older snapshots `staleKey` and `RestoreHistory` refuses them with 409 (`ErrStaleKey`), so every client, locked or not, is refused without decrypting. Password changes (`PUT /api/vault/envelopes`) and rollbacks never move the epoch; that PUT requires `If-Match` with the version `proveCurrentPassword` verified against (missing counts as 0, like uploads) and answers 409 without writing on mismatch; `vault_rotation_test.go` pins it. `keyRotation.test.ts` proves old key refused, new key and both envelopes open, one upload, rollback on failure and the reconcile; `vault_rotation_test.go` pins that a stale upload changes nothing, a current one replaces vault and both envelopes, rotation ends device tokens and envelopes, and a stale envelope PUT is 409.
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - Admin → User Directory changes roles through `PUT /api/admin/users/{id}/role`; the caller's row is disabled and the last-admin 409 is shown inline.
 - Admin → Backup: pinning a recovery key asks for confirmation first; the server still refuses a second, different key.
@@ -272,20 +273,36 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Version History → Preserved Conflicts downloads an owner-scoped encrypted conflict and
   opens it locally with the unlocked key. Compare live entries by UUID across title,
   username, password, URL, notes and TOTP; other fields/history/attachments are not compared.
-  Recover as copy imports the complete native entry into the top-level live folder with a
+  Rows cover both directions: conflict entries (recoverable) and entries only in the open vault
+  (listed, never recovered). Recover as copy imports the complete native entry into the live
+  folder with the source folder's UUID when it exists and is not recycled, else the top-level
+  folder (`recoverEntryCopy` `preferOriginalGroup`), with a
   fresh UUID and title suffix, preserving title protection, unknown fields, binaries and history. Remap imported
   icon collisions so existing icons cannot change. Never overwrite an existing entry or delete
   the conflict automatically. Use ordinary version-checked autosave; rollback and conflict discard
   stay disabled while recovery edits are unsaved. Close/lock cancels transport and ignores late decryption.
   `conflictComparison.test.ts` checks comparison identity, protected fields and full encrypted
-  import preservation. Shared `getEntries()` reads every protected standard field as text.
+  import preservation, both directions and original-folder recovery. Shared `getEntries()` reads every protected standard field as text.
+- `frontend/src/components/HistoryModal.tsx` and `lib/vaultDiff.ts`: while unlocked (VaultPage passes
+  `snapshot`), Preview downloads `GET /api/vault/history/{id}`, opens it in the browser with the
+  current key and shows entry/folder counts plus `diffVaults` (titles and field labels only, in
+  React state, dropped on close, lock or key change). Unlocked Rollback runs that preview first
+  and confirms with the counts; a snapshot the current key cannot open (`isWrongVaultKey`, i.e.
+  saved before a key rotation) is labelled "Saved under a previous vault key" and Rollback is
+  refused, as is any snapshot that fails to open. The server's `staleKey` flag labels and
+  disables those rows without a key, including from the locked screen; the InvalidKey check is
+  the second line of defence (vaults rotated before the epoch existed have no flag).
+  `vaultDiff.test.ts` pins the diff and the InvalidKey signal.
 - `GET /api/vault/conflicts/{id}` returns ciphertext only to the owning authenticated user,
   with no-store caching and a download audit event identifying the validated conflict ID. `Store.OpenConflict` validates a flat
   filename and uses `os.OpenInRoot` to prevent escaping symlinks. Discard shares filename
   validation. API/store tests cover anonymous/cross-user access, traversal, symlinks and
   read-only retrieval. Recoveries do not bypass If-Match or server conflict preservation.
-  History rollback ids are validated like conflict ids (shared `openFileID`) before any path
-  use; a path-shaped or symlinked id is 404 and changes nothing (`history_restore_id_test.go`).
+- `GET /api/vault/history/{id}` returns snapshot ciphertext to the owner with no-store and a
+  `vault.snapshot_downloaded` audit row. Conflict and history ids share `validFileID` and
+  `openFileID` (`os.OpenInRoot`, regular files only); `RestoreHistory` uses the same opener, so
+  path-shaped, missing or symlinked ids are 404 and change nothing (it previously joined the raw
+  id, letting `../../<user>/vault` copy another user's ciphertext). `history_download_test.go`.
 
 - `frontend/src/lib/kdbx.ts` recycle helpers identify the bin and descendants by metadata
   UUID. `VaultPage` excludes them from All Items and folder selectors and offers a read-only
@@ -323,8 +340,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Cache-key write failure does not block password unlock. Storage failure retains encrypted
   memory recovery and an unload warning; encryption failure locks anyway and reports the loss.
   Manual lock/logout still ask before discarding unsaved edits. Forget removes this tab's copy.
-  ponytail: closing a tab without restoring it loses the reference to its encrypted checkpoint;
-  a cross-tab recovery inventory and retention policy are future work. No offline login/unlock.
+  Drafts record `sealedAt`; after each unlock `pruneDrafts` scans this account's key prefix
+  and deletes drafts older than 7 days, stamps legacy drafts without a timestamp so they age
+  out, and never touches the current tab's pointer. `planDraftCleanup` is the tested decision;
+  the IndexedDB walk is exercised in the browser pass. No offline login/unlock.
   An unreadable checkpoint (corrupt or undecryptable) is deleted and reported rather than
   blocking unlock (`App.tsx`).
 
@@ -335,7 +354,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   advances the version for the next upload. Failures remain unsaved. A network failure
   retries once when the browser reports online. A 409 is flagged as a conflict: Retry does
   nothing, Overwrite server copy re-reads the server version and uploads over it (the
-  server copy stays in history), Reload server copy discards local edits. Uploads use the
+  server copy stays in history), refused when the stored password envelope differs from the one
+  the queue was unlocked against (key rotated elsewhere; an old-key upload would strand the vault), Reload server copy discards local edits. Uploads use the
   shared CSRF request helper. `App.tsx` retains
   the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
   rollback. Lock/logout/forget always allow the user to confirm discarding unsaved or in-flight
@@ -479,3 +499,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/useMediaQuery.ts` and `VaultPage` panes: under 900px the vault is one pane at a time (folders, list, detail) with Folders and Back controls; under 600px nav labels collapse to icons with aria-labels. Desktop keeps the three-column grid.
 
 - `frontend/src/lib/generatePassword.ts`: uniform rejection sampling, one guaranteed character per selected class, length 8 to 128, optional look-alike exclusion, settings persisted under `kyvault.generator`. `generatePassword.test.ts` pins class coverage and the error cases.
+
+- `frontend/src/lib/passphrase.ts` and `effWordlist.ts`: passphrases draw uniformly from the bundled EFF long list (7776 words, generated module, never fetched); `passphraseEntropyBits` and `passwordEntropyBits` are log2 of the search space and the meter says "about". `passphrase.test.ts` pins the list size, charset and a zero-randomness phrase.
+
+- `frontend/src/lib/health.ts` and `components/HealthReport.tsx`: the report is computed from live entries in memory (weak heuristic, reuse, expiry) and names entries by uuid and title only. The HIBP check is opt-in per click behind a confirm that states what leaves the browser; it sends the 5-character SHA-1 prefix with `Add-Padding` and no credentials, keeps results in memory, and is the only allowed non-self `connect-src` in `internal/api/headers.go`. `health.test.ts` pins the heuristic, the parser and the request shape.
