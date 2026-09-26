@@ -1,5 +1,6 @@
 // The background worker is the single owner of the session and the open vault.
 // It never logs the pairing code, the token, the password or the key.
+import { hostPattern } from "./lib/pairing";
 import { ext } from "./ext";
 import type { Request, Response, StatusResponse } from "./messages";
 import { loadSettings, clearSettings, forgetSession, saveSettings } from "./lib/settings";
@@ -180,6 +181,6 @@ async function unpair(): Promise<void> {
   await clearSettings();
   await state.lock();
   if (settings.serverOrigin) {
-    await ext.permissions.remove({ origins: [`${settings.serverOrigin}/*`] });
+    await ext.permissions.remove({ origins: [hostPattern(settings.serverOrigin)] });
   }
 }

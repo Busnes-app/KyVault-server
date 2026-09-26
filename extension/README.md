@@ -112,3 +112,16 @@ Not automated; both stores are manual uploads.
   `npm ci && npm run build` (run from the repository root, in `frontend/` then
   `extension/`) to reproduce it.
 - `data_collection_permissions` is declared as `none`.
+
+## Servers on a non-default port
+
+The host permission is requested for the host alone (`https://vault.example.com/*`),
+never with a port. Firefox match patterns do not match a port, so a pattern with one
+would be granted and yet never lift CORS for a single request. Granting the host covers
+every port on it; the extension still fetches only the exact origin you paired with.
+
+## Testing in LibreWolf
+
+`web-ext run` cannot attach to LibreWolf, which forces `devtools.debugger.remote-enabled`
+off. Install the built `dist/firefox` through WebDriver BiDi instead (Puppeteer with
+`browser: "firefox"` and `installExtension`), or load it by hand from `about:debugging`.

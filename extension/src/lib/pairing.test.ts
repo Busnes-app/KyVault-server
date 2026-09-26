@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { browserPairIO, pair } from "./pairing";
+import { hostPattern } from "./pairing";
 
 function io(opts: { grant: boolean; status: number; body: unknown }) {
   const calls: { origins?: string[]; url?: string; init?: RequestInit } = {};
@@ -51,4 +52,10 @@ test("the options page's io calls fetch unbound", async () => {
   } as unknown as typeof fetch;
   const got = await pair(browserPairIO(async () => true, strictFetch), "https://v.example", "1", "n");
   assert.deepEqual(got, { deviceId: "d1", sessionToken: "t1" });
+});
+
+test("the host permission pattern drops the port, which Firefox patterns never match", () => {
+  assert.equal(hostPattern("https://localhost:5443"), "https://localhost/*");
+  assert.equal(hostPattern("https://vault.example.com"), "https://vault.example.com/*");
+  assert.equal(hostPattern("https://[::1]:8443"), "https://[::1]/*");
 });
