@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { KeePassVault, VaultEntry, VaultGroup, CustomField } from "../lib/kdbx";
+import { readKdbxFile, describeImport } from "../lib/kdbxImport";
 import type { EntryDraft } from "../lib/lockedDraft";
 import type { SaveState } from "../lib/vaultSave";
 import { createFromDraft, type NewEntryDraft } from "../lib/newEntryDraft";
@@ -36,6 +37,7 @@ import {
   Shield,
   RefreshCw,
   FileSpreadsheet,
+  Upload,
   CheckCircle2,
   AlertCircle,
   ChevronLeft,
@@ -70,6 +72,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [selectedEntryUuid, setSelectedEntryUuid] = useState<string | null>(initialDraft?.uuid ?? null);
   const [newDraft, setNewDraft] = useState<NewEntryDraft | null>(null);
   const pendingDraft = useRef(initialDraft);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [showReusedPasswords, setShowReusedPasswords] = useState(false);
   const [showFavorites, setShowFavorites] = useState(false);
@@ -474,6 +477,46 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     }
   };
 
+  const handleImportKeePassFile = async (file: File) => {
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await readKdbxFile(file);
+    } catch (error) {
+      await dialogs.notify({ title: "File not imported", message: error instanceof Error ? error.message : "Unable to read this file." });
+      return;
+    }
+    const password = await dialogs.prompt({
+      title: "Open the KeePass file",
+      label: "Its master password",
+      secret: true,
+      validate: (v) => v ? null : "Enter the master password.",
+    });
+    if (password === null) return;
+    let foreign: KeePassVault;
+    try {
+      foreign = await KeePassVault.openForeign(buffer, password);
+    } catch {
+      await dialogs.notify({ title: "File not imported", message: "Could not open this file. Check the password; key files are not supported yet." });
+      return;
+    }
+    const target = await dialogs.choose({
+      title: "Import into",
+      label: "Add under",
+      options: [{ value: "", label: "New folder named after the file" }, ...groups.map((g) => ({ value: g.uuid, label: g.path }))],
+      defaultValue: "",
+    });
+    if (target === null) return;
+    try {
+      const report = vault.importFrom(foreign, target || undefined);
+      onChanged();
+      refreshVaultData();
+      setImportError(null);
+      setImportMessage(describeImport(report));
+    } catch (error) {
+      await dialogs.notify({ title: "File not imported", message: error instanceof Error ? error.message : "Unable to import this file." });
+    }
+  };
+
   const filteredEntries = useMemo(() => {
     const smartFiltered = entries.filter((e) => {
       const matchesGroup =
@@ -573,6 +616,15 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
             <button className="btn btn-primary btn-sm" onClick={() => setShowCsvImport(true)}>
               <FileSpreadsheet size={14} /> Import CSV Passwords
+            </button>
+            <input ref={importFileInputRef} type="file" accept=".kdbx" style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void handleImportKeePassFile(file);
+              }} />
+            <button className="btn btn-secondary btn-sm" onClick={() => importFileInputRef.current?.click()}>
+              <Upload size={14} /> Import KeePass file
             </button>
             <button className="btn btn-secondary btn-sm" onClick={() => setShowPairing(true)}>
               <QrCode size={14} /> Pair Extension / Mobile

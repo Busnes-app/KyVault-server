@@ -2,6 +2,7 @@ import * as kdbxweb from "kdbxweb";
 import { bytesToHex } from "./vaultCrypto";
 import { argon2d, argon2i, argon2id } from "hash-wasm";
 import { FAVORITE_TAG, RESERVED_FIELDS } from "./entryMeta";
+import type { ImportReport } from "./kdbxImport";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
 const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxBinaries, KdbxError, KdbxUuid, Consts, VarDictionary, Int64 } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
@@ -203,14 +204,23 @@ export class KeePassVault {
     }
   }
 
+  // Open a file written by another client with a plain password (optionally a key
+  // file), for the "import a KeePass file" flow. Never used for this app's own vault.
+  public static async openForeign(buffer: ArrayBuffer, password: string, keyFile?: ArrayBuffer): Promise<KeePassVault> {
+    const credentials = new Credentials(ProtectedValue.fromString(password), keyFile);
+    const db = await Kdbx.load(buffer, credentials);
+    return new KeePassVault(db, credentials);
+  }
+
   // Copy the full native entry, including history, binaries and unknown fields.
-  // A new UUID avoids replacing a newer edit or reviving a current tombstone.
-  public recoverEntryCopy(source: KeePassVault, uuid: string): string {
+  // A new UUID avoids replacing a newer edit or reviving a current tombstone, unless
+  // keepUuid is set (only ever called after the caller has checked the UUID is free).
+  public recoverEntryCopy(source: KeePassVault, uuid: string, options?: { keepUuid?: boolean; into?: kdbxweb.KdbxGroup }): string {
     const entry = source.findEntry(uuid);
     if (!entry?.parentGroup || source.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
       throw new Error("Select a live entry from the conflict.");
     }
-    const destination = this.db.getDefaultGroup();
+    const destination = options?.into ?? this.db.getDefaultGroup();
     if (this.recycledGroupIds().has(destination.uuid.toString())) throw new Error("No live vault folder is available.");
     // kdbxweb imports icons by UUID. Preserve current icons when another client reused
     // the UUID with different data; give the recovered copy its own icon identity.
@@ -231,9 +241,43 @@ export class KeePassVault {
       item.customIcon = newId;
     }
     for (const [id, icon] of existingIcons) this.db.meta.customIcons.set(id, icon);
-    const title = `${entryFieldText(entry, "Title") || "Untitled"} (recovered)`;
-    copy.fields.set("Title", entry.fields.get("Title") instanceof ProtectedValue ? ProtectedValue.fromString(title) : title);
+    if (options?.keepUuid) {
+      copy.uuid = entry.uuid;
+    } else {
+      const title = `${entryFieldText(entry, "Title") || "Untitled"} (recovered)`;
+      copy.fields.set("Title", entry.fields.get("Title") instanceof ProtectedValue ? ProtectedValue.fromString(title) : title);
+    }
     return copy.uuid.toString();
+  }
+
+  // Copy a foreign vault's live tree (recycled entries/groups excluded) under a new
+  // folder named after its root, or targetGroupUuid if given. Existing UUIDs win: a
+  // clashing group or entry is skipped rather than overwritten.
+  public importFrom(source: KeePassVault, targetGroupUuid?: string): ImportReport {
+    const report: ImportReport = { entries: 0, groups: 0, skippedEntries: 0, skippedGroups: 0, attachments: 0 };
+    const srcRoot = source.db.getDefaultGroup();
+    const parent = (targetGroupUuid && this.findGroup(targetGroupUuid)) || this.db.createGroup(this.db.getDefaultGroup(), folderName(srcRoot.name || "Imported"));
+    const recycled = source.recycledGroupIds();
+    const copyGroup = (from: kdbxweb.KdbxGroup, into: kdbxweb.KdbxGroup) => {
+      for (const child of from.groups) {
+        const id = child.uuid.toString();
+        if (recycled.has(id)) continue;
+        if (this.findGroup(id)) { report.skippedGroups++; continue; }
+        const made = this.db.createGroup(into, folderName(child.name || "Folder"));
+        made.uuid = child.uuid;
+        report.groups++;
+        copyGroup(child, made);
+      }
+      for (const entry of from.entries) {
+        const id = entry.uuid.toString();
+        if (this.findEntry(id)) { report.skippedEntries++; continue; }
+        const uuid = this.recoverEntryCopy(source, id, { keepUuid: true, into });
+        report.entries++;
+        report.attachments += this.getAttachments(uuid).length;
+      }
+    };
+    copyGroup(srcRoot, parent);
+    return report;
   }
 
   // Export/Save the vault back into encrypted KDBX v4 ArrayBuffer

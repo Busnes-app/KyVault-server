@@ -8,6 +8,7 @@ export type DialogRequest = {
   cancelLabel?: string;
   danger?: boolean;
   label?: string;
+  secret?: boolean;
   defaultValue?: string;
   validate?: (value: string) => string | null;
   options?: Array<{ value: string; label: string }>;

@@ -56,6 +56,7 @@ function QuestionDialog({ request, settle }: { request: DialogRequest; settle: (
           <div className="input-group">
             <label className="input-label" htmlFor="dialog-input">{request.label ?? request.title}</label>
             <input id="dialog-input" className="input" data-autofocus value={value}
+              type={request.secret ? "password" : "text"} {...(request.secret ? { autoComplete: "off" } : {})}
               onChange={(e) => { setValue(e.target.value); setProblem(null); }} />
             {problem ? <p role="alert" style={{ color: "var(--danger)" }}>{problem}</p> : null}
           </div>

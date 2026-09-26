@@ -439,6 +439,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   kotpass writes 4.1. Both libraries read both. Upgrade path is kdbxweb minor-version support.
   Also untested: opening a genuine kotpass-written file. The KyAuth fixture in `kdbx.test.ts`
   is built with kdbxweb, so it proves our credential handling, not cross-library compatibility.
+  `openForeign` opens a file written by another client with a plain password; `importFrom`
+  copies its live tree under a new folder, keeps UUIDs that are free, skips existing ones, and
+  carries attachments, icons, tags, expiry, custom fields and history. `kdbxImport.test.ts`
+  covers skip and carry.
 - `frontend/src/lib/csvImport.ts`: zero-knowledge RFC 4180 CSV parser and multi-format importer supporting
   Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
   folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;
