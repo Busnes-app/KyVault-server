@@ -45,6 +45,8 @@ const UNREADABLE = "The vault file could not be opened. Try again, or open it in
 const CORRUPT = "The stored key envelope could not be read. Unlock in the KyVault web app to check the vault.";
 const UNEXPECTED = "The server sent an unexpected answer. Try again later.";
 const CONFLICT = "The vault changed elsewhere. Unlock again to refresh, then add the login again.";
+// The popup's list and copy work from memory; this bounds how long a revoked device can.
+const CHECK_AFTER_MS = 60_000;
 
 const failed = (res: Response) => new Error(`The server answered ${res.status}. Try again later.`);
 
@@ -83,6 +85,19 @@ export function createVaultState(deps: VaultDeps) {
   let generation = 0;
   // Saves run one at a time, so two popups cannot interleave uploads.
   let saving: Promise<unknown> = Promise.resolve();
+  // Last answered request, or last revocation check attempt. commit() mirrors it into
+  // storage.session so it survives worker eviction.
+  let lastServerContact: number | undefined;
+
+  // Every server request goes through here, so any accepted answer counts as contact.
+  const io: VaultDeps = {
+    ...deps,
+    fetch: async (url, init) => {
+      const res = await deps.fetch(url, init);
+      if (res.ok) lastServerContact = now();
+      return res;
+    },
+  };
 
   async function lock(): Promise<void> {
     generation++;
@@ -106,7 +121,7 @@ export function createVaultState(deps: VaultDeps) {
   // this response, never from the earlier metadata call, so the two cannot disagree.
   async function download(key: Uint8Array, gen: number): Promise<OpenVault> {
     try {
-      const res = await serverFetch(deps, "/api/vault/kdbx", { method: "GET" });
+      const res = await serverFetch(io, "/api/vault/kdbx", { method: "GET" });
       if (res.status === 404) throw new Error(EMPTY);
       if (!res.ok) throw failed(res);
       const version = Number(res.headers.get("X-Vault-Version"));
@@ -133,7 +148,7 @@ export function createVaultState(deps: VaultDeps) {
   async function commit(gen: number, opened: OpenVault, unlocked?: { keyHex: string; envelope: string }): Promise<void> {
     const { autoLockMinutes } = await deps.settings();
     const lockAt = lockDeadline(now(), autoLockMinutes);
-    await deps.session.set({ ...unlocked, lockAt });
+    await deps.session.set({ ...unlocked, lockAt, ...(lastServerContact === undefined ? {} : { lastServerContact }) });
     if (gen !== generation) {
       await deps.session.clear();
       throw new LockedError();
@@ -143,10 +158,12 @@ export function createVaultState(deps: VaultDeps) {
   }
 
   async function unlock(password: string): Promise<void> {
+    // A save in flight lands first, so this download includes it.
+    await saving.catch(() => {});
     await lock();
     const gen = generation;
     return guarded(async () => {
-      const res = await serverFetch(deps, "/api/vault/metadata", { method: "GET" });
+      const res = await serverFetch(io, "/api/vault/metadata", { method: "GET" });
       if (!res.ok) throw failed(res);
       const text = new TextDecoder().decode(await readBody(res));
       let raw: unknown = null;
@@ -186,6 +203,24 @@ export function createVaultState(deps: VaultDeps) {
       const opened = open ?? (await (reopening ??= download(hexToBytes(keyHex), gen).finally(() => { reopening = undefined; })));
       await commit(gen, opened);
       return opened;
+    });
+  }
+
+  // Called when the popup opens. A 401 takes the revoked path; an unreachable server
+  // does not block the popup and is retried a minute later.
+  async function checkDevice(): Promise<void> {
+    if (lastServerContact === undefined) {
+      const stored = (await deps.session.get(["lastServerContact"])).lastServerContact;
+      lastServerContact = typeof stored === "number" ? stored : 0;
+    }
+    if (now() - lastServerContact <= CHECK_AFTER_MS) return;
+    lastServerContact = now();
+    await guarded(async () => {
+      try {
+        await serverFetch({ ...io, timeoutMs: 5_000 }, "/api/vault/metadata", { method: "GET" });
+      } catch (err) {
+        if (err instanceof RevokedError) throw err;
+      }
     });
   }
 
@@ -254,7 +289,7 @@ export function createVaultState(deps: VaultDeps) {
   // strand the vault. Mirrors the web app's VaultSaveQueue overwrite guard.
   async function checkEnvelope(): Promise<void> {
     const { envelope } = await deps.session.get(["envelope"]);
-    const res = await serverFetch(deps, "/api/vault/metadata", { method: "GET" });
+    const res = await serverFetch(io, "/api/vault/metadata", { method: "GET" });
     if (!res.ok) throw failed(res);
     let raw: unknown = null;
     try { raw = JSON.parse(new TextDecoder().decode(await readBody(res))); } catch { /* parseMetadata refuses null */ }
@@ -280,7 +315,7 @@ export function createVaultState(deps: VaultDeps) {
       if (!root) throw new Error(UNREADABLE);
       opened.vault.createEntry({ ...login, notes: "", groupUuid: root.uuid });
       try {
-        const version = await uploadVault(deps, await opened.vault.exportBinary(), opened.version, deviceId);
+        const version = await uploadVault(io, await opened.vault.exportBinary(), opened.version, deviceId);
         if (gen === generation) opened.version = version;
       } catch (err) {
         if (err instanceof ConflictError) {
@@ -295,5 +330,5 @@ export function createVaultState(deps: VaultDeps) {
     return run;
   }
 
-  return { unlock, ensure, lock, status, listEntries, secret, login, saveLogin };
+  return { unlock, ensure, lock, status, checkDevice, listEntries, secret, login, saveLogin };
 }

@@ -5,9 +5,9 @@
 // through the background worker's message channel.
 import { ext } from "../ext";
 import { parseServerOrigin } from "../lib/serverUrl";
-import { pair } from "../lib/pairing";
+import { browserPairIO, pair } from "../lib/pairing";
 import { saveSettings } from "../lib/settings";
-import { AUTO_LOCK_MINUTES, parseAutoLockMinutes } from "../../../frontend/src/lib/autoLock";
+import { AUTO_LOCK_MINUTES, parseAutoLockMinutes, type AutoLockMinutes } from "../../../frontend/src/lib/autoLock";
 import type { Request, Response, StatusResponse } from "../messages";
 
 const root = document.getElementById("root")!;
@@ -23,9 +23,24 @@ async function notifyBackground(message: Request): Promise<void> {
 }
 
 async function getStatus(): Promise<StatusResponse> {
-  const response = (await ext.runtime.sendMessage({ type: "status" } satisfies Request)) as Response;
+  let response = (await ext.runtime.sendMessage({ type: "status" } satisfies Request)) as Response;
+  // A revoked device is forgotten by then; ask again for the unpaired status.
+  if (response.type === "error" && response.revoked) response = (await ext.runtime.sendMessage({ type: "status" } satisfies Request)) as Response;
   if (response.type !== "status") throw new Error("Could not read the extension's status.");
   return response.status;
+}
+
+function lockField(value: AutoLockMinutes): { label: HTMLLabelElement; select: HTMLSelectElement } {
+  const label = el("label");
+  label.textContent = "Lock the vault after";
+  const select = el("select");
+  for (const minutes of AUTO_LOCK_MINUTES) {
+    const option = el("option", { value: String(minutes) });
+    option.textContent = `${minutes} minute${minutes === 1 ? "" : "s"} idle`;
+    select.append(option);
+  }
+  select.value = String(value);
+  return { label, select };
 }
 
 async function render(): Promise<void> {
@@ -34,18 +49,27 @@ async function render(): Promise<void> {
   // the background worker whether it is paired instead.
   const status = await getStatus();
   if (status.paired && status.serverOrigin) {
-    renderPaired(status.serverOrigin, status.deviceName || "this device");
+    renderPaired(status.serverOrigin, status.deviceName || "this device", status.autoLockMinutes);
   } else {
-    renderPairingForm();
+    renderPairingForm(status.autoLockMinutes);
   }
 }
 
-function renderPaired(origin: string, deviceName: string): void {
+function renderPaired(origin: string, deviceName: string, autoLockMinutes: AutoLockMinutes): void {
   const status = el("p");
   status.textContent = `Paired with ${origin} as ${deviceName}.`;
 
+  // The background reads the setting on every message, so an unlocked vault picks it up next time.
+  const lock = lockField(autoLockMinutes);
+  const saved = el("p");
+  saved.setAttribute("role", "status");
+  lock.select.addEventListener("change", async () => {
+    await saveSettings({ autoLockMinutes: parseAutoLockMinutes(Number(lock.select.value)) });
+    saved.textContent = "Saved.";
+  });
+
   const note = el("p");
-  note.textContent = "Unpairing forgets this browser's session. The device stays listed in Security, then Devices, until revoked there.";
+  note.textContent = "Unpairing also removes this device from Security, then Devices, when the server can be reached.";
 
   const unpairButton = el("button");
   unpairButton.textContent = "Unpair";
@@ -55,10 +79,10 @@ function renderPaired(origin: string, deviceName: string): void {
     await render();
   });
 
-  root.append(status, note, unpairButton);
+  root.append(status, lock.label, lock.select, saved, note, unpairButton);
 }
 
-function renderPairingForm(): void {
+function renderPairingForm(autoLockMinutes: AutoLockMinutes): void {
   const intro = el("p");
   intro.textContent = "In KyVault, open Security, then Devices, then Pair a device.";
 
@@ -75,15 +99,7 @@ function renderPairingForm(): void {
   const nameInput = el("input", { type: "text", maxlength: "64" });
   nameInput.value = "Browser extension";
 
-  const lockLabel = el("label");
-  lockLabel.textContent = "Lock the vault after";
-  const lockSelect = el("select");
-  for (const minutes of AUTO_LOCK_MINUTES) {
-    const option = el("option", { value: String(minutes) });
-    option.textContent = `${minutes} minute${minutes === 1 ? "" : "s"} idle`;
-    lockSelect.append(option);
-  }
-  lockSelect.value = "5";
+  const { label: lockLabel, select: lockSelect } = lockField(autoLockMinutes);
 
   const status = el("p");
   status.setAttribute("role", "status");
@@ -101,10 +117,7 @@ function renderPairingForm(): void {
     }
     pairButton.disabled = true;
     try {
-      const io = {
-        requestHost: (pattern: string) => ext.permissions.request({ origins: [pattern] }),
-        fetch,
-      };
+      const io = browserPairIO((pattern) => ext.permissions.request({ origins: [pattern] }));
       const deviceName = nameInput.value.trim() || "Browser extension";
       const { deviceId, sessionToken } = await pair(io, origin, codeInput.value, deviceName);
       await saveSettings({

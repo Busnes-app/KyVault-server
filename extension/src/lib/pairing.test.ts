@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pair } from "./pairing";
+import { browserPairIO, pair } from "./pairing";
 
 function io(opts: { grant: boolean; status: number; body: unknown }) {
   const calls: { origins?: string[]; url?: string; init?: RequestInit } = {};
@@ -41,4 +41,14 @@ test("network failure and bad device names are refused before the request comple
   await assert.rejects(pair(io({ grant: true, status: 200, body: {} }), "https://v.example", "1", ""), /1 to 64 characters/);
   await assert.rejects(pair(io({ grant: true, status: 200, body: {} }), "https://v.example", "1", "a".repeat(65)), /1 to 64 characters/);
   await assert.rejects(pair(io({ grant: true, status: 200, body: {} }), "https://v.example", "1", "bad\u0000name"), /1 to 64 characters/);
+});
+
+// The browser's fetch throws "Illegal invocation" unless called with this = the global.
+test("the options page's io calls fetch unbound", async () => {
+  const strictFetch = function (this: unknown) {
+    if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+    return Promise.resolve(new Response(JSON.stringify({ deviceId: "d1", sessionToken: "t1" }), { status: 200 }));
+  } as unknown as typeof fetch;
+  const got = await pair(browserPairIO(async () => true, strictFetch), "https://v.example", "1", "n");
+  assert.deepEqual(got, { deviceId: "d1", sessionToken: "t1" });
 });

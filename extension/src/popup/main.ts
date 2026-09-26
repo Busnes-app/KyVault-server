@@ -176,7 +176,7 @@ function field(labelText: string, input: HTMLInputElement, id: string): HTMLElem
 }
 
 // Typed by the user in this popup; page fields are never read. The values go to the
-// background once and the form is cleared.
+// background once; the form clears only after the save is confirmed.
 function saveForm(refresh: () => Promise<void>): { form: HTMLElement; prefill: (host?: string, origin?: string) => void } {
   const details = document.createElement("details");
   const summary = document.createElement("summary");
@@ -226,7 +226,6 @@ function saveForm(refresh: () => Promise<void>): { form: HTMLElement; prefill: (
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const login = { title: inputs.title.value, url: inputs.url.value, username: inputs.username.value, password: inputs.password.value };
-    reset();
     submit.disabled = true;
     status.className = "muted";
     status.textContent = "Saving the login.";
@@ -234,10 +233,13 @@ function saveForm(refresh: () => Promise<void>): { form: HTMLElement; prefill: (
     submit.disabled = false;
     if (res.type === "error") {
       if (res.locked || res.revoked) return showError(res);
+      // The upload may have landed even though the answer did not; the list is the truth.
+      await refresh();
       status.className = "error";
-      status.textContent = `${res.message} The login was not saved.`;
+      status.textContent = `${res.message} KyVault could not confirm the save. Check the list above before adding it again.`;
       return;
     }
+    reset();
     status.textContent = "Saved to the vault.";
     await refresh();
   });

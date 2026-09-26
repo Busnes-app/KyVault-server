@@ -169,3 +169,32 @@ test("the envelope survives worker eviction, and bad input is refused before any
   await fresh.saveLogin(LOGIN);
   assert.equal(s.uploads.length, 1);
 });
+
+test("an unlock waits for a save in flight, then downloads the saved vault", async () => {
+  const s = await server({ realOpen: true });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const vault = createVaultState({
+    ...s.deps,
+    fetch: async (url, init) => {
+      if (new URL(url).pathname === "/api/vault/upload") await gate;
+      return s.deps.fetch(url, init);
+    },
+  });
+  await vault.unlock("pw");
+  const save = vault.saveLogin(LOGIN);
+  // Past the rotation check, with the upload held at the gate.
+  while (s.paths.filter((p) => p === "/api/vault/metadata").length < 2) await new Promise((r) => setTimeout(r, 1));
+  await new Promise((r) => setTimeout(r, 20));
+  const before = s.paths.length;
+  const unlock = vault.unlock("pw");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.paths.length, before, "no request while the upload is pending");
+  release();
+  await save;
+  await unlock;
+  assert.deepEqual(s.paths.slice(before), ["/api/vault/upload", "/api/vault/metadata", "/api/vault/kdbx"]);
+  const opened = await vault.ensure();
+  assert.equal(opened.version, 4);
+  assert.deepEqual(opened.vault.getLiveEntries().map((e) => e.title), [LOGIN.title]);
+});

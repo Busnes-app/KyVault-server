@@ -1,17 +1,21 @@
-// Chrome only. The background worker opens this document 30 seconds after a copy to
-// blind-clear the clipboard: it never reads the clipboard back, only overwrites it.
-// The async clipboard API needs a focused document, which an offscreen document is
-// not, so this uses execCommand with a hidden textarea instead. An empty selection is
-// a no-op for execCommand, hence the single space.
-const textarea = document.createElement("textarea");
-textarea.value = " ";
-document.body.append(textarea);
-try {
-  textarea.select();
-  document.execCommand("copy");
-} finally {
-  // Always close, even if execCommand throws, so a later clear is not skipped by a
-  // stale offscreen document that createDocument then refuses to replace.
-  textarea.remove();
-  void chrome.offscreen.closeDocument();
-}
+// Chrome only. The background worker opens this document 30 seconds after a copy and
+// asks it to blind-clear the clipboard: it never reads the clipboard back, only
+// overwrites it. The async clipboard API needs a focused document, which an offscreen
+// document is not, so this uses execCommand with a hidden textarea instead. An empty
+// selection is a no-op for execCommand, hence the single space. The background closes
+// the document after the reply; chrome.offscreen does not exist in here.
+import { OFFSCREEN_CLEAR } from "./lib/clipboardClear";
+
+chrome.runtime.onMessage.addListener((message: { type?: string }, sender, sendResponse) => {
+  if (message?.type !== OFFSCREEN_CLEAR || sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(""))) return false;
+  const textarea = document.createElement("textarea");
+  textarea.value = " ";
+  document.body.append(textarea);
+  try {
+    textarea.select();
+    sendResponse({ cleared: document.execCommand("copy") });
+  } finally {
+    textarea.remove();
+  }
+  return false;
+});

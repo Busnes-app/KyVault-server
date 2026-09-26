@@ -77,29 +77,35 @@ checks.
   `deviceName` to `storage.local` itself (the only place those four keys are
   written) and sends `{type: "paired"}` so the background worker clears
   `storage.session`. Unpair sends `{type: "unpair"}`: the background worker
-  makes a best-effort `DELETE /api/devices/{id}` with the bearer token, then
-  clears the four pairing keys (keeping the `autoLockMinutes` preference),
-  clears `storage.session`, and releases the granted host permission. The
-  device stays listed in Security, then Devices, until revoked there. The
-  options page says so. `{type: "status"}` reports `paired`/`unlocked`/
-  `serverOrigin`/`deviceName` from `storage.local`; the options page's own
+  makes a best-effort `DELETE /api/devices/{id}` through `serverFetch` (a 401
+  there is ignored), then clears the four pairing keys (keeping the
+  `autoLockMinutes` preference), clears `storage.session`, and releases the
+  granted host permission. The DELETE removes the device from Security, then
+  Devices, when the server can be reached; the options page says so. The paired
+  view also carries the "Lock the vault after" select, saved with
+  `saveSettings`; the worker reads it on every message. `{type: "status"}`
+  reports `paired`/`unlocked`/`serverOrigin`/`deviceName`/`autoLockMinutes`
+  from `storage.local`; the options page's own
   paired-or-not render decision asks the background worker for this instead
   of reading `sessionToken` into page memory for a truthiness check.
   `pair()` rejects a device name outside 1 to 64 code points or containing a
   control character, matching the server's rename rule; the input also gets
   `maxlength="64"`. `serverUrl.test.ts` and
   `pairing.test.ts` are the plan's pinned tests; `pairing.ts`'s `PairIO` is
-  the seam that lets them run without a browser.
+  the seam that lets them run without a browser. The options page builds it
+  with `browserPairIO`, which calls `fetch` unbound: a bare `fetch` stored on
+  an object throws "Illegal invocation" in the browser.
 - `src/lib/session.ts`, `src/lib/lock.ts`, `src/lib/vaultState.ts`,
   `src/background.ts`, `src/popup/` (Task 3): unlock and idle lock.
   State model:
   - Worker memory: the open `KeePassVault`, its version and checksum. The
     unwrapped key bytes exist only for one `KeePassVault.open` call and are
-    zeroed after it. The password is used once for
+    zeroed after it. Also `lastServerContact`, the time of the last answered
+    request or revocation check attempt. The password is used once for
     `unwrapVaultKeyFromEnvelopes` and dropped; it is never stored or logged.
   - `storage.session` (default access level, trusted contexts only): `keyHex`,
-    `lockAt` and `envelope` (the password envelope the key was unwrapped from, for
-    the save path's rotation check). Cleared on lock and by the browser on exit.
+    `lockAt`, `envelope` (the password envelope the key was unwrapped from, for
+    the save path's rotation check) and `lastServerContact`, written with `lockAt`. Cleared on lock and by the browser on exit.
   - `storage.local`: only the allowlist above; `autoLockMinutes` is the idle
     window. `session.test.ts` fails if any file but `lib/settings.ts` calls
     `storage.local.`, if `keyHex` appears outside `vaultState.ts`, or if
@@ -119,8 +125,16 @@ checks.
   after it. 401 rule: `serverFetch` calls `forgetSession` (drops
   `sessionToken` and `deviceId`, keeps `serverOrigin` and `deviceName`),
   the state locks, and the popup shows the revoked sentence with an options
-  link. Every request goes through `serverFetch`: bearer header,
-  `credentials: "omit"`, `redirect: "error"`, `cache: "no-store"`, a 120 s
+  link. List, copy and fill work from memory, so an unlocked `status` or
+  `entries` message first runs `checkDevice`: when the last server contact is
+  more than 60 seconds old it sends one `GET /api/vault/metadata` (5 s
+  timeout). A 401 takes the revoked path; an unreachable server is ignored and
+  retried a minute later. `unlock` waits for a save in flight before it locks,
+  so its download includes that save; the alarm lock stays immediate.
+  Every server request, unpair's DELETE included, goes through `serverFetch`;
+  the one exception is the pairing redeem in `pairing.ts`, which has no token
+  yet and sets the same options itself. `serverFetch` sets the bearer header,
+  `credentials: "omit"`, `redirect: "error"`, `cache: "no-store"`, a 120 s (unpair 15 s)
   timeout that also covers the body (`readBody` maps it to a sentence), and the stored origin re-checked as bare `https:`. The background
   answers only its own extension pages (`sender.url` under
   `runtime.getURL("")`). The popup imports `frontend/src/ky-ui/tokens.css`
@@ -144,10 +158,13 @@ checks.
     generates one field (`generateTOTP` for TOTP) on demand; the popup, not the
     background, writes the clipboard, since clipboard access needs a document.
   - Copy clear: the popup's `copyText(..., {clearAfterMs})` timer dies with the popup,
-    so it also sends `{type: "copied", digest}` (a SHA-256 of the value, never the value
-    itself) and the background arms alarm `clipboard` for 30 seconds. On Chrome the
-    alarm opens `offscreen.html`, which blind-writes a space over the clipboard via
-    `execCommand("copy")` and closes; Firefox has no offscreen API, so there the clear
+    so it also sends `{type: "copied"}` and the background arms alarm `clipboard` for
+    30 seconds. On Chrome the alarm runs `lib/clipboardClear.ts`: open `offscreen.html`
+    (or reuse one left open), send it `{type: "offscreenClear"}`, which blind-writes a
+    space over the clipboard via `execCommand("copy")` and replies, then close it from
+    the background even if the clear failed. An offscreen document has only
+    `chrome.runtime`, so it cannot close itself. `clipboardClear.test.ts` checks that
+    consecutive copies each clear. Firefox has no offscreen API, so there the clear
     only happens while the popup stays open. The toast says which is true for the
     running browser (checked via `typeof ext.offscreen`, since @types/chrome always
     types the namespace but only Chrome populates it at runtime).
@@ -183,7 +200,9 @@ checks.
   (`saveLogin`), `src/popup/main.ts` (Task 6): save login, the extension's only write.
   - The popup form (title and address prefilled from the active http(s) tab, username,
     password with Generate from `generatePassword.ts` defaults) sends the typed values
-    once and clears. Page fields are never read. `saveLogin` refuses a blank title, an
+    once and clears only on success. Any other error refreshes the list and says the
+    save could not be confirmed, since a lost answer may hide a stored entry. Page
+    fields are never read. `saveLogin` refuses a blank title, an
     empty password, or an address that is not `http(s):`.
   - Order: `ensure`, then `GET /api/vault/metadata` and compare its `passwordEnvelope`
     with the session's `envelope`; a mismatch locks with the rotation sentence before
@@ -195,7 +214,9 @@ checks.
     refresh, then add the login again."); the server keeps the rejected bytes under
     `conflicts/`. Never retry with the newer version. 401 is the revoked path. Any other
     failure drops the in-memory vault (not `deleteEntry`, which would recycle it) so the
-    next request re-downloads it from `keyHex`.
+    next request re-downloads it from `keyHex`. `createEntry` mutates the shared
+    in-memory vault before the upload, so a concurrent `entries` may list the new
+    login until the upload settles.
   - Saves are serialised behind one promise per worker. `LockedError` takes a message,
     and the popup's locked form shows it.
   - `save.test.ts`: the plan's upload tests, a real KDBX round trip (headers, bytes

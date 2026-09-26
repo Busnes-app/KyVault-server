@@ -1,5 +1,11 @@
 export type PairIO = { requestHost: (pattern: string) => Promise<boolean>; fetch: (url: string, init: RequestInit) => Promise<Response> };
 
+// A bare `fetch` stored on an object runs with this = that object, which the browser
+// refuses ("Illegal invocation"); the arrow calls it unbound.
+export function browserPairIO(requestHost: PairIO["requestHost"], fetchImpl: typeof fetch = fetch): PairIO {
+  return { requestHost, fetch: (url, init) => fetchImpl(url, init) };
+}
+
 // extension/AGENTS.md documents the storage.local allowlist this feeds.
 const MAX_DEVICE_NAME_RUNES = 64;
 

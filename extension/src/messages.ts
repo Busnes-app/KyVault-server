@@ -3,6 +3,7 @@
 // ever carries the vault key.
 import type { EntryView } from "./lib/rank";
 import type { NewLogin, SecretField } from "./lib/vaultState";
+import type { AutoLockMinutes } from "../../frontend/src/lib/autoLock";
 
 export type Request =
   | { type: "paired" }
@@ -22,6 +23,7 @@ export type StatusResponse = {
   unlocked: boolean;
   serverOrigin?: string;
   deviceName?: string;
+  autoLockMinutes: AutoLockMinutes;
   lockAt?: number;
 };
 

@@ -208,3 +208,40 @@ test("a download that dies mid-body is a sentence and leaves nothing behind", as
   );
   assert.equal(f.session.size, 0);
 });
+
+test("a popup open more than 60 s after the last server contact checks for revocation", async () => {
+  const serve: Serve = { meta: META, kdbx: new ArrayBuffer(8) };
+  const f = fakes(serve);
+  const state = createVaultState({ ...f.deps, unwrap: fakeUnwrap(), openVault: fakeOpen() });
+  await state.unlock("pw");
+  assert.equal(f.session.get("lastServerContact"), T0);
+  const requests = f.log.paths.length;
+
+  f.setNow(T0 + 60_000);
+  await state.checkDevice();
+  assert.equal(f.log.paths.length, requests);
+
+  // Revoked server-side meanwhile.
+  serve.metaStatus = 401;
+  f.setNow(T0 + 61_000);
+  await assert.rejects(state.checkDevice(), RevokedError);
+  assert.deepEqual(f.log.paths.slice(requests), ["/api/vault/metadata"]);
+  assert.equal(f.log.forgot, 1);
+  assert.equal(f.session.size, 0);
+  await assert.rejects(state.ensure(), LockedError);
+});
+
+test("the revocation check survives worker eviction and does not block an unreachable server", async () => {
+  const f = fakes({ meta: META, kdbx: new ArrayBuffer(8) });
+  await createVaultState({ ...f.deps, unwrap: fakeUnwrap(), openVault: fakeOpen() }).unlock("pw");
+  const requests = f.log.paths.length;
+  const evicted = createVaultState({ ...f.deps, fetch: async () => { f.log.paths.push("offline"); throw new TypeError("network down"); }, openVault: fakeOpen() });
+  f.setNow(T0 + 30_000);
+  await evicted.checkDevice();
+  assert.equal(f.log.paths.length, requests);
+  f.setNow(T0 + 61_000);
+  await evicted.checkDevice();
+  await evicted.checkDevice();
+  assert.deepEqual(f.log.paths.slice(requests), ["offline"]);
+  assert.equal(f.log.forgot, 0);
+});
