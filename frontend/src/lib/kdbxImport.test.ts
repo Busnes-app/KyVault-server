@@ -30,6 +30,9 @@ test("importing a foreign vault copies new items, skips existing UUIDs and keeps
   const report2 = b.importFrom(foreign2);
   assert.equal(report2.entries, 1);
   assert.equal(report2.skippedGroups, 5);
+  // Repeat imports reuse the existing "Other" folder rather than cluttering the vault
+  // with a fresh one every time.
+  assert.equal(b.getLiveGroups().filter((x) => x.name === "Other").length, 1);
   const back = b.getEntries().find((x) => x.uuid === e2.uuid)!;
   assert.equal(back.favorite, true);
   assert.deepEqual(back.custom, [{ name: "K", value: "v", protected: true }]);
@@ -37,6 +40,8 @@ test("importing a foreign vault copies new items, skips existing UUIDs and keeps
   assert.match(describeImport(report2), /1 entr/);
   const reopened = await KeePassVault.open(await b.exportBinary(), keyB);
   assert.ok(reopened.getEntries().some((x) => x.uuid === e2.uuid));
+  const sharedGroup = reopened.getLiveGroups().find((x) => x.name === "Shared");
+  assert.equal(sharedGroup?.uuid, g.uuid);
 });
 
 test("a foreign file opens with a plain password", async () => {

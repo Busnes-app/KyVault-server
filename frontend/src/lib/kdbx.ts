@@ -256,7 +256,10 @@ export class KeePassVault {
   public importFrom(source: KeePassVault, targetGroupUuid?: string): ImportReport {
     const report: ImportReport = { entries: 0, groups: 0, skippedEntries: 0, skippedGroups: 0, attachments: 0 };
     const srcRoot = source.db.getDefaultGroup();
-    const parent = (targetGroupUuid && this.findGroup(targetGroupUuid)) || this.db.createGroup(this.db.getDefaultGroup(), folderName(srcRoot.name || "Imported"));
+    const rootName = folderName(srcRoot.name || "Imported");
+    const root = this.db.getDefaultGroup();
+    const existingRoot = root.groups.find((g) => (g.name || "") === rootName);
+    const parent = (targetGroupUuid && this.findGroup(targetGroupUuid)) || existingRoot || this.db.createGroup(root, rootName);
     const recycled = source.recycledGroupIds();
     const copyGroup = (from: kdbxweb.KdbxGroup, into: kdbxweb.KdbxGroup) => {
       for (const child of from.groups) {
