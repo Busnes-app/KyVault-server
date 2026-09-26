@@ -5,12 +5,13 @@ import { createHash } from "node:crypto";
 type Store = {
   version: number; bytes: Buffer | null; passwordEnvelope?: string; recoveryEnvelope?: string;
   history: Array<{ id: string; version: number; sizeBytes: number; checksum: string; timestamp: string }>;
-  devices: Array<{ id: string; name: string; platform: string; lastSeenAt: string; lastIp: string }>;
+  devices: Array<{ id: string; name: string; platform: string; lastSeenAt: string; lastIp: string; current: boolean }>;
 };
 
 export function mockApi(): Plugin {
   const store: Store = { version: 0, bytes: null, history: [], devices: [
-    { id: "dev-1", name: "Pixel 9", platform: "android", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.7" },
+    { id: "dev-1", name: "Pixel 9", platform: "android", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.7", current: false },
+    { id: "dev-2", name: "Firefox extension", platform: "browser", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.8", current: false },
   ] };
   const user = { id: "u-1", username: "mock-admin", role: "admin", active: true, ssoSub: "sub-mock" };
   const json = (res: import("node:http").ServerResponse, status: number, body: unknown) => {
@@ -56,7 +57,22 @@ export function mockApi(): Plugin {
       if (p === "/api/vault/conflicts") return json(res, 200, []);
       if (p === "/api/devices" && m === "GET") return json(res, 200, store.devices);
       if (p.startsWith("/api/devices/") && m === "DELETE") { store.devices = store.devices.filter((d) => `/api/devices/${d.id}` !== p); return json(res, 200, { ok: true }); }
+      if (p.startsWith("/api/devices/") && m === "PATCH") {
+        const id = p.slice("/api/devices/".length);
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        const name = String(body.name ?? "").trim();
+        if (!name || name.length > 64) return json(res, 400, { error: "invalid device name" });
+        const device = store.devices.find((d) => d.id === id);
+        if (!device) return json(res, 404, { error: "device not found" });
+        device.name = name;
+        return json(res, 200, device);
+      }
       if (p === "/api/devices/pairing/start") return json(res, 200, { pin: "483920", secret: "mock-secret", expiresAt: new Date(Date.now() + 90_000).toISOString() });
+      if (p === "/api/devices/pairing/redeem" && m === "POST") {
+        const id = `dev-${store.devices.length + 1}`;
+        store.devices.push({ id, name: "New device", platform: "mock", lastSeenAt: new Date().toISOString(), lastIp: "127.0.0.1", current: false });
+        return json(res, 200, { ok: true, deviceId: id, sessionToken: "mock-token", user: { id: user.id } });
+      }
       if (p === "/api/admin/users") return json(res, 200, [user, { id: "u-2", username: "dana", role: "user", active: true, ssoSub: "sub-dana" }]);
       if (p === "/api/admin/sso" && m === "GET") return json(res, 200, { enabled: true, issuerUrl: "https://signon.mock", clientId: "kyvault", autoProvision: true, clientSecretSet: true });
       if (p === "/api/admin/sso" && m === "PUT") return json(res, 200, { ok: true });

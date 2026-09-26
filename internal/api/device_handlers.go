@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/Busnes-app/kyvault-server/internal/devices"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 	"github.com/Busnes-app/kyvault-server/internal/vault"
@@ -71,7 +75,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid pairing origin", http.StatusBadRequest)
 		return
 	}
-	tokBytes, err := s.startSessionWithToken(dev.UserID, id)
+	tokBytes, err := s.startSessionWithToken(dev.UserID, dev.ID, id)
 	if err != nil {
 		_ = s.devices.Revoke(dev.ID)
 		http.Error(w, "account is inactive or signed out", http.StatusUnauthorized)
@@ -98,7 +102,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) startSessionWithToken(userID string, id sso.Identity) (string, error) {
+func (s *Server) startSessionWithToken(userID, deviceID string, id sso.Identity) (string, error) {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
 	if u, err := s.users.Get(userID); err != nil || !u.Active {
@@ -121,13 +125,25 @@ func (s *Server) startSessionWithToken(userID string, id sso.Identity) (string, 
 		ExpiresAt: now.Add(90 * 24 * time.Hour), // 90-day device session
 		CSRFToken: csrfBytes,
 		SSO:       id,
+		DeviceID:  deviceID,
 	}
 	return tokBytes, nil
 }
 
+// deviceView adds whether the requesting session belongs to this device.
+type deviceView struct {
+	devices.Device
+	Current bool `json:"current"`
+}
+
 func (s *Server) handleDevicesList(w http.ResponseWriter, r *http.Request, u users.User) {
+	sess, _ := s.currentSession(r)
 	devs := s.devices.ListUserDevices(u.ID)
-	writeJSON(w, http.StatusOK, devs)
+	views := make([]deviceView, 0, len(devs))
+	for _, d := range devs {
+		views = append(views, deviceView{Device: d, Current: sess.DeviceID != "" && d.ID == sess.DeviceID})
+	}
+	writeJSON(w, http.StatusOK, views)
 }
 
 func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request, u users.User) {
@@ -146,6 +162,51 @@ func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request, u us
 	_ = s.devices.Revoke(deviceID)
 	_ = s.vault.RemoveDeviceEnvelope(u.ID, deviceID)
 
+	s.sessMu.Lock()
+	for tok, sess := range s.sessions {
+		if sess.DeviceID == deviceID {
+			delete(s.sessions, tok)
+		}
+	}
+	s.sessMu.Unlock()
+
 	s.record(r, "device.revoked", u.ID, deviceID, clientIP(r), "revoked device "+dev.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleDeviceRename(w http.ResponseWriter, r *http.Request, u users.User) {
+	deviceID := r.PathValue("id")
+	if deviceID == "" {
+		http.Error(w, "missing device id", http.StatusBadRequest)
+		return
+	}
+
+	dev, err := s.devices.Get(deviceID)
+	if err != nil || dev.UserID != u.ID {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || utf8.RuneCountInString(name) > 64 || strings.ContainsFunc(name, unicode.IsControl) {
+		http.Error(w, "invalid device name", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.devices.Rename(deviceID, name); err != nil {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	dev.Name = name
+
+	sess, _ := s.currentSession(r)
+	s.record(r, "device.renamed", u.ID, deviceID, clientIP(r), "renamed device to "+name)
+	writeJSON(w, http.StatusOK, deviceView{Device: dev, Current: sess.DeviceID != "" && dev.ID == sess.DeviceID})
 }

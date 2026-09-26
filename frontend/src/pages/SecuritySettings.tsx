@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, FormEvent } from "react";
-import { getJSON, putJSON, deleteJSON, toErrorMessage, HttpError } from "../lib/api";
+import { getJSON, putJSON, patchJSON, deleteJSON, toErrorMessage, HttpError } from "../lib/api";
 import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCrypto";
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download, RefreshCw } from "lucide-react";
@@ -24,6 +24,7 @@ type Device = {
   platform: string;
   lastSeenAt: string;
   lastIp: string;
+  current?: boolean;
 };
 
 type Props = {
@@ -308,6 +309,44 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       setError(toErrorMessage(err, "Failed to revoke device"));
     } finally {
       setRevoking(null);
+    }
+  };
+
+  const handleRenameDevice = async (device: Device) => {
+    const name = await dialogs.prompt({
+      title: "Rename device",
+      label: "Name",
+      defaultValue: device.name,
+      validate: (v) => (v.trim() ? (v.trim().length > 64 ? "Use at most 64 characters." : null) : "Enter a name."),
+    });
+    if (name === null) return;
+    setError("");
+    setMessage("");
+    try {
+      const updated = await patchJSON<Device>(`/api/devices/${device.id}`, { name: name.trim() });
+      setDevices((prev) => prev.map((d) => (d.id === device.id ? updated : d)));
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to rename device"));
+    }
+  };
+
+  const handleRevokeAllOthers = async () => {
+    if (revoking) return;
+    if (!await dialogs.confirm({
+      title: "Revoke every other device?",
+      message: "Each paired app and extension except this one is signed out and must pair again. Your vault data is not changed.",
+      confirmLabel: "Revoke all",
+      danger: true,
+    })) return;
+    const others = devices.filter((d) => !d.current);
+    setError("");
+    setMessage("");
+    try {
+      const failed = await revokeDevices(others.map((d) => d.id), (id) => deleteJSON(`/api/devices/${id}`));
+      setDevices((prev) => prev.filter((d) => d.current || failed.includes(d.id)));
+      setMessage(failed.length ? "Some devices could not be signed out. Try again." : "Every other device has been signed out.");
+    } catch (err) {
+      setError(toErrorMessage(err, "Failed to revoke other devices"));
     }
   };
 
@@ -643,9 +682,16 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <Smartphone size={20} color="var(--accent)" />
             <h3 style={{ margin: 0 }}>Paired Devices & Extensions</h3>
           </div>
-          <button className="btn btn-primary btn-sm" onClick={() => setShowPairing(true)}>
-            <QrCode size={14} /> Pair New Device
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            {devices.some((d) => !d.current) ? (
+              <button className="btn btn-danger btn-sm" onClick={handleRevokeAllOthers} disabled={revoking !== null}>
+                Revoke all others
+              </button>
+            ) : null}
+            <button className="btn btn-primary btn-sm" onClick={() => setShowPairing(true)}>
+              <QrCode size={14} /> Pair New Device
+            </button>
+          </div>
         </div>
 
         {devices.length === 0 ? (
@@ -666,19 +712,31 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
                 }}
               >
                 <div>
-                  <div style={{ fontWeight: 600 }}>{d.name}</div>
+                  <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    {d.name}
+                    {d.current ? <span className="badge badge-cyan">This device</span> : null}
+                  </div>
                   <div style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.2rem" }}>
                     {d.platform} • Last active: {formatWhen(d.lastSeenAt)} ({d.lastIp || "—"})
                   </div>
                 </div>
-                <button
-                  className="btn btn-danger btn-sm"
-                  onClick={() => handleRevokeDevice(d.id, d.name)}
-                  title="Revoke device"
-                  disabled={revoking !== null}
-                >
-                  <Trash2 size={14} /> Revoke
-                </button>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleRenameDevice(d)}
+                    title="Rename device"
+                  >
+                    Rename
+                  </button>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => handleRevokeDevice(d.id, d.name)}
+                    title="Revoke device"
+                    disabled={revoking !== null}
+                  >
+                    <Trash2 size={14} /> Revoke
+                  </button>
+                </div>
               </div>
             ))}
           </div>

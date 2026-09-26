@@ -32,6 +32,9 @@ type Session struct {
 	ExpiresAt       time.Time
 	CSRFToken       string
 	SSO             sso.Identity
+	// DeviceID is set only for device-token sessions minted by pairing redemption;
+	// browser sessions leave it empty.
+	DeviceID string
 }
 
 type Server struct {
@@ -199,6 +202,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/devices/pairing/redeem", s.handlePairingRedeem) // device-facing
 	mux.HandleFunc("GET /api/devices", s.withAuth(s.handleDevicesList))
 	mux.HandleFunc("DELETE /api/devices/{id}", s.withAuth(s.handleDeviceRevoke))
+	mux.HandleFunc("PATCH /api/devices/{id}", s.withAuth(s.handleDeviceRename))
 
 	// Directory Sync Webhook
 	mux.Handle("POST /api/sync/webhook", s.signedSyncHandler())
