@@ -17,3 +17,11 @@ test("bitwarden logins import with folder and totp; other types are counted", ()
   assert.throws(() => parseBitwardenJson(JSON.stringify({ encrypted: true, items: [] })), /encrypted/i);
   assert.throws(() => parseBitwardenJson("nope"), /not a Bitwarden/i);
 });
+
+test("non-string and null fields are coerced to empty strings, not thrown", () => {
+  const json = JSON.stringify({ items: [
+    { type: 1, name: 42, notes: null, login: { username: null, password: { x: 1 }, totp: 7, uris: [{ uri: null }] } },
+  ] });
+  const { entries } = parseBitwardenJson(json);
+  assert.deepEqual(entries, [{ id: entries[0].id, title: "", username: "", password: "", url: "", notes: "", totpSeed: "", folder: "", selected: true }]);
+});

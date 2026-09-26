@@ -6,16 +6,25 @@ const TYPE_NOTE = 2;
 const TYPE_CARD = 3;
 const TYPE_IDENTITY = 4;
 
+// Every field below crosses a trust boundary (a file the user chose): a non-string value
+// such as `name: 42` must not reach the preview, where search and duplicate detection
+// assume strings.
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
 export function parseBitwardenJson(
   text: string
 ): { entries: ImportedEntryPreview[]; skipped: { notes: number; cards: number; identities: number } } {
-  let data: any;
+  let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
     throw new Error("This is not a Bitwarden export.");
   }
-  if (!data || !Array.isArray(data.items)) throw new Error("This is not a Bitwarden export.");
+  if (!isRecord(data) || !Array.isArray(data.items)) throw new Error("This is not a Bitwarden export.");
   if (data.encrypted === true) {
     throw new Error("This Bitwarden export is encrypted. Export it unencrypted and import that file.");
   }
@@ -23,7 +32,7 @@ export function parseBitwardenJson(
   const folderNames = new Map<string, string>();
   if (Array.isArray(data.folders)) {
     for (const folder of data.folders) {
-      if (folder?.id) folderNames.set(folder.id, folder.name ?? "");
+      if (isRecord(folder) && typeof folder.id === "string") folderNames.set(folder.id, str(folder.name));
     }
   }
 
@@ -31,18 +40,22 @@ export function parseBitwardenJson(
   const skipped = { notes: 0, cards: 0, identities: 0 };
 
   for (const item of data.items) {
-    switch (item?.type) {
+    if (!isRecord(item)) continue;
+    switch (item.type) {
       case TYPE_LOGIN: {
-        const login = item.login ?? {};
+        const login = isRecord(item.login) ? item.login : {};
+        const uris = Array.isArray(login.uris) ? login.uris : [];
+        const firstUri = isRecord(uris[0]) ? uris[0] : {};
+        const folderId = typeof item.folderId === "string" ? item.folderId : undefined;
         entries.push({
           id: crypto.randomUUID(),
-          title: item.name ?? "",
-          username: login.username ?? "",
-          password: login.password ?? "",
-          url: login.uris?.[0]?.uri ?? "",
-          notes: item.notes ?? "",
-          totpSeed: login.totp ?? "",
-          folder: (item.folderId && folderNames.get(item.folderId)) || "",
+          title: str(item.name),
+          username: str(login.username),
+          password: str(login.password),
+          url: str(firstUri.uri),
+          notes: str(item.notes),
+          totpSeed: str(login.totp),
+          folder: (folderId && folderNames.get(folderId)) || "",
           selected: true,
         });
         break;

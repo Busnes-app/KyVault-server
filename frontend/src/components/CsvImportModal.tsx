@@ -91,6 +91,11 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleProcessCsv = (text: string, selectedProvider: CsvProvider = provider) => {
+    if (text.trimStart().startsWith("{")) {
+      setCsvContent(text);
+      handleJsonFile(text);
+      return;
+    }
     setCsvContent(text);
     setIsJsonImport(false);
     setJsonError(null);
@@ -129,7 +134,6 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
 
   const handleJsonFile = (text: string) => {
     setIsJsonImport(true);
-    setCsvContent("");
     setRawRows([]);
     try {
       const { entries, skipped } = parseBitwardenJson(text);
@@ -533,9 +537,9 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
                   Detected: {parseSummary.providerName}
                 </span>
                 <span style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
-                  {previewEntries.length} accounts found ({selectedCount} selected)
+                  {previewEntries.length} accounts found ({selectedCount} selected).
                   {jsonSkipped && (jsonSkipped.notes || jsonSkipped.cards || jsonSkipped.identities)
-                    ? ` — ${jsonSkipped.notes} secure note${jsonSkipped.notes === 1 ? "" : "s"}, ${jsonSkipped.cards} card${jsonSkipped.cards === 1 ? "" : "s"} and ${jsonSkipped.identities} identit${jsonSkipped.identities === 1 ? "y" : "ies"} were not imported.`
+                    ? ` ${jsonSkipped.notes} secure note${jsonSkipped.notes === 1 ? "" : "s"}, ${jsonSkipped.cards} card${jsonSkipped.cards === 1 ? "" : "s"} and ${jsonSkipped.identities} identit${jsonSkipped.identities === 1 ? "y" : "ies"} were not imported.`
                     : ""}
                 </span>
               </div>
@@ -557,8 +561,9 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
               </div>
             </div>
 
-            {/* Errors alert if any */}
-            {parseSummary.errors.length > 0 ? (
+            {/* Errors alert if any. Generic-provider errors describe the raw auto-guess,
+                not the mapped preview the user is now looking at. */}
+            {parseSummary.provider !== "generic" && parseSummary.errors.length > 0 ? (
               <div
                 style={{
                   background: "var(--danger-soft)",
