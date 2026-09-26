@@ -14,3 +14,10 @@ test("a draft creates nothing until applied", async () => {
   assert.equal(entry.groupUuid, root);
   assert.equal(entry.title, "Bank");
 });
+
+test("a draft creates the entry in the folder the user picked", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(4));
+  const work = vault.createGroup("Work");
+  const entry = createFromDraft(vault, { groupUuid: work.uuid }, { title: "Bank", username: "me", password: "pw", url: "", notes: "", totpSeed: "" });
+  assert.equal(entry.groupUuid, work.uuid);
+});

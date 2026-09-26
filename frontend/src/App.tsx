@@ -111,7 +111,7 @@ export function App() {
   const [unlockConfirm, setUnlockConfirm] = useState("");
   const [unlockError, setUnlockError] = useState("");
   const [unlocking, setUnlocking] = useState(false);
-  const mode = unlockMode(meta?.version);
+  const mode = meta ? unlockMode(meta.version) : "unlock";
 
   // Check auth on load
   const checkAuth = async () => {
@@ -281,7 +281,7 @@ export function App() {
       if (!current()) return;
       console.error("Vault init error:", err);
       setUnlockError(toErrorMessage(err, "Failed to unlock vault"));
-      setLockedReason(meta?.version ? "locked" : "new");
+      setLockedReason(meta ? (meta.version ? "locked" : "new") : "locked");
     }
   };
 
@@ -569,17 +569,21 @@ export function App() {
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ textAlign: "center", maxWidth: "440px", padding: "2rem" }}>
             <Lock size={48} color="var(--accent)" style={{ marginBottom: "1rem" }} />
-            <h2>Vault is Locked</h2>
+            <h2>{mode === "create" ? "Set up your vault" : "Vault is Locked"}</h2>
             <p style={{ color: "var(--ink-muted)", marginBottom: "1.5rem" }}>
-              Enter your master password or paper recovery code to unlock your encrypted KeePass vault.
+              {mode === "create"
+                ? "Choose a master password to create your encrypted vault. It stays in your browser and is never sent to the server."
+                : "Enter your master password or paper recovery code to unlock your encrypted KeePass vault."}
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
               <button className="btn btn-primary" onClick={() => setShowUnlockModal(true)}>
-                <Lock size={16} /> Unlock Vault
+                <Lock size={16} /> {mode === "create" ? "Create master password" : "Unlock Vault"}
               </button>
-              <button className="btn btn-secondary" onClick={() => setShowHistoryModal(true)}>
-                <RotateCcw size={16} /> Version History & Rollback
-              </button>
+              {mode === "create" ? null : (
+                <button className="btn btn-secondary" onClick={() => setShowHistoryModal(true)}>
+                  <RotateCcw size={16} /> Version History & Rollback
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -591,7 +595,7 @@ export function App() {
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
               {mode === "create"
                 ? "This password encrypts your vault key in your browser. It is never sent to the server, so nobody can reset it for you. Use at least 12 characters; a short sentence works well."
-                : "You are signed in — KySignOn has proved who you are. Unlocking is separate: your master password decrypts the vault here in your browser, and is never sent to the server. Enter it once to trust this device for 1-click unlock."}
+                : "You are signed in. KySignOn has proved who you are. Unlocking is separate: your master password decrypts the vault here in your browser, and is never sent to the server. Enter it once to trust this device for 1-click unlock."}
             </p>
 
             {unlockError ? (

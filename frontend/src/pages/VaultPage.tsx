@@ -119,7 +119,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
   const draftDirty = isEditing && (
     newDraft
-      ? Boolean(editTitle || editUsername || editPassword || editUrl || editNotes || editTotp)
+      ? Boolean(editTitle || editUsername || editPassword || editUrl || editNotes || editTotp || editGroupUuid !== newDraft.groupUuid)
       : selectedEntry !== null && (
           editTitle !== selectedEntry.title || editUsername !== selectedEntry.username ||
           editPassword !== selectedEntry.password || editUrl !== selectedEntry.url ||
@@ -217,7 +217,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
   const handleSaveEntry = () => {
     if (newDraft) {
-      const entry = createFromDraft(vault, newDraft, {
+      const entry = createFromDraft(vault, { groupUuid: editGroupUuid }, {
         title: editTitle, username: editUsername, password: editPassword,
         url: editUrl, notes: editNotes, totpSeed: editTotp,
       });

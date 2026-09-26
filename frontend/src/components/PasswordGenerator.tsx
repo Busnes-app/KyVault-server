@@ -17,6 +17,7 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
   const [generated, setGenerated] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [lengthText, setLengthText] = useState(() => String(options.length));
 
   const update = (patch: Partial<GeneratorOptions>) => {
     const next = { ...options, ...patch };
@@ -104,10 +105,18 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
               max={128}
               className="input"
               style={{ width: "5rem", textAlign: "right" }}
-              value={options.length}
+              value={lengthText}
               onChange={(e) => {
-                const n = parseInt(e.target.value, 10);
-                if (Number.isInteger(n)) update({ length: Math.min(128, Math.max(8, n)) });
+                const text = e.target.value;
+                setLengthText(text);
+                const n = parseInt(text, 10);
+                if (Number.isInteger(n) && n >= 8 && n <= 128) update({ length: n });
+              }}
+              onBlur={() => {
+                const n = parseInt(lengthText, 10);
+                const clamped = Number.isInteger(n) ? Math.min(128, Math.max(8, n)) : options.length;
+                setLengthText(String(clamped));
+                if (clamped !== options.length) update({ length: clamped });
               }}
             />
           </div>
@@ -116,7 +125,11 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
             min="8"
             max="128"
             value={options.length}
-            onChange={(e) => update({ length: parseInt(e.target.value, 10) })}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              update({ length: n });
+              setLengthText(String(n));
+            }}
             style={{ width: "100%", accentColor: "var(--accent)" }}
           />
         </div>

@@ -63,8 +63,10 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   // class applied first, then print, so a single block never depends on stacking order.
   useEffect(() => {
     if (!printTarget) return;
+    const done = () => setPrintTarget(null);
+    window.addEventListener("afterprint", done, { once: true });
     window.print();
-    setPrintTarget(null);
+    return () => window.removeEventListener("afterprint", done);
   }, [printTarget]);
 
   // A lock cancels pending dialogs (App.tsx closeVault), but these handlers hold the

@@ -103,7 +103,7 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
     if (role === u.role) return;
     if (!await dialogs.confirm({
       title: "Change role?",
-      message: `Make ${u.username} an ${role}?`,
+      message: `Make ${u.username} ${role === "admin" ? "an admin" : "a user"}?`,
       confirmLabel: "Change",
     })) return;
 

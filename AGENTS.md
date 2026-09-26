@@ -63,6 +63,7 @@ yourself adding one, the design has been misread.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Local admin actions cannot deactivate the caller (400) or leave zero active admins (409, users.ErrLastAdmin); directory-driven deactivation via SCIM or the webhook is not guarded, the directory is authoritative.
 - Admin → User Directory changes roles through `PUT /api/admin/users/{id}/role`; the caller's row is disabled and the last-admin 409 is shown inline.
+- Admin → Backup: pinning a recovery key asks for confirmation first; the server still refuses a second, different key.
 - User-facing callback failures (identity not linked, account deactivated, login fenced by a logout) redirect to `/?sso_error=<code>`; the login page explains the code. Token and configuration failures keep their status codes.
 - A 401 from any API call except the session probe and logout raises `kyvault:unauthorized`; the app locks the vault and shows the login page with a notice.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
@@ -221,6 +222,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   leave earlier rows imported without a save revision; the same test file covers that boundary.
   A new entry is a draft in the editor until Apply Edits creates it; Cancel leaves no entry and
   no save revision. Selecting a folder clears an entry that is not in it.
+  A typed but unapplied new entry is not checkpointed on auto-lock and does not trigger the
+  unload warning; the discard confirm still asks.
 
 - `frontend/src/components/EntryAttachments.tsx` and `frontend/src/lib/kdbx.ts`:
   entries support adding one file at a time (10 MiB maximum), downloading decrypted
@@ -362,7 +365,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)
   under a non-extractable per-browser CryptoKey held in the same store; legacy plain-hex
   records are deleted on sight, and the next password unlock writes a sealed record.
-  Forget This Device clears it.
+  Forget This Device clears it. The pairing modal polls `GET /api/devices` every 3 seconds
+  while open and visible and closes when the device count grows.
 - `frontend/src/lib/vaultCrypto.ts`: the vault key envelope — **the only place a
   human-chosen secret is stretched**. Everything else is keyed on a 256-bit random vault
   key, where the KDF is near-irrelevant; here it is the whole defence, and the envelope is
