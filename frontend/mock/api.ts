@@ -4,12 +4,13 @@ import { createHash } from "node:crypto";
 
 type Store = {
   version: number; bytes: Buffer | null; passwordEnvelope?: string; recoveryEnvelope?: string;
-  history: Array<{ id: string; version: number; sizeBytes: number; checksum: string; timestamp: string }>;
+  history: Array<{ id: string; version: number; sizeBytes: number; checksum: string; timestamp: string; bytes: Buffer }>;
+  conflicts: Array<{ id: string; expectedVersion: number; deviceId: string; sizeBytes: number; timestamp: string; bytes: Buffer }>;
   devices: Array<{ id: string; name: string; platform: string; lastSeenAt: string; lastIp: string; current: boolean }>;
 };
 
 export function mockApi(): Plugin {
-  const store: Store = { version: 0, bytes: null, history: [], devices: [
+  const store: Store = { version: 0, bytes: null, history: [], conflicts: [], devices: [
     { id: "dev-1", name: "Pixel 9", platform: "android", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.7", current: false },
     { id: "dev-2", name: "Firefox extension", platform: "browser", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.8", current: false },
   ] };
@@ -20,6 +21,17 @@ export function mockApi(): Plugin {
   const readBody = (req: import("node:http").IncomingMessage) => new Promise<Buffer>((resolve) => {
     const chunks: Buffer[] = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => resolve(Buffer.concat(chunks)));
   });
+  // Like the Go store: archive the outgoing copy as a snapshot before replacing it.
+  const archive = (suffix = "") => {
+    if (!store.bytes) return;
+    const meta = metadata();
+    store.history.unshift({ id: `${Date.now()}_v${store.version}${suffix}`, version: store.version, sizeBytes: meta.sizeBytes,
+      checksum: meta.checksum, timestamp: new Date().toISOString(), bytes: store.bytes });
+  };
+  const listed = <T extends { bytes: Buffer }>(items: T[]) => items.map(({ bytes: _bytes, ...rest }) => rest);
+  const binary = (res: import("node:http").ServerResponse, bytes: Buffer) => {
+    res.setHeader("Content-Type", "application/x-keepass2"); res.setHeader("Cache-Control", "no-store"); res.end(bytes);
+  };
   const metadata = () => ({ version: store.version, checksum: store.bytes ? createHash("sha256").update(store.bytes).digest("hex") : "",
     sizeBytes: store.bytes?.length ?? 0, passwordEnvelope: store.passwordEnvelope, recoveryEnvelope: store.recoveryEnvelope });
 
@@ -39,13 +51,17 @@ export function mockApi(): Plugin {
       }
       if (p === "/api/vault/upload" && m === "POST") {
         const expected = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));
-        if (expected !== store.version) return json(res, 409, { error: "conflict", currentVersion: store.version, expectedVersion: expected, conflictId: "c-1" });
-        store.bytes = await readBody(req); store.version++;
+        const body = await readBody(req);
+        if (expected !== store.version) {
+          const id = `${Date.now()}_web_exp${expected}`;
+          store.conflicts.unshift({ id, expectedVersion: expected, deviceId: "web", sizeBytes: body.length, timestamp: new Date().toISOString(), bytes: body });
+          return json(res, 409, { error: "conflict", currentVersion: store.version, expectedVersion: expected, conflictId: id });
+        }
+        archive();
+        store.bytes = body; store.version++;
         const env = req.headers["x-password-envelope"]; if (typeof env === "string" && env) store.passwordEnvelope = env;
         const rec = req.headers["x-recovery-envelope"]; if (typeof rec === "string" && rec) store.recoveryEnvelope = rec;
-        const meta = metadata();
-        store.history.unshift({ id: `h-${store.version}`, version: store.version, sizeBytes: meta.sizeBytes, checksum: meta.checksum, timestamp: new Date().toISOString() });
-        return json(res, 200, { ok: true, metadata: meta });
+        return json(res, 200, { ok: true, metadata: metadata() });
       }
       if (p === "/api/vault/envelopes" && m === "PUT") {
         const body = JSON.parse((await readBody(req)).toString() || "{}");
@@ -53,8 +69,17 @@ export function mockApi(): Plugin {
         if (body.recoveryEnvelope) store.recoveryEnvelope = body.recoveryEnvelope;
         return json(res, 200, { ok: true });
       }
-      if (p === "/api/vault/history") return json(res, 200, store.history);
-      if (p === "/api/vault/conflicts") return json(res, 200, []);
+      if (p === "/api/vault/history") return json(res, 200, listed(store.history));
+      if (p === "/api/vault/conflicts") return json(res, 200, listed(store.conflicts));
+      const snapshot = store.history.find((h) => p.startsWith(`/api/vault/history/${h.id}`));
+      if (snapshot && p === `/api/vault/history/${snapshot.id}` && m === "GET") return binary(res, snapshot.bytes);
+      if (snapshot && p === `/api/vault/history/${snapshot.id}/restore` && m === "POST") {
+        archive("_before_rollback"); store.bytes = snapshot.bytes; store.version++;
+        return json(res, 200, { ok: true, metadata: metadata() });
+      }
+      const conflict = store.conflicts.find((c) => p === `/api/vault/conflicts/${c.id}`);
+      if (conflict && m === "GET") return binary(res, conflict.bytes);
+      if (conflict && m === "DELETE") { store.conflicts = store.conflicts.filter((c) => c !== conflict); return json(res, 200, { ok: true }); }
       if (p === "/api/devices" && m === "GET") return json(res, 200, store.devices);
       if (p.startsWith("/api/devices/") && m === "DELETE") { store.devices = store.devices.filter((d) => `/api/devices/${d.id}` !== p); return json(res, 200, { ok: true }); }
       if (p.startsWith("/api/devices/") && m === "PATCH") {

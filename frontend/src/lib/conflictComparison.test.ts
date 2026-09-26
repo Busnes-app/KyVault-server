@@ -93,3 +93,23 @@ test("recovering an unprotected title keeps it unprotected", async () => {
   assert.equal(typeof copy.fields.get("Title"), "string");
   assert.equal(copy.fields.get("Title"), "Plain (recovered)");
 });
+
+test("rows cover both directions and recovery prefers the original folder", async () => {
+  const key = new Uint8Array(32).fill(12);
+  const current = await KeePassVault.createNew(key);
+  const root = current.getLiveGroups()[0].uuid;
+  const work = current.createGroup("Work", root);
+  const base = { username: "", url: "", notes: "", groupUuid: work.uuid, tags: [], favorite: false, custom: [] };
+  const shared = current.createEntry({ ...base, title: "Shared", password: "a" });
+  const onlyHere = current.createEntry({ ...base, title: "Only here", password: "b" });
+  const conflict = await KeePassVault.open(await current.exportBinary(), key);
+  conflict.deleteEntry(onlyHere.uuid);
+  const onlyThere = conflict.createEntry({ ...base, title: "Only there", password: "c" });
+  const rows = compareConflictEntries(current.getLiveEntries(), conflict.getLiveEntries());
+  assert.deepEqual(rows.map((r) => [r.entry.title, r.side]).sort(), [["Only here", "current"], ["Only there", "conflict"], ["Shared", "conflict"]]);
+  const copy = current.recoverEntryCopy(conflict, onlyThere.uuid, { preferOriginalGroup: true });
+  assert.equal(current.getEntries().find((e) => e.uuid === copy)?.groupUuid, work.uuid);
+  current.deleteGroup(work.uuid);
+  const fallback = current.recoverEntryCopy(conflict, shared.uuid, { preferOriginalGroup: true });
+  assert.equal(current.getEntries().find((e) => e.uuid === fallback)?.groupUuid, root);
+});

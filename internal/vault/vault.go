@@ -590,6 +590,13 @@ func (s *Store) OpenConflict(userID, conflictID string) (io.ReadCloser, error) {
 	return openFileID(s.conflictsDir(userID), conflictID)
 }
 
+// OpenHistory exposes only ciphertext within this user's history directory.
+func (s *Store) OpenHistory(userID, historyID string) (io.ReadCloser, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return openFileID(s.historyDir(userID), historyID)
+}
+
 // DiscardConflict removes a conflict file.
 func (s *Store) DiscardConflict(userID, conflictID string) error {
 	if !validFileID(conflictID) {

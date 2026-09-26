@@ -182,6 +182,24 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (s *Server) handleVaultHistoryDownload(w http.ResponseWriter, r *http.Request, u users.User) {
+	id := r.PathValue("id")
+	rc, err := s.vault.OpenHistory(u.ID, id)
+	if err != nil {
+		if errors.Is(err, vault.ErrNotFound) {
+			http.Error(w, "snapshot not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "failed to open snapshot", http.StatusInternalServerError)
+		}
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/x-keepass2")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.Copy(w, rc)
+	s.record(r, "vault.snapshot_downloaded", u.ID, "", clientIP(r), "downloaded snapshot "+id)
+}
+
 func (s *Server) handleVaultConflicts(w http.ResponseWriter, r *http.Request, u users.User) {
 	conflicts, err := s.vault.ListConflicts(u.ID)
 	if err != nil {

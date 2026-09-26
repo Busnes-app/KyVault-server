@@ -192,6 +192,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/vault/upload", s.withAuth(s.handleVaultUpload))
 	mux.HandleFunc("PUT /api/vault/envelopes", s.withAuth(s.handleVaultEnvelopes))
 	mux.HandleFunc("GET /api/vault/history", s.withAuth(s.handleVaultHistory))
+	mux.HandleFunc("GET /api/vault/history/{id}", s.withAuth(s.handleVaultHistoryDownload))
 	mux.HandleFunc("POST /api/vault/history/{id}/restore", s.withAuth(s.handleVaultHistoryRestore))
 	mux.HandleFunc("GET /api/vault/conflicts", s.withAuth(s.handleVaultConflicts))
 	mux.HandleFunc("GET /api/vault/conflicts/{id}", s.withAuth(s.handleVaultConflictDownload))

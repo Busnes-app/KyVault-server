@@ -1339,6 +1339,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       {showHistory ? (
         <HistoryModal
           allowRollback={saveState.kind === "saved" && !draftDirty}
+          snapshot={{ vault, vaultKey }}
           recovery={{ vault, vaultKey, onRecovered: (uuid) => {
             onChanged();
             refreshVaultData();

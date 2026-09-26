@@ -161,6 +161,11 @@ function sameTagSet(a: string[], b: string[]): boolean {
   return sortedA.every((t, i) => t === sortedB[i]);
 }
 
+// A vault or snapshot encrypted under a different (for example rotated-out) vault key.
+export function isWrongVaultKey(err: unknown): boolean {
+  return err instanceof KdbxError && err.code === Consts.ErrorCodes.InvalidKey;
+}
+
 export class KeePassVault {
   private db: kdbxweb.Kdbx;
   private credentials: kdbxweb.Credentials;
@@ -235,12 +240,16 @@ export class KeePassVault {
   // Copy the full native entry, including history, binaries and unknown fields.
   // A new UUID avoids replacing a newer edit or reviving a current tombstone, unless
   // keepUuid is set (only ever called after the caller has checked the UUID is free).
-  public recoverEntryCopy(source: KeePassVault, uuid: string, options?: { keepUuid?: boolean; into?: kdbxweb.KdbxGroup }): string {
+  // preferOriginalGroup lands the copy in the live folder with the source folder's UUID.
+  public recoverEntryCopy(source: KeePassVault, uuid: string,
+    options?: { keepUuid?: boolean; into?: kdbxweb.KdbxGroup; preferOriginalGroup?: boolean }): string {
     const entry = source.findEntry(uuid);
     if (!entry?.parentGroup || source.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
       throw new Error("Select a live entry from the conflict.");
     }
-    const destination = options?.into ?? this.db.getDefaultGroup();
+    const originalId = entry.parentGroup.uuid.toString();
+    const original = options?.preferOriginalGroup && !this.recycledGroupIds().has(originalId) ? this.findGroup(originalId) : undefined;
+    const destination = options?.into ?? original ?? this.db.getDefaultGroup();
     if (this.recycledGroupIds().has(destination.uuid.toString())) throw new Error("No live vault folder is available.");
     // kdbxweb imports icons by UUID. Preserve current icons when another client reused
     // the UUID with different data; give the recovered copy its own icon identity.

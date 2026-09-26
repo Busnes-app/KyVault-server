@@ -273,20 +273,34 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Version History → Preserved Conflicts downloads an owner-scoped encrypted conflict and
   opens it locally with the unlocked key. Compare live entries by UUID across title,
   username, password, URL, notes and TOTP; other fields/history/attachments are not compared.
-  Recover as copy imports the complete native entry into the top-level live folder with a
+  Rows cover both directions: conflict entries (recoverable) and entries only in the open vault
+  (listed, never recovered). Recover as copy imports the complete native entry into the live
+  folder with the source folder's UUID when it exists and is not recycled, else the top-level
+  folder (`recoverEntryCopy` `preferOriginalGroup`), with a
   fresh UUID and title suffix, preserving title protection, unknown fields, binaries and history. Remap imported
   icon collisions so existing icons cannot change. Never overwrite an existing entry or delete
   the conflict automatically. Use ordinary version-checked autosave; rollback and conflict discard
   stay disabled while recovery edits are unsaved. Close/lock cancels transport and ignores late decryption.
   `conflictComparison.test.ts` checks comparison identity, protected fields and full encrypted
-  import preservation. Shared `getEntries()` reads every protected standard field as text.
+  import preservation, both directions and original-folder recovery. Shared `getEntries()` reads every protected standard field as text.
+- `frontend/src/components/HistoryModal.tsx` and `lib/vaultDiff.ts`: while unlocked (VaultPage passes
+  `snapshot`), Preview downloads `GET /api/vault/history/{id}`, opens it in the browser with the
+  current key and shows entry/folder counts plus `diffVaults` (titles and field labels only, in
+  React state, dropped on close, lock or key change). Unlocked Rollback runs that preview first
+  and confirms with the counts; a snapshot the current key cannot open (`isWrongVaultKey`, i.e.
+  saved before a key rotation) is labelled "Saved under a previous vault key" and Rollback is
+  refused, as is any snapshot that fails to open. Rollback from the locked screen has no key and
+  cannot check this. `vaultDiff.test.ts` pins the diff and the InvalidKey signal.
 - `GET /api/vault/conflicts/{id}` returns ciphertext only to the owning authenticated user,
   with no-store caching and a download audit event identifying the validated conflict ID. `Store.OpenConflict` validates a flat
   filename and uses `os.OpenInRoot` to prevent escaping symlinks. Discard shares filename
   validation. API/store tests cover anonymous/cross-user access, traversal, symlinks and
   read-only retrieval. Recoveries do not bypass If-Match or server conflict preservation.
-  History rollback ids are validated like conflict ids (shared `openFileID`) before any path
-  use; a path-shaped or symlinked id is 404 and changes nothing (`history_restore_id_test.go`).
+- `GET /api/vault/history/{id}` returns snapshot ciphertext to the owner with no-store and a
+  `vault.snapshot_downloaded` audit row. Conflict and history ids share `validFileID` and
+  `openFileID` (`os.OpenInRoot`, regular files only); `RestoreHistory` uses the same opener, so
+  path-shaped, missing or symlinked ids are 404 and change nothing (it previously joined the raw
+  id, letting `../../<user>/vault` copy another user's ciphertext). `history_download_test.go`.
 
 - `frontend/src/lib/kdbx.ts` recycle helpers identify the bin and descendants by metadata
   UUID. `VaultPage` excludes them from All Items and folder selectors and offers a read-only
