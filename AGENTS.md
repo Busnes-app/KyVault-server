@@ -210,7 +210,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
-- `extension/` — Chrome and Firefox MV3 extension; pairs as a device, unlocks with
+- `extension/`: Chrome and Firefox MV3 extension; pairs as a device, unlocks with
   the master password in the browser, fills on click. See `extension/AGENTS.md`.
 
 - `frontend/src/lib/kdbx.ts` and `frontend/src/pages/VaultPage.tsx`: selected live
