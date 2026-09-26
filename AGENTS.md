@@ -144,7 +144,7 @@ the user's, not the directory's.
 
 ## Verification
 
-- Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`
+- Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`. Run them before `npm ci` in `extension/`: a Go package inside `extension/node_modules` is otherwise picked up by `go vet ./...`.
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
 - UI without KySignOn: `npm run dev:mock` in `frontend/` serves the app with an in-process mock of the API (`frontend/mock/api.ts`, dev only, never built) for manual and screenshot checks.
 - Extension: `npm test && npm run build && npm run lint` in `extension/` (`build` runs `tsc` first, so it is the typecheck gate too; `lint` is `web-ext lint --source-dir dist/firefox` and must report 0 errors). See `extension/AGENTS.md`.

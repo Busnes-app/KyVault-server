@@ -27,10 +27,13 @@ test("chrome background is a service worker only; firefox background is scripts 
   // (BACKGROUND_SERVICE_WORKER_IGNORED), so each browser gets only its own key.
   const chrome = chromeManifest();
   assert.equal(chrome.background.service_worker, "background.js");
+  // Pinned floors: changing either changes which browsers the extension claims to support.
+  assert.equal(chrome.minimum_chrome_version, "120");
   assert.equal("scripts" in chrome.background, false);
   const ff = firefoxManifest();
   assert.deepEqual(ff.background.scripts, ["background.js"]);
   assert.equal("service_worker" in ff.background, false);
   assert.equal(ff.browser_specific_settings.gecko.id, "kyvault@busnes.app");
+  assert.equal(ff.browser_specific_settings.gecko.strict_min_version, "128.0");
   assert.deepEqual(ff.browser_specific_settings.gecko.data_collection_permissions, { required: ["none"] });
 });

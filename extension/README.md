@@ -95,10 +95,14 @@ Not automated; both stores are manual uploads.
 - Privacy tab: no user data collected.
 - Permission justifications:
   - `storage`: server origin, session token, device name and settings.
-  - `alarms`: periodic session/vault refresh.
+  - `alarms`: lock the vault after the idle window and clear a copied secret
+    from the clipboard after 30 seconds.
   - `activeTab`: read the current tab's URL to match vault entries.
   - `scripting`: inject the fill script only after a click in the popup.
-  - `offscreen`: run WebCrypto/Argon2id work outside the service worker.
+  - `clipboardWrite`: copy a username, password or TOTP code after a click in
+    the popup.
+  - `offscreen`: open a hidden page that overwrites the clipboard 30 seconds
+    after a copy, since the service worker has no clipboard access.
   - Optional host access: reach the KyVault server the user pairs with.
 
 ### Firefox (AMO)
