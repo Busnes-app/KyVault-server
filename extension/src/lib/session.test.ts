@@ -53,6 +53,9 @@ test("a server that never answers times out with a sentence", async () => {
     timeoutMs: 20,
     fetch: (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+      // AbortSignal.timeout's timer is unref'd in Node; a real timer keeps the event loop
+      // alive on a slow runner and fails the same way the browser would.
+      setTimeout(() => reject(new DOMException("The operation timed out.", "TimeoutError")), 30);
     }),
   };
   await assert.rejects(serverFetch(fake, "/api/vault/kdbx", { method: "GET" }), /did not answer in time/);
