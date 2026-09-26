@@ -333,9 +333,12 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
   const handleRevokeAllOthers = async () => {
     if (revoking) return;
+    const hasCurrent = devices.some((d) => d.current);
     if (!await dialogs.confirm({
       title: "Revoke every other device?",
-      message: "Each paired app and extension except this one is signed out and must pair again. Your vault data is not changed.",
+      message: hasCurrent
+        ? "Each paired app and extension except this one is signed out and must pair again. Your vault data is not changed."
+        : "Every paired app and extension is signed out. Your vault data is not changed.",
       confirmLabel: "Revoke all",
       danger: true,
     })) return;
@@ -344,7 +347,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setMessage("");
     try {
       const failed = await revokeDevices(others.map((d) => d.id), (id) => deleteJSON(`/api/devices/${id}`));
-      setDevices((prev) => prev.filter((d) => d.current || failed.includes(d.id)));
+      await loadDevices();
       setMessage(failed.length ? "Some devices could not be signed out. Try again." : "Every other device has been signed out.");
     } catch (err) {
       setError(toErrorMessage(err, "Failed to revoke other devices"));

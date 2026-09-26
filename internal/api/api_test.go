@@ -302,6 +302,23 @@ func TestDeviceRename(t *testing.T) {
 	}
 }
 
+// TestStartSessionRefusesGoneDevice pins that a session cannot be minted for a device
+// that no longer exists, e.g. one revoked between RedeemPairing and startSessionWithToken.
+// Without this check the minted session's DeviceID would name nothing a later revoke
+// could find, leaving a bearer token no revoke could ever end.
+func TestStartSessionRefusesGoneDevice(t *testing.T) {
+	srv := newTestServer(t)
+	u, err := srv.users.CreateSSOUser("hank", users.RoleUser, "sub-hank", "hank", "hank@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sso.Identity{Issuer: "https://kysignon.test", ClientID: "kyvault-app", Subject: u.SSOSub, SessionID: "sid-hank", IssuedAt: time.Now().UTC()}
+
+	if _, err := srv.startSessionWithToken(u.ID, "device-that-does-not-exist", id); err == nil {
+		t.Fatal("expected an error minting a session for a nonexistent device")
+	}
+}
+
 func TestSSOCallbackAutoProvisions(t *testing.T) {
 	srv := newTestServer(t)
 	idp := mockIdP(t, map[string]any{"sub": "kysignon-sub-999", "email": "dave@urlxl.com", "preferred_username": "dave", "role": "admin"})

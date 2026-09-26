@@ -114,6 +114,11 @@ func (s *Server) startSessionWithToken(userID, deviceID string, id sso.Identity)
 	if s.logouts.Fenced(id, time.Now().UTC()) {
 		return "", errLoginFenced
 	}
+	if deviceID != "" {
+		if _, err := s.devices.Get(deviceID); err != nil {
+			return "", fmt.Errorf("device is gone: %w", err)
+		}
+	}
 
 	tokBytes := randomHex(24)
 	csrfBytes := randomHex(24)
