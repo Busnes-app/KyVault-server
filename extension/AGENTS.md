@@ -51,3 +51,24 @@ checks.
 
 - `src/manifest.ts` and `src/manifest.test.ts`: the manifest source and its
   MV3 permission/CSP/background-shape test (Task 1).
+- `src/lib/serverUrl.ts`, `src/lib/pairing.ts`, `src/lib/settings.ts`,
+  `src/messages.ts`, `src/options/main.ts`, `src/background.ts` (Task 2):
+  pairing from the options page. `parseServerOrigin` accepts only a bare
+  `https:` origin (no user/password, path dropped). The options page runs
+  `parseServerOrigin` then `ext.permissions.request` then the redeem fetch
+  all inside the Pair button's click handler, with no `await` before the
+  permission request other than parsing the typed address — Chrome and
+  Firefox refuse `permissions.request` outside a user gesture, and a gesture
+  does not survive a hop through `runtime.sendMessage`. On success the
+  options page writes `serverOrigin`, `sessionToken`, `deviceId`,
+  `deviceName` to `storage.local` itself (the only place those four keys are
+  written) and sends `{type: "paired"}` so the background worker clears
+  `storage.session`. Unpair sends `{type: "unpair"}`: the background worker
+  makes a best-effort `DELETE /api/devices/{id}` with the bearer token, then
+  clears the four pairing keys (keeping the `autoLockMinutes` preference),
+  clears `storage.session`, and releases the granted host permission. The
+  device stays listed in Security, then Devices, until revoked there — the
+  options page says so. `{type: "status"}` reports `paired`/`unlocked`/
+  `serverOrigin`/`deviceName` from `storage.local`. `serverUrl.test.ts` and
+  `pairing.test.ts` are the plan's pinned tests; `pairing.ts`'s `PairIO` is
+  the seam that lets them run without a browser.
