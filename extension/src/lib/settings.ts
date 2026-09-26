@@ -33,3 +33,9 @@ export async function saveSettings(patch: Partial<Settings>): Promise<void> {
 export async function clearSettings(): Promise<void> {
   await ext.storage.local.remove(PAIR_KEYS as unknown as string[]);
 }
+
+// A 401 means the server revoked this device. Keep serverOrigin and deviceName so
+// pairing again is one field.
+export async function forgetSession(): Promise<void> {
+  await ext.storage.local.remove(["sessionToken", "deviceId"]);
+}

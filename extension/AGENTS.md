@@ -72,3 +72,36 @@ checks.
   `serverOrigin`/`deviceName` from `storage.local`. `serverUrl.test.ts` and
   `pairing.test.ts` are the plan's pinned tests; `pairing.ts`'s `PairIO` is
   the seam that lets them run without a browser.
+- `src/lib/session.ts`, `src/lib/lock.ts`, `src/lib/vaultState.ts`,
+  `src/background.ts`, `src/popup/` (Task 3): unlock and idle lock.
+  State model:
+  - Worker memory: the open `KeePassVault`, its version and checksum. The
+    unwrapped key bytes exist only for one `KeePassVault.open` call and are
+    zeroed after it. The password is used once for
+    `unwrapVaultKeyFromEnvelopes` and dropped; it is never stored or logged.
+  - `storage.session` (default access level, trusted contexts only): `keyHex`
+    and `lockAt`. Cleared on lock and by the browser on exit.
+  - `storage.local`: only the allowlist above; `autoLockMinutes` is the idle
+    window. `session.test.ts` fails if any file but `lib/settings.ts` calls
+    `storage.local.`, if `keyHex` appears outside `vaultState.ts`, or if
+    anything calls `setAccessLevel`.
+  Unlock: metadata, envelope unwrap, `GET /api/vault/kdbx`, `KeePassVault.open`
+  with the hex credential; the version comes from the kdbx response's
+  `X-Vault-Version`. `InvalidKey` after a good unwrap means the key was
+  rotated elsewhere: lock and say so. Lock rules: `lockAt = now + minutes`,
+  armed as alarm `lock`; every message runs `status()` first, which locks when
+  `isLocked` says so by the clock (a missed alarm cannot extend the window, and
+  a deadline further ahead than the window plus a minute means the clock went
+  backwards, so it locks). `ensure` (the popup's open, later `entries`) extends
+  the deadline and, after worker eviction, reopens from `keyHex` without the
+  password. `lock()` bumps a generation so an unlock in flight cannot commit
+  after it. 401 rule: `serverFetch` calls `forgetSession` (drops
+  `sessionToken` and `deviceId`, keeps `serverOrigin` and `deviceName`),
+  the state locks, and the popup shows the revoked sentence with an options
+  link. Every request goes through `serverFetch`: bearer header,
+  `credentials: "omit"`, `redirect: "error"`, `cache: "no-store"`, a 120 s
+  timeout, and the stored origin re-checked as bare `https:`. The background
+  answers only its own extension pages (`sender.url` under
+  `runtime.getURL("")`). The popup imports `frontend/src/ky-ui/tokens.css`
+  for the Busnes themes. `vaultState.test.ts` holds the one real crypto round
+  trip (Argon2id envelope, Argon2d KDBX) plus the state machine on fakes.

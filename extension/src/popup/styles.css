@@ -1,0 +1,44 @@
+@import "../../../frontend/src/ky-ui/tokens.css";
+
+body {
+  width: 360px;
+  margin: 0;
+  background: var(--ky-bg);
+  color: var(--ky-ink-strong);
+  font: 14px/1.4 var(--ky-font-sans);
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ky-line);
+}
+h1 { flex: 1; margin: 0; font-size: 15px; }
+main, form { display: grid; gap: 10px; }
+main { padding: 14px; }
+p { margin: 0; }
+label { font-weight: 600; }
+input {
+  padding: 8px;
+  border: 1px solid var(--ky-line-strong);
+  border-radius: var(--ky-radius);
+  background: var(--ky-panel);
+  color: var(--ky-ink-strong);
+  font: inherit;
+}
+input:focus-visible, button:focus-visible { outline: 2px solid var(--ky-accent); outline-offset: 1px; }
+button {
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--ky-radius);
+  background: var(--ky-accent);
+  color: var(--ky-button-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.6; cursor: default; }
+header button { padding: 4px 10px; }
+.muted { color: var(--ky-ink-muted); }
+.error { color: var(--ky-danger); }
