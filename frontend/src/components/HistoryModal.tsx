@@ -1,7 +1,7 @@
 import { ConflictComparison } from "./ConflictComparison";
 import { KeePassVault, isWrongVaultKey } from "../lib/kdbx";
 import { useState, useEffect, useRef } from "react";
-import { getBinary, getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
+import { HttpError, getBinary, getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { diffVaults, type DiffRow, type VaultDiff } from "../lib/vaultDiff";
 import { RotateCcw, AlertTriangle, Trash2, CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { Dialog } from "./Dialog";
@@ -13,6 +13,8 @@ type HistoryEntry = {
   sizeBytes: number;
   checksum: string;
   timestamp: string;
+  // Older than the last key rotation; the server refuses rollback to it.
+  staleKey?: boolean;
 };
 
 type ConflictEntry = {
@@ -77,6 +79,8 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     try {
       const bytes = await getBinary(`/api/vault/history/${encodeURIComponent(id)}`, controller.signal);
       const opened = await KeePassVault.open(bytes, snapshot.vaultKey);
+      // Closed or locked while decrypting: nothing may continue to a confirm or restore.
+      if (controller.signal.aborted) throw new Error("preview cancelled");
       result = {
         kind: "ready",
         diff: diffVaults(snapshot.vault.getLiveEntries(), opened.getLiveEntries()),
@@ -120,7 +124,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
   }, []);
 
   const restoreSnapshot = async (id: string) => {
-    if (!allowRollback || busyId !== null) return;
+    if (!allowRollback || busyId !== null || history.find((h) => h.id === id)?.staleKey) return;
     // While unlocked, only a snapshot the current key opens can be rolled back to.
     let preview = previews[id];
     if (snapshot && preview?.kind !== "ready") {
@@ -146,7 +150,12 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
       onNotice("Vault restored to the selected version.");
       onRestored();
     } catch (err) {
-      setError(toErrorMessage(err, "Failed to restore snapshot"));
+      if (err instanceof HttpError && err.status === 409) {
+        setHistory((prev) => prev.map((h) => h.id === id ? { ...h, staleKey: true } : h));
+        setError(OLD_KEY_REASON);
+      } else {
+        setError(toErrorMessage(err, "Failed to restore snapshot"));
+      }
     } finally {
       setBusyId(null);
     }
@@ -223,9 +232,10 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
               {history.map((h) => {
                 const preview = previews[h.id];
-                const refused = snapshot && (preview?.kind === "oldKey" || preview?.kind === "error");
-                const rollbackReason = !allowRollback ? "Save or discard your unsaved edits first."
-                  : preview?.kind === "oldKey" ? OLD_KEY_REASON
+                const oldKey = h.staleKey || preview?.kind === "oldKey";
+                const refused = oldKey || (snapshot && preview?.kind === "error");
+                const rollbackReason = oldKey ? OLD_KEY_REASON
+                  : !allowRollback ? "Save or discard your unsaved edits first."
                   : preview?.kind === "error" ? "This snapshot could not be opened with the current vault key."
                   : undefined;
                 return (
@@ -247,7 +257,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
                       {new Date(h.timestamp).toLocaleString()} • {(h.sizeBytes / 1024).toFixed(1)} KB • Checksum:{" "}
                       <code className="font-mono">{h.checksum.slice(0, 8)}</code>
                     </div>
-                    {preview?.kind === "oldKey" ? (
+                    {oldKey ? (
                       <div style={{ color: "var(--warning)", fontSize: "0.8rem", marginTop: "0.2rem" }}>Saved under a previous vault key</div>
                     ) : null}
                   </div>

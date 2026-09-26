@@ -6,11 +6,12 @@ export type SaveState =
   | { kind: "saving"; version: number }
   | { kind: "error"; version: number; message: string; conflict?: boolean };
 
-export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal): Promise<number> {
+export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false): Promise<number> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     "If-Match": `"${version}"`,
   };
+  if (keyRotated) headers["X-Vault-Key-Rotated"] = "1";
   if (passwordEnvelope) headers["X-Password-Envelope"] = passwordEnvelope;
   if (recoveryEnvelope) headers["X-Recovery-Envelope"] = recoveryEnvelope;
   const data = await requestJSON<unknown>("/api/vault/upload", { method: "POST", headers, body: binary, signal });

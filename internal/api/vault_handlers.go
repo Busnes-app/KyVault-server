@@ -108,7 +108,15 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		return
 	}
 
-	meta, err := s.vault.SaveVault(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+	save := s.vault.SaveVault
+	if r.Header.Get("X-Vault-Key-Rotated") == "1" {
+		save = s.vault.RotateVault
+	}
+	meta, err := save(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+	if errors.Is(err, vault.ErrRotationEnvelopes) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		var confErr *vault.ConflictError
 		if errors.As(err, &confErr) {
@@ -166,6 +174,10 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 	}
 
 	meta, err := s.vault.RestoreHistory(u.ID, id)
+	if errors.Is(err, vault.ErrStaleKey) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "This snapshot was saved under a previous vault key. The current key cannot open it, so it cannot be rolled back to."})
+		return
+	}
 	if errors.Is(err, vault.ErrNotFound) {
 		http.Error(w, "snapshot not found", http.StatusNotFound)
 		return

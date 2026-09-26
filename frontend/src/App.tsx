@@ -6,7 +6,7 @@ import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinut
 import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
-import { rotateAndUpload, RotationUnconfirmedError } from "./lib/keyRotation";
+import { rotateAndUpload, RotationUnconfirmedError, uploadRotatedVault } from "./lib/keyRotation";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
@@ -334,7 +334,7 @@ export function App() {
         if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
         const version = queue.getSnapshot().version;
         return rotateAndUpload(live, oldKey, password, paperCode, version, {
-          upload: (binary, pw, rec) => uploadVault(binary, version, pw, rec),
+          upload: (binary, pw, rec) => uploadRotatedVault(binary, version, pw, rec),
           metadata: () => getJSON("/api/vault/metadata"),
         });
       });

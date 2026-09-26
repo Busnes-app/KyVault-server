@@ -3,14 +3,14 @@ import type { Plugin } from "vite";
 import { createHash } from "node:crypto";
 
 type Store = {
-  version: number; bytes: Buffer | null; passwordEnvelope?: string; recoveryEnvelope?: string;
+  version: number; keyEpochSince: number; bytes: Buffer | null; passwordEnvelope?: string; recoveryEnvelope?: string;
   history: Array<{ id: string; version: number; sizeBytes: number; checksum: string; timestamp: string; bytes: Buffer }>;
   conflicts: Array<{ id: string; expectedVersion: number; deviceId: string; sizeBytes: number; timestamp: string; bytes: Buffer }>;
   devices: Array<{ id: string; name: string; platform: string; lastSeenAt: string; lastIp: string; current: boolean }>;
 };
 
 export function mockApi(): Plugin {
-  const store: Store = { version: 0, bytes: null, history: [], conflicts: [], devices: [
+  const store: Store = { version: 0, keyEpochSince: 0, bytes: null, history: [], conflicts: [], devices: [
     { id: "dev-1", name: "Pixel 9", platform: "android", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.7", current: false },
     { id: "dev-2", name: "Firefox extension", platform: "browser", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.8", current: false },
   ] };
@@ -57,8 +57,11 @@ export function mockApi(): Plugin {
           store.conflicts.unshift({ id, expectedVersion: expected, deviceId: "web", sizeBytes: body.length, timestamp: new Date().toISOString(), bytes: body });
           return json(res, 409, { error: "conflict", currentVersion: store.version, expectedVersion: expected, conflictId: id });
         }
+        const rotated = req.headers["x-vault-key-rotated"] === "1";
+        if (rotated && !(req.headers["x-password-envelope"] && req.headers["x-recovery-envelope"])) return json(res, 400, { error: "a key rotation must carry both new envelopes" });
         archive();
         store.bytes = body; store.version++;
+        if (rotated) store.keyEpochSince = store.version;
         const env = req.headers["x-password-envelope"]; if (typeof env === "string" && env) store.passwordEnvelope = env;
         const rec = req.headers["x-recovery-envelope"]; if (typeof rec === "string" && rec) store.recoveryEnvelope = rec;
         return json(res, 200, { ok: true, metadata: metadata() });
@@ -69,11 +72,12 @@ export function mockApi(): Plugin {
         if (body.recoveryEnvelope) store.recoveryEnvelope = body.recoveryEnvelope;
         return json(res, 200, { ok: true });
       }
-      if (p === "/api/vault/history") return json(res, 200, listed(store.history));
+      if (p === "/api/vault/history") return json(res, 200, listed(store.history).map((h) => ({ ...h, staleKey: h.version < store.keyEpochSince })));
       if (p === "/api/vault/conflicts") return json(res, 200, listed(store.conflicts));
       const snapshot = store.history.find((h) => p.startsWith(`/api/vault/history/${h.id}`));
       if (snapshot && p === `/api/vault/history/${snapshot.id}` && m === "GET") return binary(res, snapshot.bytes);
       if (snapshot && p === `/api/vault/history/${snapshot.id}/restore` && m === "POST") {
+        if (snapshot.version < store.keyEpochSince) return json(res, 409, { error: "This snapshot was saved under a previous vault key. The current key cannot open it, so it cannot be rolled back to." });
         archive("_before_rollback"); store.bytes = snapshot.bytes; store.version++;
         return json(res, 200, { ok: true, metadata: metadata() });
       }

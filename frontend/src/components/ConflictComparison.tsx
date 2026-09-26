@@ -87,7 +87,7 @@ export function ConflictComparison({ conflictId, current, vaultKey, onRecovered,
         <tbody>{comparisonFields.map(([key, label]) => <tr key={key}>
           <th scope="row">{label}{selected.changedFields.some(([changed]) => changed === key) ? " (changed)" : ""}</th>
           {[selected.current, selected.side === "conflict" ? selected.entry : undefined].map((entry, index) => <td key={index} style={{ whiteSpace: "pre-wrap", padding: "0.5rem" }}>
-            {!entry ? (index === 0 ? "Not in live vault" : "Not in the conflict") : (key === "password" || key === "totpSeed") && !reveal && entry[key] ? "••••••••" : entry[key] || "—"}
+            {!entry ? (index === 0 ? "Not in live vault" : "Not in the conflict") : (key === "password" || key === "totpSeed") && !reveal && entry[key] ? "••••••••" : entry[key] || "(empty)"}
           </td>)}
         </tr>)}</tbody>
       </table>

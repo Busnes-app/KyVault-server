@@ -1,6 +1,7 @@
 import { HttpError } from "./api";
 import type { KeePassVault } from "./kdbx";
 import { generateVaultMasterKey, wrapVaultKey } from "./vaultCrypto";
+import { uploadVault } from "./vaultSave";
 
 // In memory only: the live vault now saves under the new key. The caller must send the
 // binary and both envelopes in ONE upload, and call vault.rekey(oldKey) if that fails.
@@ -10,6 +11,12 @@ export async function rotateVaultKey(vault: KeePassVault, password: string, pape
   const binary = await vault.exportBinary();
   const [passwordEnvelope, recoveryEnvelope] = await Promise.all([wrapVaultKey(key, password), wrapVaultKey(key, paperCode)]);
   return { key, binary, passwordEnvelope, recoveryEnvelope };
+}
+
+// The server records this upload's version as the new key epoch and refuses rollback to
+// anything older, so no client can restore a snapshot the new key cannot open.
+export function uploadRotatedVault(binary: ArrayBuffer, version: number, passwordEnvelope: string, recoveryEnvelope: string): Promise<number> {
+  return uploadVault(binary, version, passwordEnvelope, recoveryEnvelope, undefined, true);
 }
 
 type RotationIO = {

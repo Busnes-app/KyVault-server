@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { KeePassVault } from "./kdbx";
 import { unwrapVaultKey } from "./vaultCrypto";
-import { rotateVaultKey, rotateAndUpload, revokeDevices, RotationUnconfirmedError } from "./keyRotation";
+import { rotateVaultKey, rotateAndUpload, revokeDevices, RotationUnconfirmedError, uploadRotatedVault } from "./keyRotation";
 import { generatePaperCode } from "./paperCode";
 import { HttpError } from "./api";
 
@@ -110,4 +110,19 @@ test("device revocation is best effort, idempotent and treats 404 as done", asyn
   });
   assert.deepEqual(seen, ["a", "b", "c"], "one failure does not stop the rest");
   assert.deepEqual(failed, ["c"]);
+});
+
+test("the rotation upload carries both envelopes and the key-rotated flag in one request", async (t) => {
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { cookie: "csrf_token=test-csrf" } });
+  t.after(() => { Reflect.deleteProperty(globalThis, "document"); });
+  const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({ metadata: { version: 8 } }));
+  assert.equal(await uploadRotatedVault(new ArrayBuffer(4), 7, "pw-env", "rec-env"), 8);
+  assert.equal(fetch.mock.callCount(), 1);
+  const [url, options] = fetch.mock.calls[0].arguments as [string, RequestInit];
+  const headers = new Headers(options.headers);
+  assert.equal(url, "/api/vault/upload");
+  assert.equal(headers.get("X-Vault-Key-Rotated"), "1");
+  assert.equal(headers.get("If-Match"), '"7"');
+  assert.equal(headers.get("X-Password-Envelope"), "pw-env");
+  assert.equal(headers.get("X-Recovery-Envelope"), "rec-env");
 });
