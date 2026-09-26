@@ -164,19 +164,24 @@ func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request, u us
 		return
 	}
 
-	_ = s.devices.Revoke(deviceID)
-	_ = s.vault.RemoveDeviceEnvelope(u.ID, deviceID)
+	s.revokeDevice(r, dev, "revoked device "+dev.Name)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// revokeDevice deletes the device, its vault envelope and every session it holds.
+func (s *Server) revokeDevice(r *http.Request, dev devices.Device, details string) {
+	_ = s.devices.Revoke(dev.ID)
+	_ = s.vault.RemoveDeviceEnvelope(dev.UserID, dev.ID)
 
 	s.sessMu.Lock()
 	for tok, sess := range s.sessions {
-		if sess.DeviceID == deviceID {
+		if sess.DeviceID == dev.ID {
 			delete(s.sessions, tok)
 		}
 	}
 	s.sessMu.Unlock()
 
-	s.record(r, "device.revoked", u.ID, deviceID, clientIP(r), "revoked device "+dev.Name)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	s.record(r, "device.revoked", dev.UserID, dev.ID, clientIP(r), details)
 }
 
 func (s *Server) handleDeviceRename(w http.ResponseWriter, r *http.Request, u users.User) {

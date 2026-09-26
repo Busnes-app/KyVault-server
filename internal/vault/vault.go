@@ -248,8 +248,10 @@ func (s *Store) OpenVault(userID string) (io.ReadCloser, Metadata, error) {
 	return f, meta, nil
 }
 
-// SaveEnvelopes updates the key envelopes without modifying the KDBX file.
-func (s *Store) SaveEnvelopes(userID string, passwordEnvelope, recoveryEnvelope string, deviceEnvelopes map[string]DeviceEnvelope) error {
+// SaveEnvelopes updates the key envelopes without modifying the KDBX file. It returns
+// ErrConflict unless expectedVersion is the current version, so an envelope wrapping a
+// retired key cannot land on a rotated vault.
+func (s *Store) SaveEnvelopes(userID string, expectedVersion int64, passwordEnvelope, recoveryEnvelope string, deviceEnvelopes map[string]DeviceEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -259,6 +261,9 @@ func (s *Store) SaveEnvelopes(userID string, passwordEnvelope, recoveryEnvelope 
 	}
 
 	meta, _ := s.getMetadataLocked(userID)
+	if meta.Version != expectedVersion {
+		return ErrConflict
+	}
 	if passwordEnvelope != "" {
 		meta.PasswordEnvelope = passwordEnvelope
 	}
@@ -427,6 +432,7 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 	}
 	if rotated {
 		nextMeta.KeyEpochSince = newVersion
+		nextMeta.DeviceEnvelopes = make(map[string]DeviceEnvelope)
 	}
 
 	if passwordEnvelope != "" {

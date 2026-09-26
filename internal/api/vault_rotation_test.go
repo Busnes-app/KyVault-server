@@ -107,6 +107,7 @@ func TestRotationWatermarkFlagsAndRefusesOlderSnapshots(t *testing.T) {
 	// Password change: rewraps the same key through the envelopes route.
 	put := httptest.NewRequest(http.MethodPut, "/api/vault/envelopes", bytes.NewReader([]byte(`{"passwordEnvelope":"rewrapped"}`)))
 	put.Header.Set("Content-Type", "application/json")
+	put.Header.Set("If-Match", `"4"`)
 	if rec := send(put); rec.Code != http.StatusOK {
 		t.Fatalf("envelope PUT = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -162,5 +163,105 @@ func TestRotationWatermarkFlagsAndRefusesOlderSnapshots(t *testing.T) {
 	}
 	if meta, _ := srv.vault.GetMetadata(user.ID); meta.KeyEpochSince != 3 {
 		t.Fatalf("rollback moved the epoch to %d", meta.KeyEpochSince)
+	}
+}
+
+// A rotation ends every device server-side in the same request. A native device still
+// holding the retired key must not be able to upload over the new-key vault if the
+// rotating tab dies before its own revoke loop runs.
+func TestRotationRevokesEveryDeviceServerSide(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	user, cookie := signedInUser(t, srv, "rotor", users.RoleUser)
+	deviceID, token := pairDeviceForTest(t, handler, cookie)
+	if _, err := srv.vault.SaveVault(user.ID, 0, []byte("old vault"), "old-pw", "old-rec", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if meta, _ := srv.vault.GetMetadata(user.ID); len(meta.DeviceEnvelopes) != 1 {
+		t.Fatalf("device envelope not stored before rotation: %+v", meta.DeviceEnvelopes)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/vault/upload", bytes.NewReader([]byte("new vault")))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("If-Match", `"1"`)
+	req.Header.Set("X-Password-Envelope", "new-pw")
+	req.Header.Set("X-Recovery-Envelope", "new-rec")
+	req.Header.Set("X-Vault-Key-Rotated", "1")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotation upload = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/vault/metadata", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old device token after rotation = %d, want 401", rec.Code)
+	}
+	if devs := srv.devices.ListUserDevices(user.ID); len(devs) != 0 {
+		t.Fatalf("devices after rotation: %+v", devs)
+	}
+	if meta, _ := srv.vault.GetMetadata(user.ID); len(meta.DeviceEnvelopes) != 0 {
+		t.Fatalf("device envelopes after rotation: %+v", meta.DeviceEnvelopes)
+	}
+
+	var revoked, rotated int
+	entries, _ := srv.audit.List(200)
+	for _, e := range entries {
+		switch e.Action {
+		case "device.revoked":
+			if e.DeviceID == deviceID && strings.Contains(e.Details, "key_rotated") {
+				revoked++
+			}
+		case "vault.key_rotated":
+			if strings.Contains(e.Details, "v2") {
+				rotated++
+			}
+		}
+	}
+	if revoked != 1 || rotated != 1 {
+		t.Fatalf("audit: device.revoked(key_rotated)=%d vault.key_rotated=%d, want 1 and 1", revoked, rotated)
+	}
+}
+
+// A password change must name the version it rewrapped against. A stale client would
+// otherwise write an envelope for a retired key over a rotated vault.
+func TestEnvelopePutRequiresCurrentVersion(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	user, cookie := signedInUser(t, srv, "rewrap", users.RoleUser)
+	for i, body := range []string{"v1", "v2"} {
+		if _, err := srv.vault.SaveVault(user.ID, int64(i), []byte(body), "pw", "rec", "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put := func(ifMatch string) int {
+		req := httptest.NewRequest(http.MethodPut, "/api/vault/envelopes", strings.NewReader(`{"passwordEnvelope":"rewrapped"}`))
+		req.Header.Set("Content-Type", "application/json")
+		if ifMatch != "" {
+			req.Header.Set("If-Match", ifMatch)
+		}
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	before, _ := srv.vault.GetMetadata(user.ID)
+	for _, stale := range []string{`"1"`, ""} {
+		if code := put(stale); code != http.StatusConflict {
+			t.Fatalf("envelope PUT with If-Match %q = %d, want 409", stale, code)
+		}
+		if after, _ := srv.vault.GetMetadata(user.ID); after.PasswordEnvelope != "pw" || after.Version != before.Version || !after.UpdatedAt.Equal(before.UpdatedAt) {
+			t.Fatalf("stale envelope PUT changed state: %+v", after)
+		}
+	}
+	if code := put(`"2"`); code != http.StatusOK {
+		t.Fatalf("current envelope PUT = %d", code)
+	}
+	if after, _ := srv.vault.GetMetadata(user.ID); after.PasswordEnvelope != "rewrapped" || after.Version != 2 {
+		t.Fatalf("current envelope PUT stored %+v", after)
 	}
 }
