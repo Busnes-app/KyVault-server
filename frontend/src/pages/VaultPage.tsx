@@ -362,13 +362,23 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     }
   };
 
+  // Folder names may contain "/", so descendants must be found by walking parentUuid
+  // links rather than matching on rendered path strings.
+  const isDescendant = (uuid: string, ancestor: string): boolean => {
+    const byId = new Map(groups.map((g) => [g.uuid, g]));
+    for (let cur = byId.get(uuid); cur; cur = cur.parentUuid ? byId.get(cur.parentUuid) : undefined) {
+      if (cur.uuid === ancestor) return true;
+    }
+    return false;
+  };
+
   const handleMoveGroup = async () => {
     if (!selectedFolder) return;
     const root = groups[0];
     const options = [
       { value: root.uuid, label: root.name },
       ...groups.filter((g) => g.uuid !== root.uuid && g.uuid !== selectedFolder.uuid &&
-        !g.path.startsWith(`${selectedFolder.path} / `)).map((g) => ({ value: g.uuid, label: g.path })),
+        !isDescendant(g.uuid, selectedFolder.uuid)).map((g) => ({ value: g.uuid, label: g.path })),
     ];
     const target = await dialogs.choose({
       title: "Move folder",
@@ -390,7 +400,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const handleDeleteGroup = async () => {
     if (!selectedFolder) return;
     const subtreeIds = new Set(groups.filter((g) => g.uuid === selectedFolder.uuid ||
-      g.path.startsWith(`${selectedFolder.path} / `)).map((g) => g.uuid));
+      isDescendant(g.uuid, selectedFolder.uuid)).map((g) => g.uuid));
     const count = entries.filter((e) => !recycledIds.has(e.uuid) && subtreeIds.has(e.groupUuid)).length;
     const recycling = vault.recyclingEnabled;
     const ok = await dialogs.confirm({
