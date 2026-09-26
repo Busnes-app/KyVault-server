@@ -525,6 +525,36 @@ export class KeePassVault {
     return true;
   }
 
+  private assertMovableGroup(uuid: string): kdbxweb.KdbxGroup {
+    const group = this.findGroup(uuid);
+    if (!group) throw new Error("This folder is no longer available.");
+    if (group === this.db.getDefaultGroup()) throw new Error("The root folder cannot be changed.");
+    if (this.recycledGroupIds().has(uuid)) throw new Error("Choose a folder in the live vault.");
+    return group;
+  }
+
+  // Recycling keeps the folder tree intact inside the bin, so Restore works per entry.
+  public deleteGroup(uuid: string): number {
+    const group = this.assertMovableGroup(uuid);
+    const count = [...group.allEntries()].length;
+    if (this.recyclingEnabled) this.db.createRecycleBin();
+    this.db.remove(group);
+    return count;
+  }
+
+  public moveGroup(uuid: string, newParentUuid: string): boolean {
+    const group = this.assertMovableGroup(uuid);
+    const target = this.findGroup(newParentUuid);
+    if (!target || this.recycledGroupIds().has(newParentUuid)) throw new Error("Choose a live folder to move into.");
+    for (let p: kdbxweb.KdbxGroup | undefined = target; p; p = p.parentGroup) {
+      if (p === group) throw new Error("A folder cannot be moved inside itself.");
+    }
+    if (group.parentGroup === target) return false;
+    this.db.move(group, target);
+    group.times.update();
+    return true;
+  }
+
   private findEntry(uuid: string): kdbxweb.KdbxEntry | undefined {
     for (const e of this.db.getDefaultGroup().allEntries()) {
       if (e.uuid.toString() === uuid) {

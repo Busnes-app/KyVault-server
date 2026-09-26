@@ -224,6 +224,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   no save revision. Selecting a folder clears an entry that is not in it.
   A typed but unapplied new entry is not checkpointed on auto-lock and does not trigger the
   unload warning; the discard confirm still asks.
+  Folders can be moved (never into themselves, their descendants or the bin) and deleted;
+  deletion recycles the whole subtree when recycling is enabled and is permanent otherwise,
+  after a confirm. `folders.test.ts` covers both.
 
 - `frontend/src/components/EntryAttachments.tsx` and `frontend/src/lib/kdbx.ts`:
   entries support adding one file at a time (10 MiB maximum), downloading decrypted
@@ -349,13 +352,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/components/Dialog.tsx` and `DialogHost.tsx`: every modal uses `Dialog`
   (native `<dialog>`, Escape closes, backdrop click never closes, focus returns to the
-  opener). Questions go through `useDialogs().confirm/prompt/notify`, sequenced by
+  opener). Questions go through `useDialogs().confirm/prompt/notify/choose`, sequenced by
   `lib/dialogQueue.ts` so a second question waits for the first. Native `confirm`, `prompt`
   and `alert` are banned in `frontend/src`, including `window.confirm`. `noNativeDialogs.test.ts` fails the suite if one comes back.
   Autofocus inside a `Dialog` uses `data-autofocus`, not the React `autoFocus` prop: React
   never emits an `autofocus` DOM attribute, so `Dialog`'s `[autofocus]` lookup was dead code.
   Locking the vault cancels every pending question (`cancelAll`) so a handler that captured
-  the vault key cannot be resumed from a locked screen.
+  the vault key cannot be resumed from a locked screen. `choose` renders a select.
 
 - `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;

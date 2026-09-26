@@ -6,6 +6,7 @@ type Api = {
   confirm: (opts: Omit<DialogRequest, "kind">) => Promise<boolean>;
   prompt: (opts: Omit<DialogRequest, "kind">) => Promise<string | null>;
   notify: (opts: Omit<DialogRequest, "kind">) => Promise<void>;
+  choose: (opts: Omit<DialogRequest, "kind">) => Promise<string | null>;
   cancelAll: () => void;
 };
 
@@ -24,6 +25,7 @@ export function DialogHost({ children }: { children: ReactNode }) {
     confirm: (opts) => queue.ask<boolean>({ ...opts, kind: "confirm" }),
     prompt: (opts) => queue.ask<string | null>({ ...opts, kind: "prompt" }),
     notify: (opts) => queue.ask<void>({ ...opts, kind: "notify" }),
+    choose: (opts) => queue.ask<string | null>({ ...opts, kind: "choose" }),
     cancelAll: () => queue.cancelAll(),
   }), [queue]);
   return (
@@ -35,15 +37,16 @@ export function DialogHost({ children }: { children: ReactNode }) {
 }
 
 function QuestionDialog({ request, settle }: { request: DialogRequest; settle: (value: unknown) => void }) {
-  const [value, setValue] = useState(request.defaultValue ?? "");
+  const [value, setValue] = useState(request.defaultValue ?? (request.kind === "choose" ? request.options?.[0]?.value ?? "" : ""));
   const [problem, setProblem] = useState<string | null>(null);
-  const cancelValue = request.kind === "confirm" ? false : request.kind === "prompt" ? null : undefined;
+  const cancelValue = request.kind === "confirm" ? false : request.kind === "prompt" || request.kind === "choose" ? null : undefined;
   const submit = () => {
     if (request.kind === "prompt") {
       const message = request.validate?.(value) ?? null;
       if (message) { setProblem(message); return; }
       settle(value);
-    } else settle(request.kind === "confirm" ? true : undefined);
+    } else if (request.kind === "choose") settle(value);
+    else settle(request.kind === "confirm" ? true : undefined);
   };
   return (
     <Dialog title={request.title} onClose={() => settle(cancelValue)}>
@@ -55,6 +58,15 @@ function QuestionDialog({ request, settle }: { request: DialogRequest; settle: (
             <input id="dialog-input" className="input" data-autofocus value={value}
               onChange={(e) => { setValue(e.target.value); setProblem(null); }} />
             {problem ? <p role="alert" style={{ color: "var(--danger)" }}>{problem}</p> : null}
+          </div>
+        ) : null}
+        {request.kind === "choose" ? (
+          <div className="input-group">
+            <label className="input-label" htmlFor="dialog-select">{request.label ?? request.title}</label>
+            <select id="dialog-select" className="select" data-autofocus value={value}
+              onChange={(e) => setValue(e.target.value)}>
+              {request.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
           </div>
         ) : null}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem", marginTop: "1rem" }}>

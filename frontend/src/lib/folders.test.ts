@@ -87,3 +87,37 @@ test("a folder named with a slash does not capture CSV rows bound for the nested
   assert.equal(landed?.depth, 2);
   assert.equal(vault.getLiveGroups().find(group => group.uuid === flat.uuid)?.entriesCount, 0);
 });
+
+test("deleting a folder recycles it with its entries, and restore brings an entry back", async () => {
+  const key = new Uint8Array(32).fill(2);
+  const vault = await KeePassVault.createNew(key);
+  const root = vault.getLiveGroups()[0];
+  const work = vault.createGroup("Work", root.uuid);
+  const sub = vault.createGroup("Clients", work.uuid);
+  const e1 = vault.createEntry({ title: "A", username: "", password: "p", url: "", notes: "", groupUuid: work.uuid });
+  const e2 = vault.createEntry({ title: "B", username: "", password: "p", url: "", notes: "", groupUuid: sub.uuid });
+  assert.equal(vault.deleteGroup(work.uuid), 2);
+  assert.ok(!vault.getLiveGroups().some((g) => g.uuid === work.uuid));
+  assert.deepEqual(vault.getRecycledEntries().map((e) => e.uuid).sort(), [e1.uuid, e2.uuid].sort());
+  const reopened = await KeePassVault.open(await vault.exportBinary(), key);
+  assert.equal(reopened.getRecycledEntries().length, 2);
+  reopened.restoreEntry(e1.uuid);
+  assert.ok(reopened.getLiveEntries().some((e) => e.uuid === e1.uuid));
+  assert.throws(() => reopened.deleteGroup(root.uuid), /root/i);
+});
+
+test("moving a folder re-parents it and refuses cycles and the bin", async () => {
+  const key = new Uint8Array(32).fill(3);
+  const vault = await KeePassVault.createNew(key);
+  const root = vault.getLiveGroups()[0];
+  const a = vault.createGroup("A", root.uuid);
+  const b = vault.createGroup("B", a.uuid);
+  const c = vault.createGroup("C", root.uuid);
+  assert.equal(vault.moveGroup(b.uuid, c.uuid), true);
+  assert.equal(vault.getLiveGroups().find((g) => g.uuid === b.uuid)?.parentUuid, c.uuid);
+  assert.equal(vault.getLiveGroups().find((g) => g.uuid === b.uuid)?.path, `${root.name} / C / B`);
+  assert.equal(vault.moveGroup(b.uuid, c.uuid), false);
+  assert.throws(() => vault.moveGroup(c.uuid, b.uuid), /inside itself/);
+  assert.throws(() => vault.moveGroup(a.uuid, a.uuid), /inside itself/);
+  assert.throws(() => vault.moveGroup(root.uuid, c.uuid), /root/i);
+});

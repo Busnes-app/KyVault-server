@@ -362,6 +362,59 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     }
   };
 
+  const handleMoveGroup = async () => {
+    if (!selectedFolder) return;
+    const root = groups[0];
+    const options = [
+      { value: root.uuid, label: root.name },
+      ...groups.filter((g) => g.uuid !== root.uuid && g.uuid !== selectedFolder.uuid &&
+        !g.path.startsWith(`${selectedFolder.path} / `)).map((g) => ({ value: g.uuid, label: g.path })),
+    ];
+    const target = await dialogs.choose({
+      title: "Move folder",
+      label: "Move into",
+      options,
+      defaultValue: selectedFolder.parentUuid,
+    });
+    if (target === null) return;
+    try {
+      if (vault.moveGroup(selectedFolder.uuid, target)) {
+        onChanged();
+        refreshVaultData();
+      }
+    } catch (error) {
+      await dialogs.notify({ title: "Folder not moved", message: error instanceof Error ? error.message : "Unable to move folder." });
+    }
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!selectedFolder) return;
+    const subtreeIds = new Set(groups.filter((g) => g.uuid === selectedFolder.uuid ||
+      g.path.startsWith(`${selectedFolder.path} / `)).map((g) => g.uuid));
+    const count = entries.filter((e) => !recycledIds.has(e.uuid) && subtreeIds.has(e.groupUuid)).length;
+    const recycling = vault.recyclingEnabled;
+    const ok = await dialogs.confirm({
+      title: recycling ? "Move folder to Recycle Bin?" : "Delete folder permanently?",
+      message: `"${selectedFolder.name}" and its ${count} entries ${recycling ? "move to the Recycle Bin" :
+        "are removed from the current vault. Existing snapshots and backups may still contain them"}.`,
+      confirmLabel: recycling ? "Move" : "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      vault.deleteGroup(selectedFolder.uuid);
+      if (selectedEntry && subtreeIds.has(selectedEntry.groupUuid)) {
+        setSelectedEntryUuid(null);
+        navigate({ tab: "vault", entry: undefined });
+      }
+      setSelectedGroupUuid("all");
+      onChanged();
+      refreshVaultData();
+    } catch (error) {
+      await dialogs.notify({ title: "Folder not deleted", message: error instanceof Error ? error.message : "Unable to delete folder." });
+    }
+  };
+
   const filteredEntries = useMemo(() => {
     return entries.filter((e) => {
       const matchesGroup =
@@ -420,7 +473,13 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           <span>{recycledIds.size}</span>
         </button>
 
-        {selectedFolder ? <button type="button" className="btn btn-quiet btn-sm" onClick={handleRenameGroup}>Rename Folder</button> : null}
+        {selectedFolder ? (
+          <div style={{ display: "flex", gap: "0.25rem" }}>
+            <button type="button" className="btn btn-quiet btn-sm" onClick={handleRenameGroup}>Rename Folder</button>
+            <button type="button" className="btn btn-quiet btn-sm" onClick={handleMoveGroup}>Move Folder</button>
+            <button type="button" className="btn btn-quiet btn-sm" onClick={handleDeleteGroup}>Delete Folder</button>
+          </div>
+        ) : null}
 
         {groups.map((g) => (
           <button type="button"

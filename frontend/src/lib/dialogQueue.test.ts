@@ -29,9 +29,11 @@ test("cancelAll answers every pending question with its cancel value", async () 
   const a = q.ask<boolean>({ kind: "confirm", title: "A" });
   const b = q.ask<string | null>({ kind: "prompt", title: "B" });
   const c = q.ask<void>({ kind: "notify", title: "C" });
+  const d = q.ask<string | null>({ kind: "choose", title: "D", options: [{ value: "x", label: "X" }] });
   q.cancelAll();
   assert.equal(await a, false);
   assert.equal(await b, null);
   assert.equal(await c, undefined);
+  assert.equal(await d, null);
   assert.equal(q.current(), null);
 });
