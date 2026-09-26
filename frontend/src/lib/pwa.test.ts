@@ -13,9 +13,14 @@ test("manifest is valid, icons exist and index.html references it", () => {
   assert.equal(manifest.start_url, "/");
   assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 2);
   for (const icon of manifest.icons) {
-    assert.ok(existsSync(join(root, "public", icon.src.replace(/^\//, ""))), icon.src);
+    const iconPath = join(root, "public", icon.src.replace(/^\//, ""));
+    assert.ok(existsSync(iconPath), icon.src);
     assert.match(icon.sizes, /^\d+x\d+$/);
     assert.equal(icon.type, "image/png");
+    const png = readFileSync(iconPath);
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    assert.equal(`${width}x${height}`, icon.sizes, icon.src);
   }
   assert.ok(manifest.icons.some((i: { sizes: string }) => Number(i.sizes.split("x")[0]) >= 512));
   const html = readFileSync(join(root, "index.html"), "utf8");
