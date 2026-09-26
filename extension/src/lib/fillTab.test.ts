@@ -64,13 +64,14 @@ test("an https login is never filled into an http page or frame", async () => {
   assert.equal(frame.sent.length, 0);
 });
 
-test("credentials go to a same-site frame only, never to a cross-site one", async () => {
+test("credentials go to a same-host frame only, never to a cross-site or subdomain one", async () => {
   const frames = [
     probe(0, "https://example.com", null),
     probe(4, "https://evil.test"),
     probe(5, "null"),
     { frameId: 6, result: null },
-    probe(7, "https://login.example.com"),
+    probe(3, "https://login.example.com"),
+    probe(7, "https://example.com"),
   ];
   const { fake, sent } = io("https://example.com/", frames);
   assert.deepEqual(await fillTab(fake, login), { username: true });
