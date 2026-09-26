@@ -12,6 +12,7 @@ import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
+import { HealthReport } from "../components/HealthReport";
 import { EntryHistoryModal } from "../components/EntryHistoryModal";
 import { EntryAttachments } from "../components/EntryAttachments";
 import { CsvImportModal } from "../components/CsvImportModal";
@@ -45,6 +46,7 @@ import {
   ChevronLeft,
   Star,
   X,
+  HeartPulse,
 } from "lucide-react";
 
 type Props = {
@@ -114,6 +116,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [showGenerator, setShowGenerator] = useState(false);
   const [showPairing, setShowPairing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showHealth, setShowHealth] = useState(false);
   const [showEntryHistory, setShowEntryHistory] = useState(false);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
@@ -659,6 +662,9 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             </button>
             <button className="btn btn-secondary btn-sm" onClick={() => setShowHistory(true)} disabled={saveState.kind !== "saved" || draftDirty}>
               <History size={14} /> Version History (v{vaultVersion})
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowHealth(true)}>
+              <HeartPulse size={14} /> Health
             </button>
             <button className="btn btn-secondary btn-sm" onClick={onExport} disabled={saving}>
               <Download size={14} /> Download .kdbx
@@ -1348,6 +1354,20 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             setShowHistory(false);
             await onReload();
           }}
+        />
+      ) : null}
+
+      {showHealth ? (
+        <HealthReport
+          vault={vault}
+          onOpenEntry={(uuid) => {
+            setSelectedGroupUuid("all");
+            clearSmartViews();
+            setSelectedEntryUuid(uuid);
+            navigate({ tab: "vault", entry: uuid });
+            setPane("detail");
+          }}
+          onClose={() => setShowHealth(false)}
         />
       ) : null}
     </div>

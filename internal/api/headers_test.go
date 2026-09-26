@@ -27,7 +27,7 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		}
 	}
 	csp := rec.Header().Get("Content-Security-Policy")
-	for _, directive := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "script-src 'self' 'wasm-unsafe-eval'"} {
+	for _, directive := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "script-src 'self' 'wasm-unsafe-eval'", "connect-src 'self' https://api.pwnedpasswords.com"} {
 		if !strings.Contains(csp, directive) {
 			t.Errorf("CSP missing %q: %s", directive, csp)
 		}
