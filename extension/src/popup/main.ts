@@ -54,11 +54,6 @@ async function render(): Promise<void> {
 // blind-clear the clipboard after the popup closes there, so the toast differs.
 const hasOffscreen = typeof ext.offscreen !== "undefined";
 
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 function copyButton(label: string, uuid: string, field: SecretField, status: HTMLElement): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -78,7 +73,7 @@ async function copyField(uuid: string, field: SecretField, status: HTMLElement):
     return;
   }
   // Keep the deadline armed even if this popup closes before the local timer fires.
-  await send({ type: "copied", digest: await sha256Hex(res.value) });
+  await send({ type: "copied" });
   status.className = "muted";
   status.textContent = hasOffscreen
     ? "Copied. Clears in 30 seconds."

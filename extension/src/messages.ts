@@ -14,8 +14,7 @@ export type Request =
   | { type: "entries"; query: string }
   | { type: "copy"; uuid: string; field: SecretField }
   | { type: "fill"; uuid: string }
-  // digest is a SHA-256 hex of the copied value, so the background never sees the value.
-  | { type: "copied"; digest: string };
+  | { type: "copied" };
 
 export type StatusResponse = {
   paired: boolean;

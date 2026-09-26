@@ -9,7 +9,10 @@ for (const [name, manifest] of [["chrome", chromeManifest()], ["firefox", firefo
     assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
     assert.equal("host_permissions" in manifest, false);
     const perms = [...manifest.permissions].sort();
-    const expected = name === "chrome" ? ["activeTab", "alarms", "offscreen", "scripting", "storage"] : ["activeTab", "alarms", "scripting", "storage"];
+    const expected =
+      name === "chrome"
+        ? ["activeTab", "alarms", "clipboardWrite", "offscreen", "scripting", "storage"]
+        : ["activeTab", "alarms", "clipboardWrite", "scripting", "storage"];
     assert.deepEqual(perms, expected);
     assert.equal("content_scripts" in manifest, false);
     assert.match(manifest.content_security_policy.extension_pages, /'wasm-unsafe-eval'/);

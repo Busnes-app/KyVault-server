@@ -5,6 +5,12 @@ unlocks the vault with the master password in the browser, lists entries for
 the current site, copies and fills credentials on click, generates TOTP codes,
 and saves new logins through the version-checked upload path.
 
+## Copy and clipboard
+
+Copied usernames, passwords and TOTP codes clear from the clipboard after 30 seconds.
+The clear is blind: it cannot read the clipboard first, so a value you copied
+elsewhere in those 30 seconds is replaced by a space once.
+
 ## Build
 
 ```bash

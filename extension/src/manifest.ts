@@ -8,7 +8,7 @@ const shared = {
   icons: { 16: "icons/16.png", 32: "icons/32.png", 48: "icons/48.png", 128: "icons/128.png" },
   action: { default_popup: "popup.html", default_title: "KyVault" },
   options_ui: { page: "options.html", open_in_tab: true },
-  permissions: ["storage", "alarms", "activeTab", "scripting"],
+  permissions: ["storage", "alarms", "activeTab", "scripting", "clipboardWrite"],
   optional_host_permissions: ["https://*/*"],
   content_security_policy: { extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'none'" },
 } as const;

@@ -6,7 +6,12 @@
 const textarea = document.createElement("textarea");
 textarea.value = " ";
 document.body.append(textarea);
-textarea.select();
-document.execCommand("copy");
-textarea.remove();
-void chrome.offscreen.closeDocument();
+try {
+  textarea.select();
+  document.execCommand("copy");
+} finally {
+  // Always close, even if execCommand throws, so a later clear is not skipped by a
+  // stale offscreen document that createDocument then refuses to replace.
+  textarea.remove();
+  void chrome.offscreen.closeDocument();
+}
