@@ -55,11 +55,8 @@ checks.
   carries `service_worker` only; Firefox's carries `scripts` only (Firefox
   ignores `service_worker` and warns `BACKGROUND_SERVICE_WORKER_IGNORED` if
   it is present, and has run `background.scripts` regardless of that key
-  since Firefox 121). `scripts/pack.mjs` drops `offscreen.js`/`offscreen.html`
-  from `dist/firefox` only: Firefox has no Offscreen API, `background.ts`
-  already gates every call behind `typeof ext.offscreen`, and shipping the
-  unused file is what made `web-ext lint` flag `offscreen.closeDocument` as
-  `UNSUPPORTED_API`. `web-ext lint --source-dir dist/firefox` is 0 errors, 2
+  since Firefox 121). Firefox has no Offscreen API; `scripts/pack.mjs` drops
+  `offscreen.js`/`offscreen.html` from `dist/firefox`. `web-ext lint --source-dir dist/firefox` is 0 errors, 2
   warnings (`KEY_FIREFOX_*_UNSUPPORTED_BY_MIN_VERSION`, explained in the
   README); raising `strict_min_version` to silence them would drop Firefox
   128 through 139 support for a manifest field with no runtime effect, so it
@@ -82,8 +79,10 @@ checks.
   `autoLockMinutes` preference), clears `storage.session`, and releases the
   granted host permission. The DELETE removes the device from Security, then
   Devices, when the server can be reached; the options page says so. The paired
-  view also carries the "Lock the vault after" select, saved with
-  `saveSettings`; the worker reads it on every message. `{type: "status"}`
+  view also carries the "Lock the vault after" select; it sends
+  `{type: "setAutoLock"}` and the worker saves it, then gives an unlocked vault
+  a fresh deadline under the new window (`rearm`), since `status()` reads a
+  deadline beyond the window as a backwards clock and would lock. `{type: "status"}`
   reports `paired`/`unlocked`/`serverOrigin`/`deviceName`/`autoLockMinutes`
   from `storage.local`; the options page's own
   paired-or-not render decision asks the background worker for this instead
@@ -105,7 +104,7 @@ checks.
     `unwrapVaultKeyFromEnvelopes` and dropped; it is never stored or logged.
   - `storage.session` (default access level, trusted contexts only): `keyHex`,
     `lockAt`, `envelope` (the password envelope the key was unwrapped from, for
-    the save path's rotation check) and `lastServerContact`, written with `lockAt`. Cleared on lock and by the browser on exit.
+    the save path's rotation check) and `lastServerContact`, written with `lockAt` and after each confirmed save. Cleared on lock and by the browser on exit.
   - `storage.local`: only the allowlist above; `autoLockMinutes` is the idle
     window. `session.test.ts` fails if any file but `lib/settings.ts` calls
     `storage.local.`, if `keyHex` appears outside `vaultState.ts`, or if
@@ -162,8 +161,10 @@ checks.
     30 seconds. On Chrome the alarm runs `lib/clipboardClear.ts`: open `offscreen.html`
     (or reuse one left open), send it `{type: "offscreenClear"}`, which blind-writes a
     space over the clipboard via `execCommand("copy")` and replies, then close it from
-    the background even if the clear failed. An offscreen document has only
-    `chrome.runtime`, so it cannot close itself. `clipboardClear.test.ts` checks that
+    the background even if the clear failed (a close error is swallowed). An offscreen
+    document has only `chrome.runtime`, so it cannot close itself. The second browser
+    pass confirmed the worker-to-offscreen message and that the document is closed
+    after each clear. `clipboardClear.test.ts` checks that
     consecutive copies each clear. Firefox has no offscreen API, so there the clear
     only happens while the popup stays open. The toast says which is true for the
     running browser (checked via `typeof ext.offscreen`, since @types/chrome always
@@ -200,8 +201,9 @@ checks.
   (`saveLogin`), `src/popup/main.ts` (Task 6): save login, the extension's only write.
   - The popup form (title and address prefilled from the active http(s) tab, username,
     password with Generate from `generatePassword.ts` defaults) sends the typed values
-    once and clears only on success. Any other error refreshes the list and says the
-    save could not be confirmed, since a lost answer may hide a stored entry. Page
+    once and clears only on success. Any other error keeps the typed values, says the
+    save could not be confirmed (a lost answer may hide a stored entry) and refreshes
+    the list quietly: a failed refresh never replaces the view. Page
     fields are never read. `saveLogin` refuses a blank title, an
     empty password, or an address that is not `http(s):`.
   - Order: `ensure`, then `GET /api/vault/metadata` and compare its `passwordEnvelope`

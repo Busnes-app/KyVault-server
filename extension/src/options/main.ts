@@ -59,12 +59,12 @@ function renderPaired(origin: string, deviceName: string, autoLockMinutes: AutoL
   const status = el("p");
   status.textContent = `Paired with ${origin} as ${deviceName}.`;
 
-  // The background reads the setting on every message, so an unlocked vault picks it up next time.
+  // The background saves it and restarts an unlocked vault's idle deadline under the new window.
   const lock = lockField(autoLockMinutes);
   const saved = el("p");
   saved.setAttribute("role", "status");
   lock.select.addEventListener("change", async () => {
-    await saveSettings({ autoLockMinutes: parseAutoLockMinutes(Number(lock.select.value)) });
+    await notifyBackground({ type: "setAutoLock", minutes: Number(lock.select.value) });
     saved.textContent = "Saved.";
   });
 

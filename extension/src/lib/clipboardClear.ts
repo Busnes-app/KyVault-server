@@ -16,6 +16,7 @@ export async function clearClipboard(io: OffscreenIO): Promise<void> {
   try {
     await io.clear();
   } finally {
-    await io.closeDocument();
+    // A document that already vanished must not surface as an unhandled rejection.
+    await io.closeDocument().catch(() => {});
   }
 }

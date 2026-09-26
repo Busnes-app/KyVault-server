@@ -16,7 +16,8 @@ export type Request =
   | { type: "copy"; uuid: string; field: SecretField }
   | { type: "fill"; uuid: string }
   | { type: "saveLogin"; login: NewLogin }
-  | { type: "copied" };
+  | { type: "copied" }
+  | { type: "setAutoLock"; minutes: number };
 
 export type StatusResponse = {
   paired: boolean;

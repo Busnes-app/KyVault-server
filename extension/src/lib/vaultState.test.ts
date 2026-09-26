@@ -245,3 +245,19 @@ test("the revocation check survives worker eviction and does not block an unreac
   assert.deepEqual(f.log.paths.slice(requests), ["offline"]);
   assert.equal(f.log.forgot, 0);
 });
+
+test("lowering the idle window while unlocked moves the deadline instead of locking", async () => {
+  const f = fakes({ meta: META, kdbx: new ArrayBuffer(8) });
+  let minutes: 1 | 5 = 5;
+  const deps = { ...f.deps, settings: async () => ({ ...(await f.deps.settings()), autoLockMinutes: minutes }) };
+  const state = createVaultState({ ...deps, unwrap: fakeUnwrap(), openVault: fakeOpen() });
+  await state.unlock("pw");
+  f.setNow(T0 + 10_000);
+  minutes = 1;
+  await state.rearm();
+  assert.equal(f.session.get("lockAt"), T0 + 70_000);
+  assert.deepEqual(f.log.alarms.at(-1), ["lock", T0 + 70_000]);
+  assert.deepEqual(await state.status(), { unlocked: true, lockAt: T0 + 70_000 });
+  f.setNow(T0 + 70_000);
+  assert.deepEqual(await state.status(), { unlocked: false, lockAt: undefined });
+});

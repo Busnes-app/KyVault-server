@@ -2,7 +2,8 @@
 // It never logs the pairing code, the token, the password or the key.
 import { ext } from "./ext";
 import type { Request, Response, StatusResponse } from "./messages";
-import { loadSettings, clearSettings, forgetSession } from "./lib/settings";
+import { loadSettings, clearSettings, forgetSession, saveSettings } from "./lib/settings";
+import { parseAutoLockMinutes } from "../../frontend/src/lib/autoLock";
 import { RevokedError, serverFetch } from "./lib/session";
 import { createVaultState, LockedError, LOCK_ALARM } from "./lib/vaultState";
 import { fillFrame, fillTab } from "./lib/fillTab";
@@ -85,6 +86,11 @@ async function handle(message: Request): Promise<Response> {
       return { type: "filled", ...(await fill(message.uuid)) };
     case "saveLogin":
       await state.saveLogin(message.login);
+      return { type: "ok" };
+    case "setAutoLock":
+      // status() above checked the deadline under the old window; save, then re-arm.
+      await saveSettings({ autoLockMinutes: parseAutoLockMinutes(message.minutes) });
+      if (vault.unlocked) await state.rearm();
       return { type: "ok" };
     case "copied":
       // Blind clear: the background never reads the value back, only when it copied it.

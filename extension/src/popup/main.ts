@@ -143,13 +143,14 @@ async function renderVault(): Promise<void> {
   list.className = "entries";
   const status = text("p", "", "muted");
   status.setAttribute("role", "status");
-  const save = saveForm(() => load(search.value));
+  const save = saveForm((quiet) => load(search.value, quiet));
   container.append(search, list, status, save.form);
   root.replaceChildren(container);
 
-  const load = async (query: string): Promise<void> => {
+  // quiet: a failure leaves the view as it is (the save form keeps what was typed).
+  const load = async (query: string, quiet = false): Promise<void> => {
     const res = await send({ type: "entries", query });
-    if (res.type === "error") return showError(res);
+    if (res.type === "error") return quiet ? undefined : showError(res);
     if (res.type !== "entries") return;
     renderRows(res.entries, res.tabHost, list, status);
     save.prefill(res.tabHost, res.tabOrigin);
@@ -177,7 +178,7 @@ function field(labelText: string, input: HTMLInputElement, id: string): HTMLElem
 
 // Typed by the user in this popup; page fields are never read. The values go to the
 // background once; the form clears only after the save is confirmed.
-function saveForm(refresh: () => Promise<void>): { form: HTMLElement; prefill: (host?: string, origin?: string) => void } {
+function saveForm(refresh: (quiet?: boolean) => Promise<void>): { form: HTMLElement; prefill: (host?: string, origin?: string) => void } {
   const details = document.createElement("details");
   const summary = document.createElement("summary");
   summary.textContent = "Save login for this site";
@@ -234,9 +235,10 @@ function saveForm(refresh: () => Promise<void>): { form: HTMLElement; prefill: (
     if (res.type === "error") {
       if (res.locked || res.revoked) return showError(res);
       // The upload may have landed even though the answer did not; the list is the truth.
-      await refresh();
+      // Keep the typed values, and never let the refresh replace this view.
       status.className = "error";
       status.textContent = `${res.message} KyVault could not confirm the save. Check the list above before adding it again.`;
+      await refresh(true).catch(() => {});
       return;
     }
     reset();

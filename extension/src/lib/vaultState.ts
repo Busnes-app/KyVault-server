@@ -224,6 +224,16 @@ export function createVaultState(deps: VaultDeps) {
     });
   }
 
+  // The idle window changed. A deadline set under a longer window reads as a backwards
+  // clock to status(), so an unlocked vault gets a fresh one under the new window.
+  async function rearm(): Promise<void> {
+    const { keyHex, lockAt } = await deps.session.get(["keyHex", "lockAt"]);
+    if (typeof keyHex !== "string" || typeof lockAt !== "number") return;
+    const next = lockDeadline(now(), (await deps.settings()).autoLockMinutes);
+    await deps.session.set({ lockAt: next });
+    await deps.alarms.create(LOCK_ALARM, { when: next });
+  }
+
   // Also the per-message sweep: an expired deadline locks here even if the alarm was missed.
   async function status(): Promise<{ unlocked: boolean; lockAt: number | undefined }> {
     const { keyHex, lockAt } = await deps.session.get(["keyHex", "lockAt"]);
@@ -316,7 +326,10 @@ export function createVaultState(deps: VaultDeps) {
       opened.vault.createEntry({ ...login, notes: "", groupUuid: root.uuid });
       try {
         const version = await uploadVault(io, await opened.vault.exportBinary(), opened.version, deviceId);
-        if (gen === generation) opened.version = version;
+        if (gen === generation) {
+          opened.version = version;
+          await deps.session.set({ lastServerContact });
+        }
       } catch (err) {
         if (err instanceof ConflictError) {
           await lock();
@@ -330,5 +343,5 @@ export function createVaultState(deps: VaultDeps) {
     return run;
   }
 
-  return { unlock, ensure, lock, status, checkDevice, listEntries, secret, login, saveLogin };
+  return { unlock, ensure, lock, status, rearm, checkDevice, listEntries, secret, login, saveLogin };
 }
