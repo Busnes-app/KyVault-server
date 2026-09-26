@@ -224,6 +224,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   no save revision. Selecting a folder clears an entry that is not in it.
   A typed but unapplied new entry is not checkpointed on auto-lock and does not trigger the
   unload warning; the discard confirm still asks.
+  Folders can be moved (never into themselves, their descendants or the bin) and deleted;
+  deletion recycles the whole subtree when recycling is enabled and is permanent otherwise,
+  after a confirm. `folders.test.ts` covers both.
 
 - `frontend/src/components/EntryAttachments.tsx` and `frontend/src/lib/kdbx.ts`:
   entries support adding one file at a time (10 MiB maximum), downloading decrypted
@@ -320,6 +323,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Manual lock/logout still ask before discarding unsaved edits. Forget removes this tab's copy.
   ponytail: closing a tab without restoring it loses the reference to its encrypted checkpoint;
   a cross-tab recovery inventory and retention policy are future work. No offline login/unlock.
+  An unreadable checkpoint (corrupt or undecryptable) is deleted and reported rather than
+  blocking unlock (`App.tsx`).
 
 - `frontend/src/lib/vaultSave.ts`: owns one automatic save queue per unlocked vault.
   Applied edits, entry/folder creation, deletion, and CSV import enqueue saves after 1.5 seconds
@@ -349,13 +354,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/components/Dialog.tsx` and `DialogHost.tsx`: every modal uses `Dialog`
   (native `<dialog>`, Escape closes, backdrop click never closes, focus returns to the
-  opener). Questions go through `useDialogs().confirm/prompt/notify`, sequenced by
+  opener). Questions go through `useDialogs().confirm/prompt/notify/choose`, sequenced by
   `lib/dialogQueue.ts` so a second question waits for the first. Native `confirm`, `prompt`
   and `alert` are banned in `frontend/src`, including `window.confirm`. `noNativeDialogs.test.ts` fails the suite if one comes back.
   Autofocus inside a `Dialog` uses `data-autofocus`, not the React `autoFocus` prop: React
   never emits an `autofocus` DOM attribute, so `Dialog`'s `[autofocus]` lookup was dead code.
   Locking the vault cancels every pending question (`cancelAll`) so a handler that captured
-  the vault key cannot be resumed from a locked screen.
+  the vault key cannot be resumed from a locked screen. `choose` renders a select.
 
 - `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
@@ -406,6 +411,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
+  Entries carry native tags (favourite is the tag `favorite`), expiry
+  (`times.expires/expiryTime`) and custom fields (native `fields`, `ProtectedValue` when
+  protected); `entryMeta.ts` owns parsing, expiry windows, sorting and search, which never
+  reads protected custom values. `entryMeta.test.ts` proves the encrypted round trip.
   Two properties carry that, and both are load-bearing:
   - **The credential is the vault key as hexadecimal text**, never the raw bytes. That is what
     KyAuth uses (`KdbxPasswordVault.kt`: `Credentials.from(EncryptedValue.fromString(
@@ -432,6 +441,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   kotpass writes 4.1. Both libraries read both. Upgrade path is kdbxweb minor-version support.
   Also untested: opening a genuine kotpass-written file. The KyAuth fixture in `kdbx.test.ts`
   is built with kdbxweb, so it proves our credential handling, not cross-library compatibility.
+  `openForeign` opens a file written by another client with a plain password; `importFrom`
+  copies its live tree into an existing same-named top-level folder (reused across repeat
+  imports) or a new one named after the source root, keeps UUIDs that are free, recurses
+  into a same-UUID live group instead of skipping it (so entries added there after an
+  earlier import are picked up), and skips existing entries. Imported groups keep only
+  their name and UUID, not the source's own metadata. `kdbxImport.test.ts` covers skip,
+  recurse and carry. CSV export (`csvExport.ts`) omits custom fields and attachments.
 - `frontend/src/lib/csvImport.ts`: zero-knowledge RFC 4180 CSV parser and multi-format importer supporting
   Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
   folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;
@@ -445,6 +461,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Skipped-only imports create no folders or save revisions. Changed field values are retained
   as separate entries; comparison performs no fuzzy matching, merging, or normalization.
   CSV parsing preserves password whitespace, including passwords consisting entirely of spaces.
+  Bitwarden unencrypted JSON exports import logins with folder and TOTP (`bitwardenImport.ts`); generic CSV supports explicit column mapping (`applyMapping`); `csvExport.ts` writes a KeePassXC-compatible CSV (plus Tags, Expires, Last Modified) behind a plaintext warning.
 
 - `frontend/src/lib/totp.ts`: RFC 6238 TOTP in the browser. otpauth URIs may set secret,
   digits (6 to 10), period and algorithm (SHA1, SHA256, SHA512; anything else falls back

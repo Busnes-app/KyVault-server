@@ -351,13 +351,31 @@ button.group-item {
   margin-bottom: 0.2rem;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 .entry-subtitle {
   font-size: 0.8rem;
   color: var(--ink-muted);
   font-family: var(--font-mono);
+}
+
+.tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.tag-chip {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  background: var(--panel-hover);
+  color: var(--ink-muted);
+  border: 1px solid var(--line);
 }
 
 .vault-detail-pane {
@@ -532,6 +550,18 @@ dialog.dialog-lg { max-width: 760px; }
   background: var(--success-soft);
   color: var(--success);
   border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.badge-warning {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 /* Busnes.app light/dark defaults. Existing named palettes remain selectable. */

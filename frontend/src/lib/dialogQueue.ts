@@ -1,15 +1,17 @@
 // Sequences modal questions so a second ask waits for the first answer instead of
 // replacing it. Pure so it can be tested without React.
 export type DialogRequest = {
-  kind: "confirm" | "prompt" | "notify";
+  kind: "confirm" | "prompt" | "notify" | "choose";
   title: string;
   message?: string;
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
   label?: string;
+  secret?: boolean;
   defaultValue?: string;
   validate?: (value: string) => string | null;
+  options?: Array<{ value: string; label: string }>;
 };
 
 type Pending = { id: number; request: DialogRequest; resolve: (value: unknown) => void };
@@ -43,7 +45,8 @@ export class DialogQueue {
     const rest = this.pending;
     this.pending = [];
     for (const item of rest) {
-      const cancelValue = item.request.kind === "confirm" ? false : item.request.kind === "prompt" ? null : undefined;
+      const cancelValue = item.request.kind === "confirm" ? false :
+        item.request.kind === "prompt" || item.request.kind === "choose" ? null : undefined;
       item.resolve(cancelValue);
     }
     if (rest.length) this.notify();

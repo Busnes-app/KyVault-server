@@ -235,7 +235,15 @@ export function App() {
       const local = memoryDraft.current ? { kind: "available", draft: memoryDraft.current } : await readDraft(id);
       const stored = "draft" in local ? local.draft : undefined;
       if (local.kind === "unavailable") notices.push("Opened the server copy. Could not read the local recovery copy; retry unlocking when browser storage is available to recover local edits.");
-      const recovered = stored ? await openDraft(stored, key, u.id) : undefined;
+      let recovered: Awaited<ReturnType<typeof openDraft>> | undefined;
+      if (stored) {
+        try {
+          recovered = await openDraft(stored, key, u.id);
+        } catch {
+          notices.push("Opened the server copy. The local recovery copy could not be read and was discarded.");
+          if (!await removeDraft(id)) notices.push("Could not remove the unreadable recovery copy from browser storage.");
+        }
+      }
       const loadedVault = await KeePassVault.open(recovered?.binary ?? kdbxBytes, key);
       if (!current()) return;
       if (!masterPassword) {
@@ -252,7 +260,7 @@ export function App() {
         await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
         if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
       }
-      if (stored) {
+      if (recovered) {
         memoryDraft.current = stored;
         setRecoveryPending(true);
         if (!await removeDraft(id)) notices.push("Recovered local edits, but could not remove the old encrypted recovery copy from browser storage.");

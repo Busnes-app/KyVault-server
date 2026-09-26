@@ -4,11 +4,15 @@ import {
   CsvProvider,
   ImportedEntryPreview,
   CsvParseSummary,
+  ColumnMapping,
   PROVIDER_LABELS,
   parseAndPreviewCsv,
+  parseCsvRecords,
+  applyMapping,
   applyImportToVault,
   findDuplicateImports,
 } from "../lib/csvImport";
+import { parseBitwardenJson } from "../lib/bitwardenImport";
 import {
   UploadCloud,
   CheckCircle2,
@@ -21,6 +25,31 @@ import {
   Folder,
 } from "lucide-react";
 import { Dialog } from "./Dialog";
+
+const MAPPING_FIELDS: Array<{ key: keyof ColumnMapping; label: string; keywords: string[] }> = [
+  { key: "title", label: "Title", keywords: ["title", "name", "site", "sitename", "account", "label", "service"] },
+  { key: "username", label: "Username", keywords: ["username", "login", "user", "email", "accountname"] },
+  { key: "password", label: "Password", keywords: ["password", "pass", "secret", "pwd"] },
+  { key: "url", label: "URL", keywords: ["url", "website", "uri", "link", "webpage", "host"] },
+  { key: "notes", label: "Notes", keywords: ["notes", "note", "extra", "comments", "description", "memo"] },
+  { key: "totp", label: "TOTP", keywords: ["totp", "otp", "otpauth", "onetimepassword", "otpsecret"] },
+  { key: "folder", label: "Folder", keywords: ["folder", "group", "grouping", "category", "section", "collection"] },
+];
+
+function normalize(h: string): string {
+  return h.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Best-effort defaults for the mapping selects; the user can override any of them.
+function guessMapping(headers: string[]): ColumnMapping {
+  const normalized = headers.map(normalize);
+  const mapping: ColumnMapping = {};
+  for (const field of MAPPING_FIELDS) {
+    const idx = normalized.findIndex((h) => field.keywords.includes(h));
+    if (idx !== -1) mapping[field.key] = idx;
+  }
+  return mapping;
+}
 
 type Props = {
   vault: KeePassVault;
@@ -49,19 +78,82 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
   const [isImporting, setIsImporting] = useState<boolean>(false);
   const [dragOver, setDragOver] = useState<boolean>(false);
 
+  // Bitwarden JSON import
+  const [isJsonImport, setIsJsonImport] = useState<boolean>(false);
+  const [jsonSkipped, setJsonSkipped] = useState<{ notes: number; cards: number; identities: number } | null>(null);
+  const [jsonError, setJsonError] = useState<string | null>(null);
+
+  // Generic CSV column mapping
+  const [rawRows, setRawRows] = useState<string[][]>([]);
+  const [mapping, setMapping] = useState<ColumnMapping>({});
+  const [hasHeader, setHasHeader] = useState<boolean>(true);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleProcessCsv = (text: string, selectedProvider: CsvProvider = provider) => {
+    if (text.trimStart().startsWith("{")) {
+      setCsvContent(text);
+      handleJsonFile(text);
+      return;
+    }
     setCsvContent(text);
+    setIsJsonImport(false);
+    setJsonError(null);
+    setJsonSkipped(null);
     if (!text.trim()) {
       setParseSummary(null);
       setPreviewEntries([]);
+      setRawRows([]);
       return;
     }
 
     const summary = parseAndPreviewCsv(text, selectedProvider);
     setParseSummary(summary);
-    setPreviewEntries(summary.validEntries);
+    const rows = parseCsvRecords(text);
+    setRawRows(rows);
+    if (summary.provider === "generic") {
+      const guessed = guessMapping(summary.detectedColumns);
+      setMapping(guessed);
+      setHasHeader(true);
+      setPreviewEntries(applyMapping(rows, guessed, true));
+    } else {
+      setPreviewEntries(summary.validEntries);
+    }
+  };
+
+  const handleMappingChange = (key: keyof ColumnMapping, value: string) => {
+    const next: ColumnMapping = { ...mapping, [key]: value === "" ? undefined : Number(value) };
+    setMapping(next);
+    setPreviewEntries(applyMapping(rawRows, next, hasHeader));
+  };
+
+  const handleHasHeaderChange = (next: boolean) => {
+    setHasHeader(next);
+    setPreviewEntries(applyMapping(rawRows, mapping, next));
+  };
+
+  const handleJsonFile = (text: string) => {
+    setIsJsonImport(true);
+    setRawRows([]);
+    try {
+      const { entries, skipped } = parseBitwardenJson(text);
+      setJsonSkipped(skipped);
+      setJsonError(null);
+      setPreviewEntries(entries);
+      setParseSummary({
+        provider: "bitwarden",
+        providerName: "Bitwarden (JSON)",
+        totalRows: entries.length,
+        validEntries: entries,
+        errors: [],
+        detectedColumns: [],
+      });
+    } catch (err) {
+      setJsonSkipped(null);
+      setJsonError(err instanceof Error ? err.message : String(err));
+      setParseSummary(null);
+      setPreviewEntries([]);
+    }
   };
 
   const handleFileChange = (file: File) => {
@@ -69,7 +161,11 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
-      handleProcessCsv(text, provider);
+      if (file.name.toLowerCase().endsWith(".json")) {
+        handleJsonFile(text);
+      } else {
+        handleProcessCsv(text, provider);
+      }
     };
     reader.readAsText(file);
   };
@@ -163,6 +259,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
             <select
               className="select"
               value={provider}
+              disabled={isJsonImport}
               onChange={(e) => handleProviderChange(e.target.value as CsvProvider)}
             >
               <option value="auto">Auto-Detect Format (Recommended)</option>
@@ -227,7 +324,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
             <input
               type="file"
               ref={fileInputRef}
-              accept=".csv,.txt"
+              accept=".csv,.txt,.json"
               style={{ display: "none" }}
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -253,7 +350,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
                   Click to browse or drag & drop CSV file
                 </div>
                 <div style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.25rem" }}>
-                  Supports Chrome, 1Password, Bitwarden, LastPass, DashPass CSV files
+                  Supports Chrome, 1Password, Bitwarden, LastPass, DashPass CSV files, or an unencrypted Bitwarden JSON export
                 </div>
               </div>
             )}
@@ -271,8 +368,67 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
           </div>
         )}
 
+        {jsonError ? (
+          <div
+            style={{
+              background: "var(--danger-soft)",
+              color: "var(--danger)",
+              padding: "0.6rem 0.8rem",
+              borderRadius: "6px",
+              fontSize: "0.8rem",
+              marginBottom: "1.25rem",
+            }}
+          >
+            <AlertTriangle size={14} style={{ verticalAlign: "middle", marginRight: "0.3rem" }} />
+            {jsonError}
+          </div>
+        ) : null}
+
+        {parseSummary && parseSummary.provider === "generic" && !isJsonImport ? (
+          <div
+            style={{
+              background: "var(--bg)",
+              border: "1px solid var(--line)",
+              borderRadius: "8px",
+              padding: "1rem",
+              marginBottom: "1.25rem",
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: "0.75rem", color: "var(--ink-strong)" }}>
+              Map Columns
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.85rem", cursor: "pointer", marginBottom: "0.75rem" }}>
+              <input
+                type="checkbox"
+                checked={hasHeader}
+                onChange={(e) => handleHasHeaderChange(e.target.checked)}
+              />
+              First row is a header
+            </label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
+              {MAPPING_FIELDS.map((field) => (
+                <div key={field.key} className="input-group" style={{ marginBottom: 0 }}>
+                  <label className="input-label">{field.label}</label>
+                  <select
+                    className="select"
+                    value={mapping[field.key] ?? ""}
+                    onChange={(e) => handleMappingChange(field.key, e.target.value)}
+                  >
+                    <option value="">Not in file</option>
+                    {(parseSummary.detectedColumns.length ? parseSummary.detectedColumns : rawRows[0] || []).map((header, idx) => (
+                      <option key={idx} value={idx}>
+                        {header || `Column ${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         {/* Folder Destination Policy */}
-        {parseSummary && parseSummary.validEntries.length > 0 ? (
+        {parseSummary && previewEntries.length > 0 ? (
           <div
             style={{
               background: "var(--bg)",
@@ -381,7 +537,10 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
                   Detected: {parseSummary.providerName}
                 </span>
                 <span style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
-                  {parseSummary.validEntries.length} accounts found ({selectedCount} selected)
+                  {previewEntries.length} accounts found ({selectedCount} selected).
+                  {jsonSkipped && (jsonSkipped.notes || jsonSkipped.cards || jsonSkipped.identities)
+                    ? ` ${jsonSkipped.notes} secure note${jsonSkipped.notes === 1 ? "" : "s"}, ${jsonSkipped.cards} card${jsonSkipped.cards === 1 ? "" : "s"} and ${jsonSkipped.identities} identit${jsonSkipped.identities === 1 ? "y" : "ies"} were not imported.`
+                    : ""}
                 </span>
               </div>
 
@@ -402,8 +561,9 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete, onImp
               </div>
             </div>
 
-            {/* Errors alert if any */}
-            {parseSummary.errors.length > 0 ? (
+            {/* Errors alert if any. Generic-provider errors describe the raw auto-guess,
+                not the mapped preview the user is now looking at. */}
+            {parseSummary.provider !== "generic" && parseSummary.errors.length > 0 ? (
               <div
                 style={{
                   background: "var(--danger-soft)",

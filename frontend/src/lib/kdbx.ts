@@ -1,6 +1,8 @@
 import * as kdbxweb from "kdbxweb";
 import { bytesToHex } from "./vaultCrypto";
 import { argon2d, argon2i, argon2id } from "hash-wasm";
+import { FAVORITE_TAG, RESERVED_FIELDS } from "./entryMeta";
+import type { ImportReport } from "./kdbxImport";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
 const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxBinaries, KdbxError, KdbxUuid, Consts, VarDictionary, Int64 } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
@@ -51,6 +53,8 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_VAULT_BYTES = 50 * 1024 * 1024;
 export const MAX_VAULT_ATTACHMENT_BYTES = MAX_VAULT_BYTES - 10 * 1024 * 1024;
 
+export type CustomField = { name: string; value: string; protected: boolean };
+
 export type VaultEntry = {
   uuid: string;
   title: string;
@@ -61,6 +65,10 @@ export type VaultEntry = {
   totpSeed?: string;
   groupUuid: string;
   updatedAt: Date;
+  tags: string[];
+  expiresAt?: Date;
+  favorite: boolean;
+  custom: CustomField[];
 };
 
 export type VaultGroup = {
@@ -96,6 +104,61 @@ export function folderName(name: string): string {
 function entryFieldText(entry: kdbxweb.KdbxEntry, name: string): string {
   const value = entry.fields.get(name);
   return typeof value === "string" ? value : value?.getText() ?? "";
+}
+
+type EntryMeta = { tags: string[]; favorite: boolean; expiresAt?: Date; custom: CustomField[] };
+
+// Shared by getEntries (read) and updateEntry (no-op check), so both agree on what
+// "custom" means: every native field that is not one of the standard KeePass names.
+function readEntryMeta(e: kdbxweb.KdbxEntry): EntryMeta {
+  const tags = e.tags ?? [];
+  const favorite = tags.some((t) => t.toLowerCase() === FAVORITE_TAG);
+  const expiresAt = e.times.expires && e.times.expiryTime ? e.times.expiryTime : undefined;
+  const custom: CustomField[] = [];
+  for (const [name, value] of e.fields) {
+    if (RESERVED_FIELDS.has(name)) continue;
+    const isProtected = value instanceof ProtectedValue;
+    custom.push({ name, value: isProtected ? value.getText() : String(value), protected: isProtected });
+  }
+  return { tags, favorite, expiresAt, custom };
+}
+
+// The favourite tag is a derived member of the tag list: strip it out, then re-add it
+// (always last) if favorite is set, so callers never need to track its position.
+function foldFavoriteTag(tags: string[], favorite: boolean): string[] {
+  const userTags = tags.filter((t) => t.toLowerCase() !== FAVORITE_TAG);
+  return favorite ? [...userTags, FAVORITE_TAG] : userTags;
+}
+
+// Writes tags (favourite folded in/out), expiry and custom fields onto a native entry.
+function writeEntryMeta(e: kdbxweb.KdbxEntry, meta: Pick<VaultEntry, "tags" | "favorite" | "expiresAt" | "custom">): void {
+  e.tags = foldFavoriteTag(meta.tags, meta.favorite);
+  e.times.expires = !!meta.expiresAt;
+  // KeePassXC always writes an ExpiryTime element, even with Expires=False; an empty
+  // element there is what an unset expiry looks like to it. Never null the field out,
+  // only the flag.
+  e.times.expiryTime = meta.expiresAt ?? e.times.expiryTime ?? new Date();
+  const keep = new Set(meta.custom.map((f) => f.name));
+  for (const name of [...e.fields.keys()]) {
+    if (!RESERVED_FIELDS.has(name) && !keep.has(name)) e.fields.delete(name);
+  }
+  for (const field of meta.custom) {
+    e.fields.set(field.name, field.protected ? ProtectedValue.fromString(field.value) : field.value);
+  }
+}
+
+function customFieldsEqual(a: CustomField[], b: CustomField[]): boolean {
+  return a.length === b.length && a.every((f, i) => f.name === b[i].name && f.value === b[i].value && f.protected === b[i].protected);
+}
+
+// Order and case of a stored tag list are not meaningful to the user; only membership is.
+// A KeePassXC-written "Favorite,work" must compare equal to a re-typed "work" plus the
+// Favourite checkbox, or every foreign entry gets rewritten the first time it is touched.
+function sameTagSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((t, i) => t === sortedB[i]);
 }
 
 export class KeePassVault {
@@ -154,14 +217,23 @@ export class KeePassVault {
     }
   }
 
+  // Open a file written by another client with a plain password (optionally a key
+  // file), for the "import a KeePass file" flow. Never used for this app's own vault.
+  public static async openForeign(buffer: ArrayBuffer, password: string, keyFile?: ArrayBuffer): Promise<KeePassVault> {
+    const credentials = new Credentials(ProtectedValue.fromString(password), keyFile);
+    const db = await Kdbx.load(buffer, credentials);
+    return new KeePassVault(db, credentials);
+  }
+
   // Copy the full native entry, including history, binaries and unknown fields.
-  // A new UUID avoids replacing a newer edit or reviving a current tombstone.
-  public recoverEntryCopy(source: KeePassVault, uuid: string): string {
+  // A new UUID avoids replacing a newer edit or reviving a current tombstone, unless
+  // keepUuid is set (only ever called after the caller has checked the UUID is free).
+  public recoverEntryCopy(source: KeePassVault, uuid: string, options?: { keepUuid?: boolean; into?: kdbxweb.KdbxGroup }): string {
     const entry = source.findEntry(uuid);
     if (!entry?.parentGroup || source.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
       throw new Error("Select a live entry from the conflict.");
     }
-    const destination = this.db.getDefaultGroup();
+    const destination = options?.into ?? this.db.getDefaultGroup();
     if (this.recycledGroupIds().has(destination.uuid.toString())) throw new Error("No live vault folder is available.");
     // kdbxweb imports icons by UUID. Preserve current icons when another client reused
     // the UUID with different data; give the recovered copy its own icon identity.
@@ -182,9 +254,72 @@ export class KeePassVault {
       item.customIcon = newId;
     }
     for (const [id, icon] of existingIcons) this.db.meta.customIcons.set(id, icon);
-    const title = `${entryFieldText(entry, "Title") || "Untitled"} (recovered)`;
-    copy.fields.set("Title", entry.fields.get("Title") instanceof ProtectedValue ? ProtectedValue.fromString(title) : title);
+    if (options?.keepUuid) {
+      copy.uuid = entry.uuid;
+    } else {
+      const title = `${entryFieldText(entry, "Title") || "Untitled"} (recovered)`;
+      copy.fields.set("Title", entry.fields.get("Title") instanceof ProtectedValue ? ProtectedValue.fromString(title) : title);
+    }
     return copy.uuid.toString();
+  }
+
+  // Copy a foreign vault's live tree (recycled entries/groups excluded) into an existing
+  // same-named top-level folder, reusing it across repeat imports, or under a new one
+  // named after the source root; targetGroupUuid picks the destination explicitly.
+  // Existing UUIDs win for entries: a clashing entry is skipped rather than overwritten.
+  // A group UUID that already exists live is not skipped: import recurses into it, so
+  // entries added to a previously imported folder are picked up on a repeat import.
+  public importFrom(source: KeePassVault, targetGroupUuid?: string): ImportReport {
+    const report: ImportReport = { entries: 0, groups: 0, skippedEntries: 0, skippedGroups: 0, attachments: 0 };
+    const srcRoot = source.db.getDefaultGroup();
+    const rootName = folderName(srcRoot.name || "Imported");
+    const recycled = source.recycledGroupIds();
+
+    // Validate the whole source tree before mutating anything: a bad name discovered
+    // halfway through would otherwise leave a half-imported tree with no onChanged().
+    const validateNames = (g: kdbxweb.KdbxGroup) => {
+      for (const child of g.groups) {
+        if (recycled.has(child.uuid.toString())) continue;
+        folderName(child.name || "Folder");
+        validateNames(child);
+      }
+    };
+    validateNames(srcRoot);
+
+    const targetRecycled = this.recycledGroupIds();
+    if (targetGroupUuid && (targetRecycled.has(targetGroupUuid) || !this.findGroup(targetGroupUuid))) {
+      throw new Error("No live vault folder is available.");
+    }
+
+    const root = this.db.getDefaultGroup();
+    // Never match the target's own recycle bin: it can share a name with a foreign root.
+    const existingRoot = root.groups.find((g) => !targetRecycled.has(g.uuid.toString()) && (g.name || "") === rootName);
+    const parent = (targetGroupUuid && this.findGroup(targetGroupUuid)) || existingRoot || this.db.createGroup(root, rootName);
+    const copyGroup = (from: kdbxweb.KdbxGroup, into: kdbxweb.KdbxGroup) => {
+      for (const child of from.groups) {
+        const id = child.uuid.toString();
+        if (recycled.has(id)) continue;
+        const existing = this.findGroup(id);
+        if (existing) {
+          if (targetRecycled.has(id)) { report.skippedGroups++; continue; }
+          copyGroup(child, existing);
+          continue;
+        }
+        const made = this.db.createGroup(into, folderName(child.name || "Folder"));
+        made.uuid = child.uuid;
+        report.groups++;
+        copyGroup(child, made);
+      }
+      for (const entry of from.entries) {
+        const id = entry.uuid.toString();
+        if (this.findEntry(id)) { report.skippedEntries++; continue; }
+        const uuid = this.recoverEntryCopy(source, id, { keepUuid: true, into });
+        report.entries++;
+        report.attachments += this.getAttachments(uuid).length;
+      }
+    };
+    copyGroup(srcRoot, parent);
+    return report;
   }
 
   // Export/Save the vault back into encrypted KDBX v4 ArrayBuffer
@@ -224,6 +359,7 @@ export class KeePassVault {
       const url = entryFieldText(e, "URL");
       const notes = entryFieldText(e, "Notes");
       const otp = entryFieldText(e, "otp") || entryFieldText(e, "TOTP");
+      const { tags, favorite, expiresAt, custom } = readEntryMeta(e);
 
       entries.push({
         uuid: e.uuid.toString(),
@@ -235,6 +371,10 @@ export class KeePassVault {
         totpSeed: otp,
         groupUuid: gUuid,
         updatedAt: e.times.lastModTime || new Date(),
+        tags,
+        favorite,
+        expiresAt,
+        custom,
       });
     }
 
@@ -425,12 +565,18 @@ export class KeePassVault {
   }
 
   // Create a new entry in a group
-  public createEntry(entry: Omit<VaultEntry, "uuid" | "updatedAt">): VaultEntry {
+  public createEntry(entry: Omit<VaultEntry, "uuid" | "updatedAt" | "tags" | "favorite" | "custom" | "expiresAt"> &
+    Partial<Pick<VaultEntry, "tags" | "favorite" | "custom" | "expiresAt">>): VaultEntry {
     let targetGroup = this.db.getDefaultGroup();
     if (entry.groupUuid) {
       const found = this.findGroup(entry.groupUuid);
       if (found) targetGroup = found;
     }
+
+    const tags = entry.tags ?? [];
+    const favorite = entry.favorite ?? false;
+    const custom = entry.custom ?? [];
+    const expiresAt = entry.expiresAt;
 
     const e = this.db.createEntry(targetGroup);
     e.fields.set("Title", entry.title);
@@ -441,6 +587,7 @@ export class KeePassVault {
     if (entry.totpSeed) {
       e.fields.set("otp", entry.totpSeed);
     }
+    writeEntryMeta(e, { tags, favorite, expiresAt, custom });
 
     return {
       uuid: e.uuid.toString(),
@@ -452,6 +599,10 @@ export class KeePassVault {
       totpSeed: entry.totpSeed,
       groupUuid: targetGroup.uuid.toString(),
       updatedAt: new Date(),
+      tags: foldFavoriteTag(tags, favorite),
+      favorite,
+      expiresAt,
+      custom,
     };
   }
 
@@ -460,11 +611,16 @@ export class KeePassVault {
     const e = this.findEntry(entry.uuid);
     if (!e) return false;
 
+    const currentMeta = readEntryMeta(e);
     if (entryFieldText(e, "Title") === entry.title && entryFieldText(e, "UserName") === entry.username &&
         entryFieldText(e, "Password") === entry.password && entryFieldText(e, "URL") === entry.url &&
         entryFieldText(e, "Notes") === entry.notes &&
         (entryFieldText(e, "otp") || entryFieldText(e, "TOTP")) === (entry.totpSeed || "") &&
-        (!entry.groupUuid || e.parentGroup?.uuid.toString() === entry.groupUuid)) return false;
+        (!entry.groupUuid || e.parentGroup?.uuid.toString() === entry.groupUuid) &&
+        currentMeta.favorite === entry.favorite &&
+        sameTagSet(foldFavoriteTag(currentMeta.tags, false), foldFavoriteTag(entry.tags, false)) &&
+        currentMeta.expiresAt?.getTime() === entry.expiresAt?.getTime() &&
+        customFieldsEqual(currentMeta.custom, entry.custom)) return false;
     this.pushEntryHistory(e);
 
     const setField = (name: string, value: string) => e.fields.set(name,
@@ -480,6 +636,7 @@ export class KeePassVault {
       e.fields.delete("otp");
       e.fields.delete("TOTP");
     }
+    writeEntryMeta(e, entry);
 
     if (entry.groupUuid && e.parentGroup?.uuid.toString() !== entry.groupUuid) {
       const targetGroup = this.findGroup(entry.groupUuid);
@@ -521,6 +678,36 @@ export class KeePassVault {
     if (!group || this.recycledGroupIds().has(uuid)) throw new Error("Choose a folder in the live vault.");
     if (group.name === validName) return false;
     group.name = validName;
+    group.times.update();
+    return true;
+  }
+
+  private assertMovableGroup(uuid: string): kdbxweb.KdbxGroup {
+    const group = this.findGroup(uuid);
+    if (!group) throw new Error("This folder is no longer available.");
+    if (group === this.db.getDefaultGroup()) throw new Error("The root folder cannot be changed.");
+    if (this.recycledGroupIds().has(uuid)) throw new Error("Choose a folder in the live vault.");
+    return group;
+  }
+
+  // Recycling keeps the folder tree intact inside the bin, so Restore works per entry.
+  public deleteGroup(uuid: string): number {
+    const group = this.assertMovableGroup(uuid);
+    const count = [...group.allEntries()].length;
+    if (this.recyclingEnabled) this.db.createRecycleBin();
+    this.db.remove(group);
+    return count;
+  }
+
+  public moveGroup(uuid: string, newParentUuid: string): boolean {
+    const group = this.assertMovableGroup(uuid);
+    const target = this.findGroup(newParentUuid);
+    if (!target || this.recycledGroupIds().has(newParentUuid)) throw new Error("Choose a live folder to move into.");
+    for (let p: kdbxweb.KdbxGroup | undefined = target; p; p = p.parentGroup) {
+      if (p === group) throw new Error("A folder cannot be moved inside itself.");
+    }
+    if (group.parentGroup === target) return false;
+    this.db.move(group, target);
     group.times.update();
     return true;
   }
