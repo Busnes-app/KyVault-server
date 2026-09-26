@@ -119,13 +119,13 @@ export async function removeDraft(id: string | undefined): Promise<boolean> {
 }
 
 // remove: drafts of this account older than DRAFT_MAX_AGE_MS, never the current pointer.
-// stamp: drafts with no sealedAt (sealed before this field existed), so they age out
-// a week from now instead of being deleted on an unknown age.
-export function planDraftCleanup(entries: Array<{ id: string; sealedAt?: number }>, keep: string | undefined, now: number): { remove: string[]; stamp: string[] } {
+// stamp: drafts with no usable sealedAt (missing, null, or otherwise not a finite
+// number) so they age out a week from now instead of being deleted on an unknown age.
+export function planDraftCleanup(entries: Array<{ id: string; sealedAt?: number | null }>, keep: string | undefined, now: number): { remove: string[]; stamp: string[] } {
   const remove: string[] = [], stamp: string[] = [];
   for (const { id, sealedAt } of entries) {
     if (id === keep) continue;
-    if (sealedAt === undefined) stamp.push(id);
+    if (typeof sealedAt !== "number" || !Number.isFinite(sealedAt)) stamp.push(id);
     else if (now - sealedAt > DRAFT_MAX_AGE_MS) remove.push(id);
   }
   return { remove, stamp };
@@ -150,7 +150,9 @@ export async function pruneDrafts(userId: string, keep: string | undefined, now 
           resolve(undefined);
           return;
         }
-        entries.push({ id: String(cursor.key), sealedAt: (cursor.value as LockedDraft).sealedAt, value: cursor.value as LockedDraft });
+        const storedSealedAt = (cursor.value as LockedDraft).sealedAt;
+        const sealedAt = typeof storedSealedAt === "number" && Number.isFinite(storedSealedAt) ? storedSealedAt : undefined;
+        entries.push({ id: String(cursor.key), sealedAt, value: cursor.value as LockedDraft });
         cursor.continue();
       };
     });
