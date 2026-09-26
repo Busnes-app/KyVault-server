@@ -144,16 +144,17 @@ the user's, not the directory's.
 
 ## Verification
 
-- Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`
+- Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`. Run them before `npm ci` in `extension/`: a Go package inside `extension/node_modules` is otherwise picked up by `go vet ./...`.
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
 - UI without KySignOn: `npm run dev:mock` in `frontend/` serves the app with an in-process mock of the API (`frontend/mock/api.ts`, dev only, never built) for manual and screenshot checks.
+- Extension: `npm test && npm run build && npm run lint` in `extension/` (`build` runs `tsc` first, so it is the typecheck gate too; `lint` is `web-ext lint --source-dir dist/firefox` and must report 0 errors). See `extension/AGENTS.md`.
 - Daemon build: `go build -o ./kyvault-server ./cmd/server`
 - Docker build: `docker build -t kyvault-server:latest .`
-- Dependency vulns: `govulncheck ./...` and `npm audit --audit-level=high` in `frontend/`
+- Dependency vulns: `govulncheck ./...`, `npm audit --audit-level=high` in `frontend/`, and `npm audit --audit-level=high` in `extension/`
 
 All of the above run in CI on every push to `master` and every pull request, split
-across six jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
-`security`, `publish`, `promote`. Keep the workflow and this list in sync when either changes.
+across seven jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `extension`,
+`docker`, `security`, `publish`, `promote`. Keep the workflow and this list in sync when either changes.
 `publish` and `promote` run only on a green push to `master`. `publish` pushes the exact
 image the `docker` job handed over as an artifact (no rebuild) to
 `ghcr.io/busnes-app/kyvault-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`.
@@ -208,6 +209,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - Verify vendored files with `node frontend/src/ky-ui/check-vendor.mjs` from this document's directory. Builds/CI run that check. Rendered evidence and capture limitations are recorded in the repository-root `UI-VERIFICATION.md`.
 
 ## Child DOX Index
+
+- `extension/`: Chrome and Firefox MV3 extension; pairs as a device, unlocks with
+  the master password in the browser, fills on click. See `extension/AGENTS.md`.
 
 - `frontend/src/lib/kdbx.ts` and `frontend/src/pages/VaultPage.tsx`: selected live
   folders support child creation and rename through ordinary autosave. All Items/Recycle

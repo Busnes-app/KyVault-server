@@ -1,6 +1,6 @@
 // Dev-only stand-in for the Go API so the UI can run without KySignOn. Never built.
 import type { Plugin } from "vite";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 type Store = {
   version: number; keyEpochSince: number; bytes: Buffer | null; passwordEnvelope?: string; recoveryEnvelope?: string;
@@ -14,6 +14,10 @@ export function mockApi(): Plugin {
     { id: "dev-1", name: "Pixel 9", platform: "android", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.7", current: false },
     { id: "dev-2", name: "Firefox extension", platform: "browser", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.8", current: false },
   ] };
+  // Device bearer tokens issued by redeem; a token dies with its device. Requests without
+  // a bearer header are the web app's cookie session and pass as before.
+  const tokens = new Map<string, string>();
+  let deviceCount = store.devices.length;
   const user = { id: "u-1", username: "mock-admin", role: "admin", active: true, ssoSub: "sub-mock" };
   const json = (res: import("node:http").ServerResponse, status: number, body: unknown) => {
     res.statusCode = status; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(body));
@@ -41,13 +45,16 @@ export function mockApi(): Plugin {
       const p = url.pathname; const m = req.method ?? "GET";
       if (!p.startsWith("/api/")) return next();
       res.setHeader("Set-Cookie", "csrf_token=mock-csrf; Path=/");
+      const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
+      if (bearer !== undefined && !store.devices.some((d) => d.id === tokens.get(bearer))) return json(res, 401, { error: "unauthorized" });
       if (p === "/api/auth/me") return json(res, 200, { authenticated: true, user });
       if (p === "/api/auth/sso-config") return json(res, 200, { enabled: true, issuerUrl: "https://signon.mock" });
       if (p === "/api/auth/logout") return json(res, 200, { ok: true });
       if (p === "/api/vault/metadata") return json(res, 200, metadata());
       if (p === "/api/vault/kdbx") {
         if (!store.bytes) return json(res, 404, { error: "vault does not exist yet" });
-        res.setHeader("Content-Type", "application/x-keepass2"); res.setHeader("ETag", `"${store.version}"`); return res.end(store.bytes);
+        res.setHeader("Content-Type", "application/x-keepass2"); res.setHeader("ETag", `"${store.version}"`);
+        res.setHeader("X-Vault-Version", String(store.version)); return res.end(store.bytes);
       }
       if (p === "/api/vault/upload" && m === "POST") {
         const expected = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));
@@ -100,9 +107,11 @@ export function mockApi(): Plugin {
       }
       if (p === "/api/devices/pairing/start") return json(res, 200, { pin: "483920", secret: "mock-secret", expiresAt: new Date(Date.now() + 90_000).toISOString() });
       if (p === "/api/devices/pairing/redeem" && m === "POST") {
-        const id = `dev-${store.devices.length + 1}`;
+        const id = `dev-${++deviceCount}`; // never reused, so a revoked token stays dead
         store.devices.push({ id, name: "New device", platform: "mock", lastSeenAt: new Date().toISOString(), lastIp: "127.0.0.1", current: false });
-        return json(res, 200, { ok: true, deviceId: id, sessionToken: "mock-token", user: { id: user.id } });
+        const sessionToken = `mock-token-${randomUUID()}`;
+        tokens.set(sessionToken, id);
+        return json(res, 200, { ok: true, deviceId: id, sessionToken, user: { id: user.id } });
       }
       if (p === "/api/admin/users") return json(res, 200, [user, { id: "u-2", username: "dana", role: "user", active: true, ssoSub: "sub-dana" }]);
       if (p === "/api/admin/sso" && m === "GET") return json(res, 200, { enabled: true, issuerUrl: "https://signon.mock", clientId: "kyvault", autoProvision: true, clientSecretSet: true });
