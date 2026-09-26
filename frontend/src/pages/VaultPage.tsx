@@ -75,6 +75,12 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [newDraft, setNewDraft] = useState<NewEntryDraft | null>(null);
   const pendingDraft = useRef(initialDraft);
   const importFileInputRef = useRef<HTMLInputElement>(null);
+  // App.tsx unmounts VaultPage as soon as the vault locks. handleImportKeePassFile spans
+  // several awaits (file read, Argon2 password check, folder chooser); check this after
+  // each one so a lock mid-import cannot reopen the chooser over the lock screen or import
+  // into a vault that is no longer current.
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const [searchQuery, setSearchQuery] = useState("");
   const [showReusedPasswords, setShowReusedPasswords] = useState(false);
   const [showFavorites, setShowFavorites] = useState(false);
@@ -100,6 +106,8 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [editCustom, setEditCustom] = useState<CustomField[]>([]);
   const [revealedCustom, setRevealedCustom] = useState<Set<number>>(new Set());
   const reservedCustomFieldName = editCustom.find((f) => RESERVED_FIELDS.has(f.name.trim()))?.name;
+  const emptyCustomFieldName = editCustom.some((f) => !f.name.trim());
+  const duplicateCustomFieldName = editCustom.find((f, i) => editCustom.findIndex((g) => g.name === f.name) !== i)?.name;
   const tagsHasReservedWord = hasReservedTag(editTags);
 
   // UI Modals & Helpers
@@ -261,9 +269,13 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   // The chosen calendar date is stored/compared as midnight UTC on that date, not the
   // browser's local midnight, so it round-trips to the same "YYYY-MM-DD" everywhere.
   const parseExpires = (value: string): Date | undefined => value ? new Date(value + "T00:00:00Z") : undefined;
+  // If the date field was not touched, keep the original Date (which may carry a time of
+  // day from a foreign import) instead of rewriting it to midnight UTC on every Apply Edits.
+  const resolveExpires = (value: string, original?: VaultEntry): Date | undefined =>
+    original && value === entryExpiresString(original) ? original.expiresAt : parseExpires(value);
 
   const handleSaveEntry = () => {
-    if (reservedCustomFieldName) return;
+    if (reservedCustomFieldName || emptyCustomFieldName || duplicateCustomFieldName) return;
     if (newDraft) {
       const entry = createFromDraft(vault, { groupUuid: editGroupUuid }, {
         title: editTitle, username: editUsername, password: editPassword,
@@ -291,7 +303,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       updatedAt: new Date(),
       tags: parseTags(editTags),
       favorite: editFavorite,
-      expiresAt: parseExpires(editExpires),
+      expiresAt: resolveExpires(editExpires, selectedEntry ?? undefined),
       custom: editCustom,
     });
     if (changed) onChanged();
@@ -487,13 +499,14 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       await dialogs.notify({ title: "File not imported", message: error instanceof Error ? error.message : "Unable to read this file." });
       return;
     }
+    if (!alive.current) return;
     const password = await dialogs.prompt({
       title: "Open the KeePass file",
       label: "Its master password",
       secret: true,
       validate: (v) => v ? null : "Enter the master password.",
     });
-    if (password === null) return;
+    if (password === null || !alive.current) return;
     let foreign: KeePassVault;
     try {
       foreign = await KeePassVault.openForeign(buffer, password);
@@ -501,13 +514,14 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       await dialogs.notify({ title: "File not imported", message: "Could not open this file. Check the password; key files are not supported yet." });
       return;
     }
+    if (!alive.current) return;
     const target = await dialogs.choose({
       title: "Import into",
       label: "Add under",
       options: [{ value: "", label: "New folder named after the file" }, ...groups.map((g) => ({ value: g.uuid, label: g.path }))],
       defaultValue: "",
     });
-    if (target === null) return;
+    if (target === null || !alive.current) return;
     try {
       const report = vault.importFrom(foreign, target || undefined);
       onChanged();
@@ -874,7 +888,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     <button className="btn btn-secondary" onClick={handleCancelEdit}>
                       Cancel
                     </button>
-                    <button className="btn btn-primary" onClick={handleSaveEntry} disabled={!!reservedCustomFieldName}>
+                    <button className="btn btn-primary" onClick={handleSaveEntry} disabled={!!reservedCustomFieldName || emptyCustomFieldName || !!duplicateCustomFieldName}>
                       <Save size={16} /> Apply Edits
                     </button>
                   </>
@@ -1213,6 +1227,8 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                     </div>
                   ))}
                   {reservedCustomFieldName ? <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8rem" }}>"{reservedCustomFieldName}" is a reserved field name.</p> : null}
+                  {emptyCustomFieldName ? <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8rem" }}>Enter a name for every custom field.</p> : null}
+                  {!emptyCustomFieldName && duplicateCustomFieldName ? <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8rem" }}>"{duplicateCustomFieldName}" is used more than once.</p> : null}
                   <button type="button" className="btn btn-secondary btn-sm"
                     onClick={() => setEditCustom([...editCustom, { name: "", value: "", protected: false }])}>
                     <Plus size={14} /> Add field

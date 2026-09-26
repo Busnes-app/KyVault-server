@@ -323,6 +323,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Manual lock/logout still ask before discarding unsaved edits. Forget removes this tab's copy.
   ponytail: closing a tab without restoring it loses the reference to its encrypted checkpoint;
   a cross-tab recovery inventory and retention policy are future work. No offline login/unlock.
+  An unreadable checkpoint (corrupt or undecryptable) is deleted and reported rather than
+  blocking unlock (`App.tsx`).
 
 - `frontend/src/lib/vaultSave.ts`: owns one automatic save queue per unlocked vault.
   Applied edits, entry/folder creation, deletion, and CSV import enqueue saves after 1.5 seconds
@@ -440,9 +442,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Also untested: opening a genuine kotpass-written file. The KyAuth fixture in `kdbx.test.ts`
   is built with kdbxweb, so it proves our credential handling, not cross-library compatibility.
   `openForeign` opens a file written by another client with a plain password; `importFrom`
-  copies its live tree under a new folder, keeps UUIDs that are free, skips existing ones, and
-  carries attachments, icons, tags, expiry, custom fields and history. `kdbxImport.test.ts`
-  covers skip and carry.
+  copies its live tree into an existing same-named top-level folder (reused across repeat
+  imports) or a new one named after the source root, keeps UUIDs that are free, recurses
+  into a same-UUID live group instead of skipping it (so entries added there after an
+  earlier import are picked up), and skips existing entries. Imported groups keep only
+  their name and UUID, not the source's own metadata. `kdbxImport.test.ts` covers skip,
+  recurse and carry. CSV export (`csvExport.ts`) omits custom fields and attachments.
 - `frontend/src/lib/csvImport.ts`: zero-knowledge RFC 4180 CSV parser and multi-format importer supporting
   Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
   folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;
