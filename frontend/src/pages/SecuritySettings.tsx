@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, FormEvent } from "react";
-import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
+import { getJSON, putJSON, deleteJSON, toErrorMessage, HttpError } from "../lib/api";
 import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCrypto";
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
-import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download } from "lucide-react";
+import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download, RefreshCw } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { useDialogs } from "../components/DialogHost";
 
@@ -10,6 +10,8 @@ import { AUTO_LOCK_MINUTES, parseAutoLockMinutes, type AutoLockMinutes } from ".
 import { formatWhen } from "../lib/format";
 import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 import { groupHex, useHideAfter } from "../lib/secretDisplay";
+import { generatePaperCode } from "../lib/paperCode";
+import { revokeDevices } from "../lib/keyRotation";
 
 // Type-it-back comparison ignores formatting, not case or characters.
 function normalizeCode(value: string): string {
@@ -31,9 +33,12 @@ type Props = {
   autoLockMinutes: AutoLockMinutes;
   onAutoLockChange: (minutes: AutoLockMinutes) => void;
   onForgetDevice?: () => void;
+  canRotate: boolean;
+  onExport: () => Promise<void>;
+  onRotateKey: (password: string, paperCode: string) => Promise<void>;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey }: Props) {
   const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -53,6 +58,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [unrevoked, setUnrevoked] = useState<Device[]>([]);
 
   const hideVaultKey = useCallback(() => setShowVaultKey(false), []);
   const hidePaperCode = useCallback(() => setPaperCode(null), []);
@@ -175,15 +181,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       setPaperConfirmed(false);
       setPaperCodeCopied(false);
 
-      // Generate 16-character alphanumeric code
-      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-      const bytes = new Uint8Array(16);
-      crypto.getRandomValues(bytes);
-      let raw = "";
-      for (let i = 0; i < 16; i++) {
-        raw += chars[bytes[i] % chars.length];
-      }
-      const code = `KYPASS-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
+      const code = generatePaperCode();
 
       // The recovery code wraps the vault key and nothing else. It used to also be hashed
       // onto the user record so it could start a session; that made it a second way to
@@ -233,6 +231,61 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       setError(toErrorMessage(err, "Failed to verify the current master password"));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Devices hold the retired key, which opens nothing current, so a failure here is a
+  // cleanup gap rather than a security gap. Runs even if the page unmounted meanwhile.
+  const revokeAll = async (list: Device[]) => {
+    const failed = await revokeDevices(list.map((d) => d.id), (id) => deleteJSON(`/api/devices/${id}`));
+    const left = list.filter((d) => failed.includes(d.id));
+    if (!alive.current) return;
+    setUnrevoked(left);
+    setDevices((prev) => prev.filter((d) => !list.some((x) => x.id === d.id) || failed.includes(d.id)));
+  };
+
+  const handleRotateKey = async () => {
+    if (!canRotate) return;
+    if (!await dialogs.confirm({
+      title: "Rotate the vault key?",
+      message: "All paired devices and extensions will be signed out and need pairing again. " +
+        "Snapshots and preserved conflicts from before now cannot be opened with the new key, so download the vault first if you may need them. " +
+        "Your master password does not change. A new paper recovery code will be shown once; the old one stops working.",
+      confirmLabel: "Rotate",
+      danger: true,
+    })) return;
+    if (!alive.current) return;
+    setBusy(true);
+    setMessage("");
+    setError("");
+    setUnrevoked([]);
+    try {
+      if (!(await proveCurrentPassword())) return;
+      if (!alive.current) return;
+      setPaperCode(null);
+      setPaperConfirmInput("");
+      setPaperConfirmed(false);
+      setPaperCodeCopied(false);
+      setShowVaultKey(false);
+      const code = generatePaperCode();
+      await onRotateKey(currentPassword, code);
+      // The server now holds the new key. Revoke before touching page state: a lock
+      // mid-rotation unmounts this page but the devices still need signing out.
+      const list = await getJSON<Device[]>("/api/devices").catch(() => devices);
+      const revoked = revokeAll(list || []);
+      if (alive.current) {
+        setCurrentPassword("");
+        setPaperCode(code);
+        setMessage("Vault key rotated. Save the new paper code shown under Paper Recovery Code; the old one no longer works.");
+      }
+      await revoked;
+    } catch (err) {
+      if (!alive.current) return;
+      setError(err instanceof HttpError && err.status === 409
+        ? "Another device saved the vault first, so nothing changed. Reload the vault and try again."
+        : `Could not rotate the vault key, so nothing changed on the server. ${toErrorMessage(err, "")}`.trim());
+    } finally {
+      if (alive.current) setBusy(false);
     }
   };
 
@@ -327,7 +380,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           <label className="input-label" htmlFor="current-master-password">Current Master Password or Paper Code</label>
           <input id="current-master-password" type="password" className="input" autoComplete="current-password"
             value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
-          <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>Needed to change the password, generate a paper code or show the vault key. Checked in this browser only.</p>
+          <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>Needed to change the password, generate a paper code, rotate the vault key or show the vault key. Checked in this browser only.</p>
         </div>
 
         <form onSubmit={handleChangePassword}>
@@ -440,6 +493,39 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         <button className="btn btn-secondary" onClick={handleGeneratePaperRecovery} disabled={busy || !currentPassword}>
           Generate Printable Paper Key
         </button>
+      </section>
+
+      <section className="field-card" style={{ marginBottom: "2rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+          <RefreshCw size={20} color="var(--accent)" />
+          <h3 style={{ margin: 0 }}>Rotate Vault Key</h3>
+        </div>
+        <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
+          Replaces the vault key with a new random one and re-encrypts the vault. Your master password stays
+          the same. Every paired device and extension is signed out, and snapshots and preserved conflicts
+          from before the rotation can no longer be opened here. A new paper code is shown once afterwards;
+          if this tab closes before you save it, your master password still unlocks the vault and you can
+          generate another code.
+        </p>
+        {unrevoked.length > 0 ? (
+          <div role="alert" style={{ marginBottom: "1rem", fontSize: "0.85rem" }}>
+            <p style={{ margin: "0 0 0.5rem" }}>These devices could not be signed out yet: {unrevoked.map((d) => d.name).join(", ")}.</p>
+            <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void revokeAll(unrevoked)}>
+              Retry revoking
+            </button>
+          </div>
+        ) : null}
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+          <button type="button" className="btn btn-secondary" onClick={() => void onExport()} disabled={busy}>
+            <Download size={14} /> Download vault first
+          </button>
+          <button type="button" className="btn btn-danger" onClick={handleRotateKey}
+            disabled={busy || !currentPassword || !canRotate}
+            title={canRotate ? undefined : "Save or discard your unsaved edits first."}>
+            Rotate key
+          </button>
+        </div>
+        {!canRotate ? <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.5rem" }}>Save or discard your unsaved edits first.</p> : null}
       </section>
 
       {/* Offline recovery: the key that opens a downloaded vault in any KeePass client */}

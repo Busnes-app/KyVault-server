@@ -6,6 +6,7 @@ import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinut
 import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
+import { rotateAndUpload, RotationUnconfirmedError } from "./lib/keyRotation";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
@@ -322,6 +323,42 @@ export function App() {
     downloadBlob(new Blob([binary], { type: "application/x-keepass2" }), `${user?.username || "vault"}.kdbx`);
   };
 
+  // Key rotation. Runs inside the queue's serializer so no download or autosave can export
+  // while the live vault holds a key the server has not accepted yet.
+  const rotateKey = async (password: string, paperCode: string): Promise<void> => {
+    const queue = saveQueue, oldKey = vaultKey, u = user, generation = unlockGeneration.current;
+    if (!vault || !queue || !oldKey || !u) throw new Error("Unlock the vault first.");
+    let rotated: { key: Uint8Array; version: number };
+    try {
+      rotated = await queue.exclusive((live) => {
+        if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
+        return rotateAndUpload(live, oldKey, password, paperCode, {
+          upload: (binary, pw, rec) => uploadVault(binary, queue.getSnapshot().version, pw, rec),
+          metadata: () => getJSON("/api/vault/metadata"),
+        });
+      });
+    } catch (err) {
+      if (err instanceof RotationUnconfirmedError) {
+        closeVault();
+        await clearDeviceVaultKey(u.username).catch(() => {});
+        setLockNotice("Could not confirm whether the new vault key reached the server, so the vault is locked. Unlock with your master password, then generate a new paper code from Security.");
+      }
+      throw err;
+    }
+    queue.discard();
+    const recache = clearDeviceVaultKey(u.username);
+    if (generation !== unlockGeneration.current) {
+      // Locked while the upload was in flight: the rotation stands, this tab keeps nothing.
+      await recache.catch(() => {});
+      setLockNotice("The vault key was rotated while the vault locked. Unlock with your master password, then generate a new paper code from Security.");
+      return;
+    }
+    setVaultKey(rotated.key);
+    setSaveQueue(new VaultSaveQueue(vault, rotated.version));
+    await recache.then(() => storeDeviceVaultKey(u.username, bytesToHex(rotated.key)))
+      .catch(() => setLockNotice("Could not cache the new device key; you may need your master password again."));
+  };
+
   const closeVault = () => {
     // A question asked before the lock must not be answerable after it: the handler
     // that asked still holds the vault key in its closure.
@@ -573,6 +610,9 @@ export function App() {
           onAutoLockChange={changeAutoLock}
           onUserUpdated={async () => { if (await confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
+          canRotate={!unsaved}
+          onExport={handleExportKdbx}
+          onRotateKey={rotateKey}
         /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>

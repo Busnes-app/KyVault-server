@@ -6,12 +6,13 @@ export type SaveState =
   | { kind: "saving"; version: number }
   | { kind: "error"; version: number; message: string; conflict?: boolean };
 
-export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, signal?: AbortSignal): Promise<number> {
+export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal): Promise<number> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     "If-Match": `"${version}"`,
   };
   if (passwordEnvelope) headers["X-Password-Envelope"] = passwordEnvelope;
+  if (recoveryEnvelope) headers["X-Recovery-Envelope"] = recoveryEnvelope;
   const data = await requestJSON<unknown>("/api/vault/upload", { method: "POST", headers, body: binary, signal });
   if (typeof data !== "object" || data === null || !("metadata" in data) ||
       typeof data.metadata !== "object" || data.metadata === null || !("version" in data.metadata) ||
@@ -42,16 +43,17 @@ export class VaultSaveQueue {
     this.state = { kind: "saved", version };
   }
 
-  // Downloads and uploads share the same mutable KDBX serializer.
-  exportBinary = (): Promise<ArrayBuffer> => {
+  // Downloads, uploads and key rotation share the same mutable KDBX serializer.
+  exclusive = <T>(run: (vault: KeePassVault) => Promise<T>): Promise<T> => {
     const vault = this.vault;
     const result = this.exporting.then(() => {
       if (!vault) throw new Error("Vault is locked.");
-      return vault.exportBinary();
+      return run(vault);
     });
     this.exporting = result.catch(() => {});
     return result;
   };
+  exportBinary = (): Promise<ArrayBuffer> => this.exclusive((vault) => vault.exportBinary());
 
   recoverUnsaved = (): void => {
     this.revision++;
@@ -106,7 +108,7 @@ export class VaultSaveQueue {
         const revision = this.revision;
         const binary = await this.exportBinary();
         if (this.controller.signal.aborted) return;
-        const version = await uploadVault(binary, this.state.version, undefined, this.controller.signal);
+        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal);
         if (this.controller.signal.aborted) return;
         this.savedRevision = revision;
         this.publish({ kind: this.savedRevision === this.revision ? "saved" : "saving", version });

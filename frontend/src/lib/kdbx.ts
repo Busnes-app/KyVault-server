@@ -225,6 +225,13 @@ export class KeePassVault {
     return new KeePassVault(db, credentials);
   }
 
+  // Key rotation: the next export encrypts under this key. Rotation calls it again with
+  // the old key if the upload fails.
+  public rekey(vaultKey: Uint8Array): void {
+    this.credentials = KeePassVault.credentialFor(vaultKey);
+    this.db.credentials = this.credentials;
+  }
+
   // Copy the full native entry, including history, binaries and unknown fields.
   // A new UUID avoids replacing a newer edit or reviving a current tombstone, unless
   // keepUuid is set (only ever called after the caller has checked the UUID is free).

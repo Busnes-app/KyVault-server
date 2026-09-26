@@ -41,6 +41,7 @@ export function mockApi(): Plugin {
         if (expected !== store.version) return json(res, 409, { error: "conflict", currentVersion: store.version, expectedVersion: expected, conflictId: "c-1" });
         store.bytes = await readBody(req); store.version++;
         const env = req.headers["x-password-envelope"]; if (typeof env === "string" && env) store.passwordEnvelope = env;
+        const rec = req.headers["x-recovery-envelope"]; if (typeof rec === "string" && rec) store.recoveryEnvelope = rec;
         const meta = metadata();
         store.history.unshift({ id: `h-${store.version}`, version: store.version, sizeBytes: meta.sizeBytes, checksum: meta.checksum, timestamp: new Date().toISOString() });
         return json(res, 200, { ok: true, metadata: meta });

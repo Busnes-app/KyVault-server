@@ -256,3 +256,15 @@ test("a network failure retries once when the browser comes back online", async 
   listeners[0]();
   assert.deepEqual(await recovered, { kind: "saved", version: 2 });
 });
+
+test("key rotation upload carries both envelopes on the one versioned request", async (t) => {
+  browserCookie(t);
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, options: RequestInit) => {
+    const headers = new Headers(options.headers);
+    assert.equal(headers.get("If-Match"), '"4"');
+    assert.equal(headers.get("X-Password-Envelope"), "pw-env");
+    assert.equal(headers.get("X-Recovery-Envelope"), "rec-env");
+    return Response.json({ metadata: { version: 5 } });
+  });
+  assert.equal(await uploadVault(new ArrayBuffer(8), 4, "pw-env", "rec-env"), 5);
+});
