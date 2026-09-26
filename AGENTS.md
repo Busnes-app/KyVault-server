@@ -252,7 +252,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   keeping current files and password history. Both use autosave; export cleanup reclaims
   unreferenced bytes. Tests reproduce budget overflow without mutation and recover an
   imported >50 MiB vault with history enabled; shared copies in other entries survive.
-- `internal/api/vault_handlers.go`: read upload bodies with MaxBytesReader before any
+- `internal/api/vault_handlers.go`: the device recorded for a save (`UpdatedByDevice`, the
+  audit row, the conflict filename) is the session's `DeviceID`, never the `X-Device-ID`
+  header or the JSON `deviceId`, which are ignored; browser saves record no device. The
+  store also passes the id through `fileToken` before building a conflict filename, so a
+  path-shaped value can never write outside `conflicts/` (`vault_device_id_test.go`,
+  `TestConflictFilenameCannotEscape`). Read upload bodies with MaxBytesReader before any
   mutation. Raw and JSON requests above 50 MiB receive 413; exactly 50 MiB is accepted.
   LimitReader previously saved a truncated raw vault and returned 200. The streaming
   regression in `vault_upload_limit_test.go` proves oversized uploads preserve the current

@@ -197,6 +197,23 @@ func (s *Store) historyDir(userID string) string {
 	return filepath.Join(s.userVaultDir(userID), "history")
 }
 
+// fileToken keeps a value safe to embed in a filename: server-minted device ids are
+// hex, but the value is validated here so no caller can smuggle a path in.
+func fileToken(v string) string {
+	if v == "" {
+		return "web"
+	}
+	for _, r := range v {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return "unknown"
+		}
+	}
+	if len(v) > 64 {
+		return "unknown"
+	}
+	return v
+}
+
 func (s *Store) conflictsDir(userID string) string {
 	return filepath.Join(s.userVaultDir(userID), "conflicts")
 }
@@ -382,7 +399,7 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 	// Optimistic concurrency check
 	if expectedVersion != current.Version {
 		// Conflict! Preserve rejected upload into conflicts directory
-		conflictID := fmt.Sprintf("%d_%s_exp%d", time.Now().UTC().UnixNano(), deviceID, expectedVersion)
+		conflictID := fmt.Sprintf("%d_%s_exp%d", time.Now().UTC().UnixNano(), fileToken(deviceID), expectedVersion)
 		conflictFile := filepath.Join(s.conflictsDir(userID), conflictID+".kdbx")
 		_ = os.WriteFile(conflictFile, kdbxData, 0600)
 
