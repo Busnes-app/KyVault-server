@@ -4,7 +4,7 @@ import type { EntryDraft } from "../lib/lockedDraft";
 import type { SaveState } from "../lib/vaultSave";
 import { createFromDraft, type NewEntryDraft } from "../lib/newEntryDraft";
 import { findReusedPasswords } from "../lib/passwordReuse";
-import { parseTags, sortEntries, entryMatches, isExpired, expiresWithin, RESERVED_FIELDS, type SortKey } from "../lib/entryMeta";
+import { parseTags, hasReservedTag, sortEntries, entryMatches, isExpired, expiresWithin, RESERVED_FIELDS, type SortKey } from "../lib/entryMeta";
 import { generateTOTP } from "../lib/totp";
 import { safeHref } from "../lib/safeHref";
 import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
@@ -95,6 +95,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [editCustom, setEditCustom] = useState<CustomField[]>([]);
   const [revealedCustom, setRevealedCustom] = useState<Set<number>>(new Set());
   const reservedCustomFieldName = editCustom.find((f) => RESERVED_FIELDS.has(f.name.trim()))?.name;
+  const tagsHasReservedWord = hasReservedTag(editTags);
 
   // UI Modals & Helpers
   const [showGenerator, setShowGenerator] = useState(false);
@@ -1047,13 +1048,18 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             <div className="field-card">
               <label className="input-label">Tags</label>
               {isEditing ? (
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="work, personal"
-                  value={editTags}
-                  onChange={(e) => setEditTags(e.target.value)}
-                />
+                <>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="work, personal"
+                    value={editTags}
+                    onChange={(e) => setEditTags(e.target.value)}
+                  />
+                  {tagsHasReservedWord ? <p role="alert" style={{ color: "var(--danger)", fontSize: "0.8rem" }}>
+                    The tag favorite is reserved; use the Favourite checkbox.
+                  </p> : null}
+                </>
               ) : (
                 <div className="tag-chips">
                   {selectedEntry!.tags.filter((t) => t.toLowerCase() !== "favorite").length > 0 ? (

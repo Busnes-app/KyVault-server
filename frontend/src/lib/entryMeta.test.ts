@@ -1,11 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { KeePassVault } from "./kdbx";
-import { parseTags, isExpired, expiresWithin, sortEntries, entryMatches, FAVORITE_TAG } from "./entryMeta";
+import { parseTags, hasReservedTag, isExpired, expiresWithin, sortEntries, entryMatches, FAVORITE_TAG } from "./entryMeta";
 
 test("tags parse, dedupe and cap", () => {
   assert.deepEqual(parseTags(" work, Work ;home,, "), ["work", "home"]);
   assert.deepEqual(parseTags("x".repeat(40)), ["x".repeat(32)]);
+});
+
+test("the favorite tag is reserved and dropped from typed tags", () => {
+  assert.deepEqual(parseTags("Home, Favorite"), ["Home"]);
+  assert.equal(hasReservedTag("Home, Favorite"), true);
+  assert.equal(hasReservedTag("Home, Work"), false);
 });
 
 test("metadata round-trips through an encrypted export", async () => {

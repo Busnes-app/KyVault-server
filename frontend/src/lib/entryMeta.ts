@@ -4,17 +4,24 @@ export const FAVORITE_TAG = "favorite";
 export const RESERVED_FIELDS = new Set(["Title", "UserName", "Password", "URL", "Notes", "otp", "TOTP"]);
 export const MAX_TAG_LENGTH = 32;
 
+// "favorite" is reserved: it drives the Favourite checkbox, not a user-visible tag.
 export function parseTags(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of text.split(/[,;]/)) {
     const tag = raw.trim().slice(0, MAX_TAG_LENGTH);
     const key = tag.toLowerCase();
-    if (!tag || seen.has(key)) continue;
+    if (!tag || seen.has(key) || key === FAVORITE_TAG) continue;
     seen.add(key);
     out.push(tag);
   }
   return out;
+}
+
+// True if typed text contained the reserved "favorite" tag, so the editor can explain
+// why it silently disappeared from the parsed list.
+export function hasReservedTag(text: string): boolean {
+  return text.split(/[,;]/).some((raw) => raw.trim().toLowerCase() === FAVORITE_TAG);
 }
 
 export function isExpired(entry: Pick<VaultEntry, "expiresAt">, now = new Date()): boolean {

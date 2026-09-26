@@ -39,7 +39,16 @@ export async function openDraft(draft: LockedDraft, key: Uint8Array, account: st
     if (typeof metadata !== "object" || metadata === null || !("version" in metadata) || typeof metadata.version !== "number" ||
         !Number.isSafeInteger(metadata.version) || metadata.version < 1 || !("dirty" in metadata) || typeof metadata.dirty !== "boolean" ||
         !("entry" in metadata) || !isEntryDraft(metadata.entry)) throw new Error("Invalid recovery copy");
-    return { binary: plain.slice(4 + length), metadata: { version: metadata.version, dirty: metadata.dirty, entry: metadata.entry } };
+    // Checkpoints sealed before tags/expiry/favourite/custom existed omit those fields;
+    // fill defaults so an old checkpoint still opens instead of failing unlock outright.
+    const entry: EntryDraft | null = metadata.entry ? {
+      ...metadata.entry,
+      tags: metadata.entry.tags ?? [],
+      expiresAt: metadata.entry.expiresAt ?? null,
+      favorite: metadata.entry.favorite ?? false,
+      custom: metadata.entry.custom ?? [],
+    } : null;
+    return { binary: plain.slice(4 + length), metadata: { version: metadata.version, dirty: metadata.dirty, entry } };
   } finally { new Uint8Array(plain).fill(0); }
 }
 
@@ -48,6 +57,9 @@ function isCustomField(value: unknown): value is CustomField {
     "value" in value && typeof value.value === "string" && "protected" in value && typeof value.protected === "boolean";
 }
 
+// Checkpoints sealed before tags/expiry/favourite/custom fields existed have none of
+// them; accept a draft either without a field entirely or with a validly-typed one so
+// pre-feature checkpoints still open (openDraft fills in the missing defaults).
 function isEntryDraft(value: unknown): value is EntryDraft | null {
   if (value === null) return true;
   return typeof value === "object" && "uuid" in value && typeof value.uuid === "string" &&
@@ -55,10 +67,10 @@ function isEntryDraft(value: unknown): value is EntryDraft | null {
     "password" in value && typeof value.password === "string" && "url" in value && typeof value.url === "string" &&
     "notes" in value && typeof value.notes === "string" && "totpSeed" in value && typeof value.totpSeed === "string" &&
     "groupUuid" in value && typeof value.groupUuid === "string" &&
-    "tags" in value && Array.isArray(value.tags) && value.tags.every((t) => typeof t === "string") &&
-    "expiresAt" in value && (value.expiresAt === null || typeof value.expiresAt === "string") &&
-    "favorite" in value && typeof value.favorite === "boolean" &&
-    "custom" in value && Array.isArray(value.custom) && value.custom.every(isCustomField);
+    (!("tags" in value) || (Array.isArray(value.tags) && value.tags.every((t) => typeof t === "string"))) &&
+    (!("expiresAt" in value) || value.expiresAt === null || typeof value.expiresAt === "string") &&
+    (!("favorite" in value) || typeof value.favorite === "boolean") &&
+    (!("custom" in value) || (Array.isArray(value.custom) && value.custom.every(isCustomField)));
 }
 
 // Separate database preserves compatibility with older clients opening the device-key DB.

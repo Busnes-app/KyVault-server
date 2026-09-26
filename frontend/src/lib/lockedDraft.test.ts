@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { draftPointer, openDraft, sealDraft } from "./lockedDraft";
+import { draftPointer, openDraft, sealDraft, type DraftMetadata } from "./lockedDraft";
 
 test("draft pointer reads the renamed key and falls back to the legacy key", () => {
   const values = new Map([["kypassword.draft:u1", "legacy-checkpoint"]]);
@@ -45,6 +45,23 @@ test("recovery storage outages resolve as degraded results rather than aborting 
   assert.deepEqual(await readDraft("account:checkpoint"), { kind: "unavailable" });
   assert.equal(await removeDraft("account:checkpoint"), false);
   assert.deepEqual(await readDraft(undefined), { kind: "available", draft: undefined });
+});
+
+test("a checkpoint sealed before tags/expiry/favourite/custom existed still opens, with defaults filled in", async () => {
+  const key = new Uint8Array(32).fill(2);
+  const binary = new Uint8Array([5, 5, 5]).buffer;
+  // Pre-feature shape: no tags/expiresAt/favorite/custom on the entry. Cast past the
+  // current EntryDraft type, since this is exactly the shape an old client wrote.
+  const preFeatureMetadata = {
+    version: 4, dirty: true,
+    entry: { uuid: "entry", title: "old", username: "alice", password: "pw", url: "", notes: "", totpSeed: "", groupUuid: "group" },
+  } as unknown as DraftMetadata;
+  const sealed = await sealDraft(binary, preFeatureMetadata, key, "acct");
+  const opened = await openDraft(sealed, key, "acct");
+  assert.deepEqual(opened.metadata.entry, {
+    uuid: "entry", title: "old", username: "alice", password: "pw", url: "", notes: "", totpSeed: "", groupUuid: "group",
+    tags: [], expiresAt: null, favorite: false, custom: [],
+  });
 });
 
 test("openDraft returns copies and does not keep the decrypted buffer", async () => {
