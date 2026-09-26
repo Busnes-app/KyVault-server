@@ -14,6 +14,10 @@ directory imports from it read-only through `../frontend/src/lib`.
 
 ## Local Contracts
 
+- `hostPattern(origin)` (`src/lib/pairing.ts`) is the only host permission pattern: the
+  host without a port, because Firefox match patterns never match a port. Request and
+  removal both use it; the paired origin, port included, is still the only origin fetched.
+
 - No runtime dependencies. `extension/package.json` carries devDependencies
   only; crypto (`kdbxweb`, `hash-wasm`) resolves through `../frontend/src/lib`
   into `frontend/node_modules`, so `npm ci` runs in `frontend/` before

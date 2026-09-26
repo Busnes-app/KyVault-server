@@ -19,9 +19,17 @@ function validateDeviceName(name: string): string {
   return trimmed;
 }
 
+// The host permission pattern for a server origin. Firefox match patterns never match a
+// port, so "https://host:5443/*" would be granted and yet never lift CORS for any request;
+// asking for the host alone matches every port on both browsers. The server's port is
+// still pinned by serverOrigin: only that origin is ever fetched.
+export function hostPattern(origin: string): string {
+  return `https://${new URL(origin).hostname}/*`;
+}
+
 export async function pair(io: PairIO, origin: string, codeOrPin: string, deviceName: string) {
   const name = validateDeviceName(deviceName);
-  if (!(await io.requestHost(origin + "/*"))) {
+  if (!(await io.requestHost(hostPattern(origin)))) {
     throw new Error("KyVault needs access to that server to pair. Allow it and try again.");
   }
   let res: Response;
