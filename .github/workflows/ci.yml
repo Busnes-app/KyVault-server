@@ -105,6 +105,34 @@ jobs:
       - name: npm run build
         run: npm run build
 
+  extension:
+    name: Extension (Chrome + Firefox)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            extension/package-lock.json
+      # The crypto modules are imported from ../frontend/src/lib and resolve their
+      # dependencies from frontend/node_modules, so both installs are needed.
+      - run: npm ci
+        working-directory: frontend
+      - run: npm ci
+      - name: npm test
+        run: npm test
+      # `build` is `tsc && vite build ...`, so this is the typecheck gate too.
+      - name: npm run build
+        run: npm run build
+      - name: web-ext lint
+        run: npm run lint
+
   docker:
     name: Docker image
     runs-on: ubuntu-latest
@@ -151,9 +179,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: npm audit
+          cache-dependency-path: |
+            frontend/package-lock.json
+            extension/package-lock.json
+      - name: npm audit (frontend)
         working-directory: frontend
+        run: npm audit --audit-level=high
+      - name: npm audit (extension)
+        working-directory: extension
         run: npm audit --audit-level=high
 
   # Publishes the image CI tested: only for pushes to master, only
@@ -161,7 +194,7 @@ jobs:
   # the pushed bytes are the tested bytes. A pull request from a fork must
   # never reach this job or write a package.
   publish:
-    needs: [backend, frontend, docker, security]
+    needs: [backend, frontend, extension, docker, security]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     # No concurrency group here on purpose: GitHub cancels a *pending* job when a
