@@ -479,3 +479,5 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/useMediaQuery.ts` and `VaultPage` panes: under 900px the vault is one pane at a time (folders, list, detail) with Folders and Back controls; under 600px nav labels collapse to icons with aria-labels. Desktop keeps the three-column grid.
 
 - `frontend/src/lib/generatePassword.ts`: uniform rejection sampling, one guaranteed character per selected class, length 8 to 128, optional look-alike exclusion, settings persisted under `kyvault.generator`. `generatePassword.test.ts` pins class coverage and the error cases.
+
+- `frontend/src/lib/passphrase.ts` and `effWordlist.ts`: passphrases draw uniformly from the bundled EFF long list (7776 words, generated module, never fetched); `passphraseEntropyBits` and `passwordEntropyBits` are log2 of the search space and the meter says "about". `passphrase.test.ts` pins the list size, charset and a zero-randomness phrase.

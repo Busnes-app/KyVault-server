@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generatePassword, loadGeneratorOptions, DEFAULT_GENERATOR } from "./generatePassword";
+import { generatePassword, loadGeneratorOptions, DEFAULT_GENERATOR, passwordEntropyBits } from "./generatePassword";
 
 test("every selected class appears at least once", () => {
   for (let i = 0; i < 200; i++) {
@@ -36,4 +36,11 @@ test("a tampered non-boolean flag and non-number length fall back to defaults", 
   const loaded = loadGeneratorOptions(storage);
   assert.equal(loaded.upper, DEFAULT_GENERATOR.upper);
   assert.equal(loaded.length, DEFAULT_GENERATOR.length);
+});
+
+test("character entropy is length times log2 of the pool", () => {
+  // pools: 26+26+10+26 = 88; lowercase minus the look-alike "l" = 25 (LOOKALIKES is /[O0Il1|]/g)
+  assert.ok(Math.abs(passwordEntropyBits({ length: 20, upper: true, lower: true, numbers: true, symbols: true }) - 20 * Math.log2(88)) < 1e-9);
+  assert.ok(Math.abs(passwordEntropyBits({ length: 10, upper: false, lower: true, numbers: false, symbols: false, excludeLookalikes: true }) - 10 * Math.log2(25)) < 1e-9);
+  assert.equal(passwordEntropyBits({ length: 10, upper: false, lower: false, numbers: false, symbols: false }), 0);
 });
