@@ -138,3 +138,29 @@ checks.
     running browser (checked via `typeof ext.offscreen`, since @types/chrome always
     types the namespace but only Chrome populates it at runtime).
   - `domain.test.ts` and `rank.test.ts` are the plan's pinned tests.
+- `src/lib/fillTargets.ts`, `src/lib/fillTab.ts`, `src/content/fill.ts`,
+  `vite.content.config.ts`, `src/background.ts` (`fill`), `src/popup/main.ts` (Task 5):
+  fill on click.
+  - The popup's Fill button sends `{type: "fill", uuid}`; it is disabled, with the reason
+    as its title, when the entry's host is not the tab's site. The background enforces it
+    regardless: `fillTab` refuses non-`http(s):` tabs, entries without a URL, entries whose
+    host is not `sameSite` with the tab, and an `https:` entry on an `http:` page or frame.
+  - Probe then fill: `content/fill.js` is injected with `files` into all frames. It reads
+    field metadata only (never values), runs `chooseTargets`, and returns
+    `{origin, count, targets}` as the IIFE's completion value (the `outro` in
+    `vite.content.config.ts`; `treeshake: false` and `minify: false` keep `probe` by name).
+    The credentials then go to one frame only, top frame first, whose origin passes the
+    same checks, as `executeScript({func: fillFrame, args, frameIds})`. No message,
+    storage or `window` property carries them.
+  - `fillFrame` must reference nothing outside itself (it is serialized) and must not
+    declare inner named functions (bundler name helpers do not exist in the frame). It
+    refuses if the frame's origin, input count or target types changed since the probe,
+    sets values through `HTMLInputElement.prototype`'s setter, fires bubbling `input` and
+    `change`, never submits, and clears its credential locals.
+  - `fillTargets.test.ts` (the plan's pinned tests), `fillTab.test.ts` (host and frame
+    rules on fakes; `fillFrame` run from its source text in a `vm` fake DOM), and
+    `src/content/fill.test.ts` (builds the content script with the real config, asserts no
+    `import`/`export`, runs it as a classic script in a `vm` context, checks the returned
+    probe and that no global was added).
+  - `ponytail:` inputs inside shadow roots are not found; upgrade path is walking open
+    shadow roots in `probe` and `fillFrame` alike.

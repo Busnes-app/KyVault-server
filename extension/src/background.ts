@@ -5,6 +5,7 @@ import type { Request, Response, StatusResponse } from "./messages";
 import { loadSettings, clearSettings, forgetSession } from "./lib/settings";
 import { RevokedError } from "./lib/session";
 import { createVaultState, LockedError, LOCK_ALARM } from "./lib/vaultState";
+import { fillFrame, fillTab } from "./lib/fillTab";
 import { SECRET_CLIPBOARD_MS } from "../../frontend/src/lib/clipboard";
 
 const CLIPBOARD_ALARM = "clipboard";
@@ -74,6 +75,8 @@ async function handle(message: Request): Promise<Response> {
     }
     case "copy":
       return { type: "secret", value: await state.secret(message.uuid, message.field) };
+    case "fill":
+      return { type: "filled", ...(await fill(message.uuid)) };
     case "copied":
       // Blind clear: the background never reads the value back, only when it copied it.
       await ext.alarms.create(CLIPBOARD_ALARM, { when: Date.now() + SECRET_CLIPBOARD_MS });
@@ -93,6 +96,23 @@ async function activeTabHost(): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+// Click-only fill into the active tab; fillTab owns the same-site and per-frame rules.
+async function fill(uuid: string): Promise<{ username: boolean }> {
+  const login = await state.login(uuid);
+  const [tab] = await ext.tabs.query({ active: true, lastFocusedWindow: true });
+  const tabId = tab?.id;
+  if (tabId === undefined) throw new Error("KyVault fills only on web pages.");
+  return fillTab(
+    {
+      tabUrl: tab.url,
+      probe: () => ext.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["content/fill.js"] }),
+      fill: async (frameId, args) =>
+        (await ext.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, func: fillFrame, args }))[0]?.result,
+    },
+    login,
+  );
 }
 
 // Chrome only: opens an offscreen document, which blind-writes a space over the

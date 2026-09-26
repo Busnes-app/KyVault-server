@@ -225,5 +225,13 @@ export function createVaultState(deps: VaultDeps) {
     return (await generateTOTP(entry.totpSeed)).code;
   }
 
-  return { unlock, ensure, lock, status, listEntries, secret };
+  // The fill payload for one entry; the background hands it only to fillTab.
+  async function login(uuid: string): Promise<{ url: string; username: string; password: string }> {
+    const { vault } = await ensure();
+    const entry = vault.getLiveEntries().find((e) => e.uuid === uuid);
+    if (!entry) throw new Error("That entry no longer exists.");
+    return { url: entry.url, username: entry.username, password: entry.password };
+  }
+
+  return { unlock, ensure, lock, status, listEntries, secret, login };
 }

@@ -13,6 +13,7 @@ export type Request =
   | { type: "lock" }
   | { type: "entries"; query: string }
   | { type: "copy"; uuid: string; field: SecretField }
+  | { type: "fill"; uuid: string }
   // digest is a SHA-256 hex of the copied value, so the background never sees the value.
   | { type: "copied"; digest: string };
 
@@ -29,5 +30,6 @@ export type Response =
   | { type: "ok" }
   | { type: "entries"; tabHost?: string; entries: EntryView[] }
   | { type: "secret"; value: string }
+  | { type: "filled"; username: boolean }
   // revoked: the popup also offers the options page link.
   | { type: "error"; message: string; revoked?: boolean; locked?: boolean };

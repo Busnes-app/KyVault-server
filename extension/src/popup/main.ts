@@ -2,6 +2,7 @@
 // sends the typed password there once. It never receives the vault key.
 import { ext } from "../ext";
 import type { EntryView } from "../lib/rank";
+import { sameSite } from "../lib/domain";
 import type { SecretField } from "../lib/vaultState";
 import type { Request, Response } from "../messages";
 import { copyText, SECRET_CLIPBOARD_MS } from "../../../frontend/src/lib/clipboard";
@@ -84,7 +85,36 @@ async function copyField(uuid: string, field: SecretField, status: HTMLElement):
     : "Copied. Clears in 30 seconds while this window is open.";
 }
 
-function renderRows(entries: EntryView[], list: HTMLElement, status: HTMLElement): void {
+// The background refuses a mismatched fill too; this only explains it before the click.
+function fillRefusal(entry: EntryView, tabHost: string | undefined): string | undefined {
+  let host = "";
+  try {
+    host = new URL(entry.url).hostname;
+  } catch {
+    // no address
+  }
+  if (!host) return "This login has no website address.";
+  if (!tabHost || !sameSite(host, tabHost)) return `This login is for ${host}, not this page.`;
+  return undefined;
+}
+
+function fillButton(entry: EntryView, tabHost: string | undefined, status: HTMLElement): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Fill";
+  const refusal = fillRefusal(entry, tabHost);
+  button.disabled = refusal !== undefined;
+  if (refusal) button.title = refusal;
+  button.addEventListener("click", async () => {
+    const res = await send({ type: "fill", uuid: entry.uuid });
+    if (res.type === "error" && (res.locked || res.revoked)) return showError(res);
+    status.className = res.type === "error" ? "error" : "muted";
+    status.textContent = res.type === "error" ? res.message : "Filled.";
+  });
+  return button;
+}
+
+function renderRows(entries: EntryView[], tabHost: string | undefined, list: HTMLElement, status: HTMLElement): void {
   list.replaceChildren();
   if (entries.length === 0) {
     list.append(text("p", "No logins for this site.", "muted"));
@@ -99,6 +129,7 @@ function renderRows(entries: EntryView[], list: HTMLElement, status: HTMLElement
     if (entry.reused > 1) heading.append(text("p", "Reused", "badge"));
     const actions = document.createElement("div");
     actions.className = "entry-actions";
+    actions.append(fillButton(entry, tabHost, status));
     actions.append(copyButton("Copy user", entry.uuid, "username", status), copyButton("Copy password", entry.uuid, "password", status));
     if (entry.hasTotp) actions.append(copyButton("Copy TOTP", entry.uuid, "totp", status));
     row.append(heading, text("p", entry.username, "muted"), actions);
@@ -123,7 +154,7 @@ async function renderVault(): Promise<void> {
     const res = await send({ type: "entries", query });
     if (res.type === "error") return showError(res);
     if (res.type !== "entries") return;
-    renderRows(res.entries, list, status);
+    renderRows(res.entries, res.tabHost, list, status);
   };
 
   let debounce: ReturnType<typeof setTimeout> | undefined;
