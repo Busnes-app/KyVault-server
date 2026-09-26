@@ -314,3 +314,93 @@ func TestRotationCancelsOutstandingPairings(t *testing.T) {
 		t.Fatalf("devices minted after rotation: %+v", devs)
 	}
 }
+
+// A pairing start by a device session can slip past the cancel inside a rotation
+// (its session was resolved before the sweep). The code it leaves must still mint
+// nothing, because the device that issued it is gone; and a device minted from such
+// a code just before the rotation is revoked with the rest.
+func TestRotationRefusesPairingsIssuedByRevokedDevice(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	user, cookie := signedInUser(t, srv, "chained", users.RoleUser)
+	deviceID, token := pairDeviceForTest(t, handler, cookie)
+	if _, err := srv.vault.SaveVault(user.ID, 0, []byte("old vault"), "old-pw", "old-rec", "web"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The device starts two pairings through the real handler.
+	startPairing := func() string {
+		req := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/start", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("device pairing start = %d: %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		_ = json.NewDecoder(rec.Body).Decode(&out)
+		return out["secret"].(string)
+	}
+	redeem := func(code string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(PairingRedeemRequest{CodeOrPIN: code, DeviceName: "chained phone", Platform: "ios"})
+		req := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/redeem", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Interleaving 1: the code is redeemed before the rotation; the child device must
+	// fall with its parent.
+	childRec := redeem(startPairing())
+	if childRec.Code != http.StatusOK {
+		t.Fatalf("redeem before rotation = %d: %s", childRec.Code, childRec.Body.String())
+	}
+	var child map[string]any
+	_ = json.NewDecoder(childRec.Body).Decode(&child)
+	childToken, _ := child["sessionToken"].(string)
+
+	// Interleaving 2: the code is issued but not yet redeemed when the rotation runs.
+	// Re-issue it after the cancel by hand, exactly as a start that resolved its session
+	// before the sweep would: the origin still names the issuing device.
+	origin, _ := json.Marshal(pairingOrigin{SSO: srv.sessions[token].SSO, IssuerDeviceID: deviceID})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/vault/upload", bytes.NewReader([]byte("new vault")))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("If-Match", `"1"`)
+	req.Header.Set("X-Password-Envelope", "new-pw")
+	req.Header.Set("X-Recovery-Envelope", "new-rec")
+	req.Header.Set("X-Vault-Key-Rotated", "1")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotation upload = %d: %s", rec.Code, rec.Body.String())
+	}
+	late, err := srv.devices.CreatePairingSession(user.ID, string(origin))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if rec := redeem(late.Secret); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("redeem of a code issued by a revoked device = %d, want 401: %s", rec.Code, rec.Body.String())
+	}
+	for name, tok := range map[string]string{"parent": token, "child": childToken} {
+		req := httptest.NewRequest(http.MethodGet, "/api/vault/metadata", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s device token after rotation = %d, want 401", name, rec.Code)
+		}
+	}
+	if devs := srv.devices.ListUserDevices(user.ID); len(devs) != 0 {
+		t.Fatalf("devices left after rotation and late redeem: %+v", devs)
+	}
+	srv.sessMu.Lock()
+	for _, sess := range srv.sessions {
+		if sess.DeviceID != "" {
+			t.Fatalf("device session survived: %+v", sess)
+		}
+	}
+	srv.sessMu.Unlock()
+}

@@ -130,14 +130,9 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 	s.record(r, "vault.saved", u.ID, devID, clientIP(r), fmt.Sprintf("saved vault v%d", meta.Version))
 	if rotated {
 		s.record(r, "vault.key_rotated", u.ID, devID, clientIP(r), fmt.Sprintf("rotated vault key at v%d", meta.Version))
-		// A pending pairing code could mint a fresh 90-day session for a device that
-		// still holds the retired key; cancel them before revoking, so a redeem that
-		// races ahead of the cancel lands in the list below and is revoked with the rest.
-		s.devices.CancelUserPairings(u.ID)
-		// Every device holds the retired key; end them here, not in the browser's loop.
-		for _, dev := range s.devices.ListUserDevices(u.ID) {
-			s.revokeDevice(r, dev, "revoked device "+dev.Name+": key_rotated")
-		}
+		// Every device holds the retired key, and a pending pairing code could mint a
+		// fresh 90-day session for one; end them all here, not in the browser's loop.
+		s.revokeAllDevices(r, u.ID, "key_rotated")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,

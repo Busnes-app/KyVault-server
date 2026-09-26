@@ -24,7 +24,9 @@ func (s *Server) handlePairingStart(w http.ResponseWriter, r *http.Request, u us
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	origin, err := json.Marshal(current.SSO)
+	// A pairing remembers which device session issued it: a code issued by a device
+	// that a key rotation later revokes must not mint a replacement session.
+	origin, err := json.Marshal(pairingOrigin{SSO: current.SSO, IssuerDeviceID: current.DeviceID})
 	if err != nil {
 		http.Error(w, "failed to create pairing session", http.StatusInternalServerError)
 		return
@@ -41,6 +43,12 @@ func (s *Server) handlePairingStart(w http.ResponseWriter, r *http.Request, u us
 		"secret":    session.Secret,
 		"expiresAt": session.ExpiresAt,
 	})
+}
+
+// pairingOrigin is what a pairing code carries from the session that started it.
+type pairingOrigin struct {
+	SSO            sso.Identity `json:"sso"`
+	IssuerDeviceID string       `json:"issuerDeviceId,omitempty"`
 }
 
 type PairingRedeemRequest struct {
@@ -69,13 +77,13 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 
 	// Mint only while the directory account is still active and the browser session
 	// that started the pairing has not been logged out by KySignOn meanwhile.
-	var id sso.Identity
-	if err := json.Unmarshal([]byte(origin), &id); err != nil {
+	var po pairingOrigin
+	if err := json.Unmarshal([]byte(origin), &po); err != nil {
 		_ = s.devices.Revoke(dev.ID)
 		http.Error(w, "invalid pairing origin", http.StatusBadRequest)
 		return
 	}
-	tokBytes, err := s.startSessionWithToken(dev.UserID, dev.ID, id)
+	tokBytes, err := s.startSessionWithToken(dev.UserID, dev.ID, po.IssuerDeviceID, po.SSO)
 	if err != nil {
 		_ = s.devices.Revoke(dev.ID)
 		http.Error(w, "account is inactive or signed out", http.StatusUnauthorized)
@@ -102,7 +110,11 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) startSessionWithToken(userID, deviceID string, id sso.Identity) (string, error) {
+// startSessionWithToken mints a device session. issuerDeviceID names the device whose
+// session started the pairing (empty for a browser session); if that device has been
+// revoked meanwhile, for example by a key rotation, the pairing cannot mint anything.
+// The check shares sessMu with revokeAllDevices, so no interleaving slips past it.
+func (s *Server) startSessionWithToken(userID, deviceID, issuerDeviceID string, id sso.Identity) (string, error) {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
 	if u, err := s.users.Get(userID); err != nil || !u.Active {
@@ -117,6 +129,11 @@ func (s *Server) startSessionWithToken(userID, deviceID string, id sso.Identity)
 	if deviceID != "" {
 		if _, err := s.devices.Get(deviceID); err != nil {
 			return "", fmt.Errorf("device is gone: %w", err)
+		}
+	}
+	if issuerDeviceID != "" {
+		if _, err := s.devices.Get(issuerDeviceID); err != nil {
+			return "", fmt.Errorf("the device that issued this pairing was revoked: %w", err)
 		}
 	}
 
@@ -170,18 +187,37 @@ func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request, u us
 
 // revokeDevice deletes the device, its vault envelope and every session it holds.
 func (s *Server) revokeDevice(r *http.Request, dev devices.Device, details string) {
+	s.sessMu.Lock()
+	s.revokeDeviceLocked(dev)
+	s.sessMu.Unlock()
+	s.record(r, "device.revoked", dev.UserID, dev.ID, clientIP(r), details)
+}
+
+// revokeDeviceLocked needs sessMu held.
+func (s *Server) revokeDeviceLocked(dev devices.Device) {
 	_ = s.devices.Revoke(dev.ID)
 	_ = s.vault.RemoveDeviceEnvelope(dev.UserID, dev.ID)
-
-	s.sessMu.Lock()
 	for tok, sess := range s.sessions {
 		if sess.DeviceID == dev.ID {
 			delete(s.sessions, tok)
 		}
 	}
-	s.sessMu.Unlock()
+}
 
-	s.record(r, "device.revoked", dev.UserID, dev.ID, clientIP(r), details)
+// revokeAllDevices ends every device of the user in one critical section: pending
+// pairing codes, device records, envelopes and sessions go together under sessMu, so a
+// redeem or pairing start cannot interleave and leave a device or code behind.
+func (s *Server) revokeAllDevices(r *http.Request, userID, reason string) {
+	s.sessMu.Lock()
+	s.devices.CancelUserPairings(userID)
+	revoked := s.devices.ListUserDevices(userID)
+	for _, dev := range revoked {
+		s.revokeDeviceLocked(dev)
+	}
+	s.sessMu.Unlock()
+	for _, dev := range revoked {
+		s.record(r, "device.revoked", dev.UserID, dev.ID, clientIP(r), "revoked device "+dev.Name+": "+reason)
+	}
 }
 
 func (s *Server) handleDeviceRename(w http.ResponseWriter, r *http.Request, u users.User) {

@@ -314,7 +314,7 @@ func TestStartSessionRefusesGoneDevice(t *testing.T) {
 	}
 	id := sso.Identity{Issuer: "https://kysignon.test", ClientID: "kyvault-app", Subject: u.SSOSub, SessionID: "sid-hank", IssuedAt: time.Now().UTC()}
 
-	if _, err := srv.startSessionWithToken(u.ID, "device-that-does-not-exist", id); err == nil {
+	if _, err := srv.startSessionWithToken(u.ID, "device-that-does-not-exist", "", id); err == nil {
 		t.Fatal("expected an error minting a session for a nonexistent device")
 	}
 }
