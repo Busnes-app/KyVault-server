@@ -2,7 +2,7 @@
 // sends the typed password there once. It never receives the vault key.
 import { ext } from "../ext";
 import type { EntryView } from "../lib/rank";
-import { sameSite } from "../lib/domain";
+import { mayFill } from "../lib/domain";
 import type { SecretField } from "../lib/vaultState";
 import type { Request, Response } from "../messages";
 import { copyText, SECRET_CLIPBOARD_MS } from "../../../frontend/src/lib/clipboard";
@@ -90,7 +90,7 @@ function fillRefusal(entry: EntryView, tabHost: string | undefined): string | un
     // no address
   }
   if (!host) return "This login has no website address.";
-  if (!tabHost || !sameSite(host, tabHost)) return `This login is for ${host}, not this page.`;
+  if (!tabHost || !mayFill(host, tabHost)) return `This login is for ${host}, not this page.`;
   return undefined;
 }
 

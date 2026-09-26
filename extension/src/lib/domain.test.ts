@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registrableDomain, sameSite } from "./domain";
+import { registrableDomain, sameSite, mayFill } from "./domain";
 
 test("last two labels, or three under a listed second-level suffix", () => {
   assert.equal(registrableDomain("login.accounts.example.com"), "example.com");
@@ -17,4 +17,18 @@ test("sameSite is registrable-domain equality", () => {
   assert.equal(sameSite("id.example.com", "www.example.com"), true);
   assert.equal(sameSite("example.com", "example.co"), false);
   assert.equal(sameSite("evil-example.com", "example.com"), false);
+});
+
+test("mayFill needs the page to be the entry host or under it, never a shared-suffix neighbour", () => {
+  assert.equal(mayFill("example.com", "example.com"), true);
+  assert.equal(mayFill("example.com", "mail.example.com"), true);
+  assert.equal(mayFill("EXAMPLE.com", "Mail.Example.COM."), true);
+  // Private suffix: two tenants that sameSite treats as one site.
+  assert.equal(sameSite("victim.github.io", "evil.github.io"), true);
+  assert.equal(mayFill("victim.github.io", "evil.github.io"), false);
+  // A public suffix the heuristic does not list: two registrants.
+  assert.equal(mayFill("bank.co.zw", "evil.co.zw"), false);
+  assert.equal(mayFill("login.example.com", "example.com"), false);
+  assert.equal(mayFill("example.com", "notexample.com"), false);
+  assert.equal(mayFill("", "example.com"), false);
 });

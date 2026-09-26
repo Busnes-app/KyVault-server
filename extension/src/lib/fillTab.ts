@@ -1,7 +1,7 @@
 // Background side of Fill. Checks the entry against the tab, probes every frame for
 // its origin and login fields (content/fill.js, no credentials), then sends the
 // credentials to one same-site frame only, as fillFrame's executeScript args.
-import { sameSite } from "./domain";
+import { mayFill } from "./domain";
 import type { Targets } from "./fillTargets";
 
 // [expected origin, input count, password index, username index or -1, username, password]
@@ -43,7 +43,7 @@ export async function fillTab(io: FillIO, login: Login): Promise<{ username: boo
   if (!web(tab)) throw new Error("KyVault fills only on web pages.");
   const entry = parse(login.url);
   if (!web(entry)) throw new Error("This login has no website address. Add one in the KyVault web app to fill it.");
-  if (!sameSite(entry.hostname, tab.hostname)) throw new Error(`This login is for ${entry.hostname}, not ${tab.hostname}.`);
+  if (!mayFill(entry.hostname, tab.hostname)) throw new Error(`This login is for ${entry.hostname}, not ${tab.hostname}.`);
   if (!secureEnough(entry, tab)) throw new Error("This page is not secure. KyVault fills this login only over HTTPS.");
 
   let frames;
@@ -57,7 +57,7 @@ export async function fillTab(io: FillIO, login: Login): Promise<{ username: boo
     .map((f) => ({ frameId: f.frameId, probe: f.result as Probe & { targets: Targets } }))
     .filter(({ probe }) => {
       const page = parse(probe.origin);
-      return web(page) && sameSite(entry.hostname, page.hostname) && secureEnough(entry, page);
+      return web(page) && mayFill(entry.hostname, page.hostname) && secureEnough(entry, page);
     })
     .sort((a, b) => a.frameId - b.frameId)[0];
   if (!target) throw new Error("No login form on this page.");

@@ -143,10 +143,14 @@ checks.
   `secret`), `src/background.ts`, `src/popup/main.ts` (Task 4): the popup list, site
   ranking, search and copy.
   - `registrableDomain`/`sameSite` are a suffix heuristic (last two labels, or three
-    under a listed second-level suffix such as `co.uk`), not the Public Suffix List.
-    `ponytail:` a site under an unlisted multi-label suffix (`example.github.io`) ranks
-    its neighbours as matches; upgrade path is vendoring the PSL's ICANN section as a
-    generated module like `effWordlist.ts` when a report shows it matters.
+    under a listed second-level suffix such as `co.uk`), not the Public Suffix List, and
+    they only order the list. `ponytail:` a site under an unlisted multi-label suffix
+    (`example.github.io`) ranks its neighbours as matches; upgrade path is vendoring the
+    PSL's ICANN and PRIVATE sections as a generated module like `effWordlist.ts`.
+  - `mayFill(entryHost, pageHost)` is the only fill authorization: the page host must
+    equal the entry host or be a subdomain of it. No suffix guessing, so two tenants under
+    a shared suffix (`victim.github.io` and `evil.github.io`, or registrants under a suffix
+    the heuristic does not list) never authorize each other (`domain.test.ts`).
   - `rankEntries` without a query keeps only exact-host and same-registrable-domain
     entries (tier 0/1), site tier first, each tier sorted by title. With a query it
     searches every entry (`entryMatches`, so tags and custom field names match too) and
@@ -174,9 +178,9 @@ checks.
   `vite.content.config.ts`, `src/background.ts` (`fill`), `src/popup/main.ts` (Task 5):
   fill on click.
   - The popup's Fill button sends `{type: "fill", uuid}`; it is disabled, with the reason
-    as its title, when the entry's host is not the tab's site. The background enforces it
-    regardless: `fillTab` refuses non-`http(s):` tabs, entries without a URL, entries whose
-    host is not `sameSite` with the tab, and an `https:` entry on an `http:` page or frame.
+    as its title, when `mayFill` refuses the tab host. The background enforces it
+    regardless: `fillTab` refuses non-`http(s):` tabs, entries without a URL, tabs and
+    frames that `mayFill` refuses, and an `https:` entry on an `http:` page or frame.
   - Probe then fill: `content/fill.js` is injected with `files` into all frames. It reads
     field metadata only (never values), runs `chooseTargets`, and returns
     `{origin, count, targets}` as the IIFE's completion value (the `outro` in
