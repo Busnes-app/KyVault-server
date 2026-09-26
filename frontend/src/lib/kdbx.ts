@@ -1,6 +1,7 @@
 import * as kdbxweb from "kdbxweb";
 import { bytesToHex } from "./vaultCrypto";
 import { argon2d, argon2i, argon2id } from "hash-wasm";
+import { FAVORITE_TAG, RESERVED_FIELDS } from "./entryMeta";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
 const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxBinaries, KdbxError, KdbxUuid, Consts, VarDictionary, Int64 } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
@@ -51,6 +52,8 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_VAULT_BYTES = 50 * 1024 * 1024;
 export const MAX_VAULT_ATTACHMENT_BYTES = MAX_VAULT_BYTES - 10 * 1024 * 1024;
 
+export type CustomField = { name: string; value: string; protected: boolean };
+
 export type VaultEntry = {
   uuid: string;
   title: string;
@@ -61,6 +64,10 @@ export type VaultEntry = {
   totpSeed?: string;
   groupUuid: string;
   updatedAt: Date;
+  tags: string[];
+  expiresAt?: Date;
+  favorite: boolean;
+  custom: CustomField[];
 };
 
 export type VaultGroup = {
@@ -96,6 +103,48 @@ export function folderName(name: string): string {
 function entryFieldText(entry: kdbxweb.KdbxEntry, name: string): string {
   const value = entry.fields.get(name);
   return typeof value === "string" ? value : value?.getText() ?? "";
+}
+
+type EntryMeta = { tags: string[]; favorite: boolean; expiresAt?: Date; custom: CustomField[] };
+
+// Shared by getEntries (read) and updateEntry (no-op check), so both agree on what
+// "custom" means: every native field that is not one of the standard KeePass names.
+function readEntryMeta(e: kdbxweb.KdbxEntry): EntryMeta {
+  const tags = e.tags ?? [];
+  const favorite = tags.some((t) => t.toLowerCase() === FAVORITE_TAG);
+  const expiresAt = e.times.expires && e.times.expiryTime ? e.times.expiryTime : undefined;
+  const custom: CustomField[] = [];
+  for (const [name, value] of e.fields) {
+    if (RESERVED_FIELDS.has(name)) continue;
+    const isProtected = value instanceof ProtectedValue;
+    custom.push({ name, value: isProtected ? value.getText() : String(value), protected: isProtected });
+  }
+  return { tags, favorite, expiresAt, custom };
+}
+
+// The favourite tag is a derived member of the tag list: strip it out, then re-add it
+// (always last) if favorite is set, so callers never need to track its position.
+function foldFavoriteTag(tags: string[], favorite: boolean): string[] {
+  const userTags = tags.filter((t) => t.toLowerCase() !== FAVORITE_TAG);
+  return favorite ? [...userTags, FAVORITE_TAG] : userTags;
+}
+
+// Writes tags (favourite folded in/out), expiry and custom fields onto a native entry.
+function writeEntryMeta(e: kdbxweb.KdbxEntry, meta: Pick<VaultEntry, "tags" | "favorite" | "expiresAt" | "custom">): void {
+  e.tags = foldFavoriteTag(meta.tags, meta.favorite);
+  e.times.expires = !!meta.expiresAt;
+  e.times.expiryTime = meta.expiresAt;
+  const keep = new Set(meta.custom.map((f) => f.name));
+  for (const name of [...e.fields.keys()]) {
+    if (!RESERVED_FIELDS.has(name) && !keep.has(name)) e.fields.delete(name);
+  }
+  for (const field of meta.custom) {
+    e.fields.set(field.name, field.protected ? ProtectedValue.fromString(field.value) : field.value);
+  }
+}
+
+function customFieldsEqual(a: CustomField[], b: CustomField[]): boolean {
+  return a.length === b.length && a.every((f, i) => f.name === b[i].name && f.value === b[i].value && f.protected === b[i].protected);
 }
 
 export class KeePassVault {
@@ -224,6 +273,7 @@ export class KeePassVault {
       const url = entryFieldText(e, "URL");
       const notes = entryFieldText(e, "Notes");
       const otp = entryFieldText(e, "otp") || entryFieldText(e, "TOTP");
+      const { tags, favorite, expiresAt, custom } = readEntryMeta(e);
 
       entries.push({
         uuid: e.uuid.toString(),
@@ -235,6 +285,10 @@ export class KeePassVault {
         totpSeed: otp,
         groupUuid: gUuid,
         updatedAt: e.times.lastModTime || new Date(),
+        tags,
+        favorite,
+        expiresAt,
+        custom,
       });
     }
 
@@ -425,12 +479,18 @@ export class KeePassVault {
   }
 
   // Create a new entry in a group
-  public createEntry(entry: Omit<VaultEntry, "uuid" | "updatedAt">): VaultEntry {
+  public createEntry(entry: Omit<VaultEntry, "uuid" | "updatedAt" | "tags" | "favorite" | "custom" | "expiresAt"> &
+    Partial<Pick<VaultEntry, "tags" | "favorite" | "custom" | "expiresAt">>): VaultEntry {
     let targetGroup = this.db.getDefaultGroup();
     if (entry.groupUuid) {
       const found = this.findGroup(entry.groupUuid);
       if (found) targetGroup = found;
     }
+
+    const tags = entry.tags ?? [];
+    const favorite = entry.favorite ?? false;
+    const custom = entry.custom ?? [];
+    const expiresAt = entry.expiresAt;
 
     const e = this.db.createEntry(targetGroup);
     e.fields.set("Title", entry.title);
@@ -441,6 +501,7 @@ export class KeePassVault {
     if (entry.totpSeed) {
       e.fields.set("otp", entry.totpSeed);
     }
+    writeEntryMeta(e, { tags, favorite, expiresAt, custom });
 
     return {
       uuid: e.uuid.toString(),
@@ -452,6 +513,10 @@ export class KeePassVault {
       totpSeed: entry.totpSeed,
       groupUuid: targetGroup.uuid.toString(),
       updatedAt: new Date(),
+      tags: foldFavoriteTag(tags, favorite),
+      favorite,
+      expiresAt,
+      custom,
     };
   }
 
@@ -460,11 +525,16 @@ export class KeePassVault {
     const e = this.findEntry(entry.uuid);
     if (!e) return false;
 
+    const currentMeta = readEntryMeta(e);
+    const desiredTags = foldFavoriteTag(entry.tags, entry.favorite);
     if (entryFieldText(e, "Title") === entry.title && entryFieldText(e, "UserName") === entry.username &&
         entryFieldText(e, "Password") === entry.password && entryFieldText(e, "URL") === entry.url &&
         entryFieldText(e, "Notes") === entry.notes &&
         (entryFieldText(e, "otp") || entryFieldText(e, "TOTP")) === (entry.totpSeed || "") &&
-        (!entry.groupUuid || e.parentGroup?.uuid.toString() === entry.groupUuid)) return false;
+        (!entry.groupUuid || e.parentGroup?.uuid.toString() === entry.groupUuid) &&
+        currentMeta.tags.join("\u0000") === desiredTags.join("\u0000") &&
+        currentMeta.expiresAt?.getTime() === entry.expiresAt?.getTime() &&
+        customFieldsEqual(currentMeta.custom, entry.custom)) return false;
     this.pushEntryHistory(e);
 
     const setField = (name: string, value: string) => e.fields.set(name,
@@ -480,6 +550,7 @@ export class KeePassVault {
       e.fields.delete("otp");
       e.fields.delete("TOTP");
     }
+    writeEntryMeta(e, entry);
 
     if (entry.groupUuid && e.parentGroup?.uuid.toString() !== entry.groupUuid) {
       const targetGroup = this.findGroup(entry.groupUuid);

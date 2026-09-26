@@ -20,7 +20,8 @@ test("recovery copy authenticates account, version, draft and binary with the va
   });
   const key = crypto.getRandomValues(new Uint8Array(32));
   const binary = new Uint8Array([1, 2, 3, 4]).buffer;
-  const metadata = { version: 7, dirty: true, entry: { uuid: "entry", title: "unsaved", username: "alice", password: "secret-draft", url: "", notes: "note", totpSeed: "", groupUuid: "group" } };
+  const metadata = { version: 7, dirty: true, entry: { uuid: "entry", title: "unsaved", username: "alice", password: "secret-draft", url: "", notes: "note", totpSeed: "", groupUuid: "group",
+    tags: [], expiresAt: null, favorite: false, custom: [] } };
   const sealed = await sealDraft(binary, metadata, key, "account-a");
   assert.ok(metadataBytes?.every(byte => byte === 0), "serialized password draft is wiped");
   assert.equal(new TextDecoder().decode(sealed.ciphertext).includes("secret-draft"), false);

@@ -1,8 +1,11 @@
+import type { CustomField } from "./kdbx";
+
 // A per-tab encrypted checkpoint of the vault bytes and unapplied entry fields (which can
 // include an entry password). It never contains the master password or the vault key.
 export type EntryDraft = {
   uuid: string; title: string; username: string; password: string;
   url: string; notes: string; totpSeed: string; groupUuid: string;
+  tags: string[]; expiresAt: string | null; favorite: boolean; custom: CustomField[];
 };
 export type DraftMetadata = { version: number; dirty: boolean; entry: EntryDraft | null };
 export type LockedDraft = { iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer };
@@ -40,13 +43,22 @@ export async function openDraft(draft: LockedDraft, key: Uint8Array, account: st
   } finally { new Uint8Array(plain).fill(0); }
 }
 
+function isCustomField(value: unknown): value is CustomField {
+  return typeof value === "object" && value !== null && "name" in value && typeof value.name === "string" &&
+    "value" in value && typeof value.value === "string" && "protected" in value && typeof value.protected === "boolean";
+}
+
 function isEntryDraft(value: unknown): value is EntryDraft | null {
   if (value === null) return true;
   return typeof value === "object" && "uuid" in value && typeof value.uuid === "string" &&
     "title" in value && typeof value.title === "string" && "username" in value && typeof value.username === "string" &&
     "password" in value && typeof value.password === "string" && "url" in value && typeof value.url === "string" &&
     "notes" in value && typeof value.notes === "string" && "totpSeed" in value && typeof value.totpSeed === "string" &&
-    "groupUuid" in value && typeof value.groupUuid === "string";
+    "groupUuid" in value && typeof value.groupUuid === "string" &&
+    "tags" in value && Array.isArray(value.tags) && value.tags.every((t) => typeof t === "string") &&
+    "expiresAt" in value && (value.expiresAt === null || typeof value.expiresAt === "string") &&
+    "favorite" in value && typeof value.favorite === "boolean" &&
+    "custom" in value && Array.isArray(value.custom) && value.custom.every(isCustomField);
 }
 
 // Separate database preserves compatibility with older clients opening the device-key DB.

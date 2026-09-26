@@ -409,6 +409,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
+  Entries carry native tags (favourite is the tag `favorite`), expiry
+  (`times.expires/expiryTime`) and custom fields (native `fields`, `ProtectedValue` when
+  protected); `entryMeta.ts` owns parsing, expiry windows, sorting and search, which never
+  reads protected custom values. `entryMeta.test.ts` proves the encrypted round trip.
   Two properties carry that, and both are load-bearing:
   - **The credential is the vault key as hexadecimal text**, never the raw bytes. That is what
     KyAuth uses (`KdbxPasswordVault.kt`: `Credentials.from(EncryptedValue.fromString(
