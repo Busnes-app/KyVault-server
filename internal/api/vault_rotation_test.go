@@ -265,3 +265,52 @@ func TestEnvelopePutRequiresCurrentVersion(t *testing.T) {
 		t.Fatalf("current envelope PUT stored %+v", after)
 	}
 }
+
+// A pairing code issued before a rotation must not mint a session afterwards: the
+// device that would redeem it still holds the retired key.
+func TestRotationCancelsOutstandingPairings(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	user, cookie := signedInUser(t, srv, "pinholder", users.RoleUser)
+	if _, err := srv.vault.SaveVault(user.ID, 0, []byte("old vault"), "old-pw", "old-rec", "web"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/start", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pairing start = %d", rec.Code)
+	}
+	var pairInit map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&pairInit)
+	pin, _ := pairInit["pin"].(string)
+	if pin == "" {
+		t.Fatalf("no pin in %+v", pairInit)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/vault/upload", bytes.NewReader([]byte("new vault")))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("If-Match", `"1"`)
+	req.Header.Set("X-Password-Envelope", "new-pw")
+	req.Header.Set("X-Recovery-Envelope", "new-rec")
+	req.Header.Set("X-Vault-Key-Rotated", "1")
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotation upload = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body, _ := json.Marshal(PairingRedeemRequest{CodeOrPIN: pin, DeviceName: "late phone", Platform: "ios"})
+	req = httptest.NewRequest(http.MethodPost, "/api/devices/pairing/redeem", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("redeem after rotation = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if devs := srv.devices.ListUserDevices(user.ID); len(devs) != 0 {
+		t.Fatalf("devices minted after rotation: %+v", devs)
+	}
+}

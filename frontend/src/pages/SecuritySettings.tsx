@@ -105,8 +105,17 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   // Every action below either changes what protects the vault key or shows it.
   // Prove the current master password first; it never leaves the browser.
   // Returns the vault version the proof holds for, or null when it fails.
-  const proveCurrentPassword = async (): Promise<number | null> => {
+  // Actions that reuse the typed value as the new password secret pass "password":
+  // accepting the paper code there would silently make that code the master password.
+  const proveCurrentPassword = async (accept: "either" | "password" = "either"): Promise<number | null> => {
     const meta = await getJSON<{ version: number; passwordEnvelope?: string; recoveryEnvelope?: string }>("/api/vault/metadata");
+    if (accept === "password") {
+      if (meta.passwordEnvelope && (await verifyMasterPassword(meta.passwordEnvelope, currentPassword, vaultKey))) {
+        return meta.version;
+      }
+      setError("Rotating the key needs your master password. The paper code cannot be used here.");
+      return null;
+    }
     if (!meta.passwordEnvelope && !meta.recoveryEnvelope) {
       setError("No master password or paper code envelope is stored for this vault.");
       return null;
@@ -269,7 +278,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
     setUnrevoked([]);
     try {
-      if ((await proveCurrentPassword()) === null) return;
+      if ((await proveCurrentPassword("password")) === null) return;
       if (!alive.current) return;
       setPaperCode(null);
       setPaperConfirmInput("");

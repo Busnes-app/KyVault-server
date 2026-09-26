@@ -28,6 +28,11 @@ test("rotation re-encrypts under a fresh key and wraps it for the password and p
   await assert.rejects(KeePassVault.open(r.binary, oldKey), /key/i);
   assert.deepEqual([...await unwrapVaultKey(r.passwordEnvelope, PASSWORD)], [...r.key]);
   assert.deepEqual([...await unwrapVaultKey(r.recoveryEnvelope, code)], [...r.key]);
+  // The retired paper code opens neither new envelope, and the password is not the code.
+  const oldCode = generatePaperCode();
+  await assert.rejects(unwrapVaultKey(r.passwordEnvelope, oldCode));
+  await assert.rejects(unwrapVaultKey(r.recoveryEnvelope, oldCode));
+  await assert.rejects(unwrapVaultKey(r.passwordEnvelope, code));
   // The live vault object now saves under the new key; rekey back restores the old one.
   vault.rekey(oldKey);
   assert.ok(await KeePassVault.open(await vault.exportBinary(), oldKey));
