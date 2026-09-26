@@ -84,7 +84,10 @@ test("only settings.ts touches storage.local, and only vaultState.ts names the s
 });
 
 test("a body that stalls past the timeout is a sentence, not an AbortError", async () => {
-  const signal = AbortSignal.timeout(10);
-  const stalled = new ReadableStream({ start: (c) => signal.addEventListener("abort", () => c.error(signal.reason)) });
+  // A real timer, not AbortSignal.timeout: Node unrefs that timer, so on a slow runner the
+  // event loop can drain before it fires and the test dies with a pending promise.
+  const stalled = new ReadableStream({
+    start: (c) => { setTimeout(() => c.error(new DOMException("The operation timed out.", "TimeoutError")), 10); },
+  });
   await assert.rejects(readBody(new Response(stalled)), /^Error: The server did not answer in time\./);
 });
