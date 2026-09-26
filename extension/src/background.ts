@@ -70,13 +70,18 @@ async function handle(message: Request): Promise<Response> {
       await state.lock();
       return { type: "ok" };
     case "entries": {
-      const host = await activeTabHost();
-      return { type: "entries", tabHost: host, entries: await state.listEntries(message.query, host) };
+      const url = await activeTabUrl();
+      const host = url?.hostname;
+      const tabOrigin = url && /^https?:$/.test(url.protocol) ? url.origin : undefined;
+      return { type: "entries", tabHost: host, tabOrigin, entries: await state.listEntries(message.query, host) };
     }
     case "copy":
       return { type: "secret", value: await state.secret(message.uuid, message.field) };
     case "fill":
       return { type: "filled", ...(await fill(message.uuid)) };
+    case "saveLogin":
+      await state.saveLogin(message.login);
+      return { type: "ok" };
     case "copied":
       // Blind clear: the background never reads the value back, only when it copied it.
       await ext.alarms.create(CLIPBOARD_ALARM, { when: Date.now() + SECRET_CLIPBOARD_MS });
@@ -88,11 +93,11 @@ async function handle(message: Request): Promise<Response> {
 
 // The URL of the active tab, readable through the activeTab permission because opening
 // the popup counts as invoking the action. Falls back to "no site" ranking when unset.
-async function activeTabHost(): Promise<string | undefined> {
+async function activeTabUrl(): Promise<URL | undefined> {
   const [tab] = await ext.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.url) return undefined;
   try {
-    return new URL(tab.url).hostname;
+    return new URL(tab.url);
   } catch {
     return undefined;
   }

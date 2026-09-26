@@ -9,12 +9,14 @@ import { generateTOTP } from "../../../frontend/src/lib/totp";
 import { isLocked, lockDeadline } from "./lock";
 import { rankEntries, type EntryView } from "./rank";
 import { readBody, RevokedError, serverFetch, type SessionIO } from "./session";
+import { ConflictError, uploadVault } from "./save";
 
 export type SecretField = "username" | "password" | "totp";
+export type NewLogin = { title: string; username: string; password: string; url: string };
 
 export class LockedError extends Error {
-  constructor() {
-    super("The vault is locked. Unlock it with your master password.");
+  constructor(message = "The vault is locked. Unlock it with your master password.") {
+    super(message);
     this.name = "LockedError";
   }
 }
@@ -42,6 +44,7 @@ const ROTATED = "The vault key changed. Unlock with your master password again."
 const UNREADABLE = "The vault file could not be opened. Try again, or open it in the KyVault web app.";
 const CORRUPT = "The stored key envelope could not be read. Unlock in the KyVault web app to check the vault.";
 const UNEXPECTED = "The server sent an unexpected answer. Try again later.";
+const CONFLICT = "The vault changed elsewhere. Unlock again to refresh, then add the login again.";
 
 const failed = (res: Response) => new Error(`The server answered ${res.status}. Try again later.`);
 
@@ -63,11 +66,11 @@ async function unwrapChecked(envelopeJSON: string, password: string): Promise<Ui
 
 const isWrongPassword = (err: unknown) => err instanceof DOMException && err.name === "OperationError";
 
-function parseMetadata(raw: unknown): { version: number; envelopes: string[] } {
+function parseMetadata(raw: unknown): { version: number; envelopes: string[]; passwordEnvelope: string } {
   const m = raw as { version?: unknown; passwordEnvelope?: unknown; recoveryEnvelope?: unknown } | null;
   if (!m || typeof m !== "object" || !Number.isSafeInteger(m.version) || (m.version as number) < 0) throw new Error(UNEXPECTED);
   const envelopes = [m.passwordEnvelope, m.recoveryEnvelope].filter((e): e is string => typeof e === "string" && e !== "");
-  return { version: m.version as number, envelopes };
+  return { version: m.version as number, envelopes, passwordEnvelope: typeof m.passwordEnvelope === "string" ? m.passwordEnvelope : "" };
 }
 
 export function createVaultState(deps: VaultDeps) {
@@ -78,6 +81,8 @@ export function createVaultState(deps: VaultDeps) {
   let reopening: Promise<OpenVault> | undefined;
   // Bumped by lock(); work that started before a lock must not commit after it.
   let generation = 0;
+  // Saves run one at a time, so two popups cannot interleave uploads.
+  let saving: Promise<unknown> = Promise.resolve();
 
   async function lock(): Promise<void> {
     generation++;
@@ -123,12 +128,12 @@ export function createVaultState(deps: VaultDeps) {
     }
   }
 
-  // Writes the new deadline (and, on unlock, the key) and arms the alarm, unless a lock
-  // ran meanwhile.
-  async function commit(gen: number, opened: OpenVault, keyHex?: string): Promise<void> {
+  // Writes the new deadline (and, on unlock, the key and the password envelope it was
+  // unwrapped against) and arms the alarm, unless a lock ran meanwhile.
+  async function commit(gen: number, opened: OpenVault, unlocked?: { keyHex: string; envelope: string }): Promise<void> {
     const { autoLockMinutes } = await deps.settings();
     const lockAt = lockDeadline(now(), autoLockMinutes);
-    await deps.session.set(keyHex ? { keyHex, lockAt } : { lockAt });
+    await deps.session.set({ ...unlocked, lockAt });
     if (gen !== generation) {
       await deps.session.clear();
       throw new LockedError();
@@ -163,7 +168,7 @@ export function createVaultState(deps: VaultDeps) {
       }
       if (!key) throw new Error(malformed ? CORRUPT : WRONG);
       const keyHex = bytesToHex(key);
-      await commit(gen, await download(key, gen), keyHex);
+      await commit(gen, await download(key, gen), { keyHex, envelope: meta.passwordEnvelope });
     });
   }
 
@@ -233,5 +238,62 @@ export function createVaultState(deps: VaultDeps) {
     return { url: entry.url, username: entry.username, password: entry.password };
   }
 
-  return { unlock, ensure, lock, status, listEntries, secret, login };
+  // The fields are values from the extension's own popup; this is the last check before
+  // they are written into the vault.
+  function checkLogin(input: NewLogin): NewLogin {
+    const { title, username, password, url } = input;
+    if ([title, username, password, url].some((v) => typeof v !== "string")) throw new Error(UNEXPECTED);
+    if (!title.trim()) throw new Error("Give the login a title.");
+    if (!password) throw new Error("Enter a password or generate one.");
+    if (url && !/^https?:$/.test(URL.canParse(url) ? new URL(url).protocol : "")) throw new Error("The website address must start with https:// or http://.");
+    return { title, username, password, url };
+  }
+
+  // Refuses when the stored password envelope is not the one this session unlocked
+  // against: another session rotated the key, and an upload under the old key would
+  // strand the vault. Mirrors the web app's VaultSaveQueue overwrite guard.
+  async function checkEnvelope(): Promise<void> {
+    const { envelope } = await deps.session.get(["envelope"]);
+    const res = await serverFetch(deps, "/api/vault/metadata", { method: "GET" });
+    if (!res.ok) throw failed(res);
+    let raw: unknown = null;
+    try { raw = JSON.parse(new TextDecoder().decode(await readBody(res))); } catch { /* parseMetadata refuses null */ }
+    if (typeof envelope !== "string" || parseMetadata(raw).passwordEnvelope !== envelope) {
+      await lock();
+      throw new LockedError(ROTATED);
+    }
+  }
+
+  // One new entry in the top-level live folder, uploaded with If-Match. 409 locks: the
+  // server keeps the rejected bytes as a conflict and the next unlock downloads the newer
+  // vault. Any other failure drops the in-memory copy, so the next request re-downloads
+  // and a later save cannot carry an entry the server never stored.
+  function saveLogin(input: NewLogin): Promise<void> {
+    const run = saving.then(() => guarded(async () => {
+      const login = checkLogin(input);
+      const opened = await ensure();
+      const gen = generation;
+      const { deviceId } = await deps.settings();
+      if (!deviceId) throw new Error("Pair this extension with your KyVault server first.");
+      await checkEnvelope();
+      const root = opened.vault.getLiveGroups()[0];
+      if (!root) throw new Error(UNREADABLE);
+      opened.vault.createEntry({ ...login, notes: "", groupUuid: root.uuid });
+      try {
+        const version = await uploadVault(deps, await opened.vault.exportBinary(), opened.version, deviceId);
+        if (gen === generation) opened.version = version;
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          await lock();
+          throw new LockedError(CONFLICT);
+        }
+        if (open === opened) open = undefined;
+        throw err;
+      }
+    }));
+    saving = run.catch(() => {});
+    return run;
+  }
+
+  return { unlock, ensure, lock, status, listEntries, secret, login, saveLogin };
 }

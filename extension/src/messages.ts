@@ -2,7 +2,7 @@
 // worker, which is the single owner of the session and the open vault. No response
 // ever carries the vault key.
 import type { EntryView } from "./lib/rank";
-import type { SecretField } from "./lib/vaultState";
+import type { NewLogin, SecretField } from "./lib/vaultState";
 
 export type Request =
   | { type: "paired" }
@@ -14,6 +14,7 @@ export type Request =
   | { type: "entries"; query: string }
   | { type: "copy"; uuid: string; field: SecretField }
   | { type: "fill"; uuid: string }
+  | { type: "saveLogin"; login: NewLogin }
   | { type: "copied" };
 
 export type StatusResponse = {
@@ -27,7 +28,8 @@ export type StatusResponse = {
 export type Response =
   | { type: "status"; status: StatusResponse }
   | { type: "ok" }
-  | { type: "entries"; tabHost?: string; entries: EntryView[] }
+  // tabOrigin is set only for http(s) tabs; it prefills the save form.
+  | { type: "entries"; tabHost?: string; tabOrigin?: string; entries: EntryView[] }
   | { type: "secret"; value: string }
   | { type: "filled"; username: boolean }
   // revoked: the popup also offers the options page link.

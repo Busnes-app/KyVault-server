@@ -6,6 +6,7 @@ import { sameSite } from "../lib/domain";
 import type { SecretField } from "../lib/vaultState";
 import type { Request, Response } from "../messages";
 import { copyText, SECRET_CLIPBOARD_MS } from "../../../frontend/src/lib/clipboard";
+import { DEFAULT_GENERATOR, generatePassword } from "../../../frontend/src/lib/generatePassword";
 
 const SEARCH_DEBOUNCE_MS = 150;
 
@@ -32,7 +33,7 @@ function optionsButton(): HTMLButtonElement {
 }
 
 function showError(res: Extract<Response, { type: "error" }>): void {
-  if (res.locked) return renderLocked();
+  if (res.locked) return renderLocked(res.message);
   root.replaceChildren(text("p", res.message, "error"));
   if (res.revoked) root.append(optionsButton());
 }
@@ -142,7 +143,8 @@ async function renderVault(): Promise<void> {
   list.className = "entries";
   const status = text("p", "", "muted");
   status.setAttribute("role", "status");
-  container.append(search, list, status);
+  const save = saveForm(() => load(search.value));
+  container.append(search, list, status, save.form);
   root.replaceChildren(container);
 
   const load = async (query: string): Promise<void> => {
@@ -150,6 +152,7 @@ async function renderVault(): Promise<void> {
     if (res.type === "error") return showError(res);
     if (res.type !== "entries") return;
     renderRows(res.entries, res.tabHost, list, status);
+    save.prefill(res.tabHost, res.tabOrigin);
   };
 
   let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -162,7 +165,94 @@ async function renderVault(): Promise<void> {
   search.focus();
 }
 
-function renderLocked(): void {
+function field(labelText: string, input: HTMLInputElement, id: string): HTMLElement {
+  input.id = id;
+  const label = text("label", labelText);
+  label.setAttribute("for", id);
+  const wrap = document.createElement("div");
+  wrap.className = "field";
+  wrap.append(label, input);
+  return wrap;
+}
+
+// Typed by the user in this popup; page fields are never read. The values go to the
+// background once and the form is cleared.
+function saveForm(refresh: () => Promise<void>): { form: HTMLElement; prefill: (host?: string, origin?: string) => void } {
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "Save login for this site";
+  const form = document.createElement("form");
+  const inputs = { title: document.createElement("input"), url: document.createElement("input"), username: document.createElement("input"), password: document.createElement("input") };
+  inputs.title.required = true;
+  inputs.url.type = "url";
+  inputs.username.autocomplete = "off";
+  inputs.password.type = "password";
+  inputs.password.autocomplete = "new-password";
+  inputs.password.required = true;
+  const generate = document.createElement("button");
+  generate.type = "button";
+  generate.textContent = "Generate";
+  generate.addEventListener("click", () => {
+    inputs.password.value = generatePassword(DEFAULT_GENERATOR);
+  });
+  const passwordRow = document.createElement("div");
+  passwordRow.className = "password-row";
+  passwordRow.append(inputs.password, generate);
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "Save login";
+  const status = text("p", "", "muted");
+  status.setAttribute("role", "status");
+  const passwordLabel = text("label", "Password");
+  inputs.password.id = "save-password";
+  passwordLabel.setAttribute("for", inputs.password.id);
+  form.append(
+    field("Title", inputs.title, "save-title"),
+    field("Website address", inputs.url, "save-url"),
+    field("Username", inputs.username, "save-username"),
+    passwordLabel,
+    passwordRow,
+    submit,
+    status,
+  );
+  details.append(summary, form);
+
+  let defaults = { title: "", url: "" };
+  const reset = () => {
+    form.reset();
+    inputs.title.value = defaults.title;
+    inputs.url.value = defaults.url;
+  };
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const login = { title: inputs.title.value, url: inputs.url.value, username: inputs.username.value, password: inputs.password.value };
+    reset();
+    submit.disabled = true;
+    status.className = "muted";
+    status.textContent = "Saving the login.";
+    const res = await send({ type: "saveLogin", login });
+    submit.disabled = false;
+    if (res.type === "error") {
+      if (res.locked || res.revoked) return showError(res);
+      status.className = "error";
+      status.textContent = `${res.message} The login was not saved.`;
+      return;
+    }
+    status.textContent = "Saved to the vault.";
+    await refresh();
+  });
+
+  return {
+    form: details,
+    prefill: (host, origin) => {
+      const pristine = inputs.title.value === defaults.title && inputs.url.value === defaults.url;
+      defaults = { title: host ?? "", url: origin ?? "" };
+      if (pristine) reset();
+    },
+  };
+}
+
+function renderLocked(notice?: string): void {
   lockButton.hidden = true;
   const form = document.createElement("form");
   const label = text("label", "Master password");
@@ -177,6 +267,7 @@ function renderLocked(): void {
   button.textContent = "Unlock";
   const status = text("p", "", "muted");
   status.setAttribute("role", "status");
+  if (notice) status.textContent = notice;
   form.append(label, input, button, status);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();

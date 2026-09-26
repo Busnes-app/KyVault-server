@@ -4,7 +4,8 @@
 
 Chrome and Firefox MV3 extension that pairs with KyVault as a device, unlocks
 the vault with the master password in the browser, lists entries for the
-current site, and fills or copies credentials on click.
+current site, fills or copies credentials on click, and saves a new login
+typed into the popup.
 
 ## Ownership
 
@@ -84,8 +85,9 @@ checks.
     unwrapped key bytes exist only for one `KeePassVault.open` call and are
     zeroed after it. The password is used once for
     `unwrapVaultKeyFromEnvelopes` and dropped; it is never stored or logged.
-  - `storage.session` (default access level, trusted contexts only): `keyHex`
-    and `lockAt`. Cleared on lock and by the browser on exit.
+  - `storage.session` (default access level, trusted contexts only): `keyHex`,
+    `lockAt` and `envelope` (the password envelope the key was unwrapped from, for
+    the save path's rotation check). Cleared on lock and by the browser on exit.
   - `storage.local`: only the allowlist above; `autoLockMinutes` is the idle
     window. `session.test.ts` fails if any file but `lib/settings.ts` calls
     `storage.local.`, if `keyHex` appears outside `vaultState.ts`, or if
@@ -164,3 +166,25 @@ checks.
     probe and that no global was added).
   - `ponytail:` inputs inside shadow roots are not found; upgrade path is walking open
     shadow roots in `probe` and `fillFrame` alike.
+- `src/lib/save.ts`, `src/lib/vaultState.ts` (`saveLogin`), `src/background.ts`
+  (`saveLogin`), `src/popup/main.ts` (Task 6): save login, the extension's only write.
+  - The popup form (title and address prefilled from the active http(s) tab, username,
+    password with Generate from `generatePassword.ts` defaults) sends the typed values
+    once and clears. Page fields are never read. `saveLogin` refuses a blank title, an
+    empty password, or an address that is not `http(s):`.
+  - Order: `ensure`, then `GET /api/vault/metadata` and compare its `passwordEnvelope`
+    with the session's `envelope`; a mismatch locks with the rotation sentence before
+    anything is created or uploaded. Then one `createEntry` in `getLiveGroups()[0]`,
+    `exportBinary`, raw `POST /api/vault/upload` with `If-Match: "<version>"` and
+    `X-Device-ID`. Success sets the in-memory version to the returned
+    `metadata.version`, which must be a safe integer above the sent one.
+  - 409 locks and throws `LockedError` ("The vault changed elsewhere. Unlock again to
+    refresh, then add the login again."); the server keeps the rejected bytes under
+    `conflicts/`. Never retry with the newer version. 401 is the revoked path. Any other
+    failure drops the in-memory vault (not `deleteEntry`, which would recycle it) so the
+    next request re-downloads it from `keyHex`.
+  - Saves are serialised behind one promise per worker. `LockedError` takes a message,
+    and the popup's locked form shows it.
+  - `save.test.ts`: the plan's upload tests, a real KDBX round trip (headers, bytes
+    reopened with the key, entry in the root group), serialised versions, 409 lock,
+    no phantom after a 500, envelope mismatch refusing before upload, and input checks.
