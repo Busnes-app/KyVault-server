@@ -4,7 +4,7 @@ import { getJSON, postJSON, putJSON, toErrorMessage, HttpError } from "./lib/api
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
 import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
-import { KeePassVault } from "./lib/kdbx";
+import { KeePassVault, isWrongVaultKey } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
 import { rotateAndUpload, RotationUnconfirmedError, uploadRotatedVault } from "./lib/keyRotation";
 import {
@@ -290,7 +290,14 @@ export function App() {
     } catch (err) {
       if (!current()) return;
       console.error("Vault init error:", err);
-      setUnlockError(toErrorMessage(err, "Failed to unlock vault"));
+      // A cached key that no longer opens the vault was retired by a rotation elsewhere.
+      if (!masterPassword && isWrongVaultKey(err)) {
+        await clearDeviceVaultKey(u.username).catch(() => {});
+        if (!current()) return;
+        setUnlockError("The vault key changed on another device. Enter your master password or paper code.");
+      } else {
+        setUnlockError(toErrorMessage(err, "Failed to unlock vault"));
+      }
       setLockedReason(meta ? (meta.version ? "locked" : "new") : "locked");
     }
   };

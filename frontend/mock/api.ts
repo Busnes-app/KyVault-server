@@ -61,12 +61,14 @@ export function mockApi(): Plugin {
         if (rotated && !(req.headers["x-password-envelope"] && req.headers["x-recovery-envelope"])) return json(res, 400, { error: "a key rotation must carry both new envelopes" });
         archive();
         store.bytes = body; store.version++;
-        if (rotated) store.keyEpochSince = store.version;
+        if (rotated) { store.keyEpochSince = store.version; store.devices = []; }
         const env = req.headers["x-password-envelope"]; if (typeof env === "string" && env) store.passwordEnvelope = env;
         const rec = req.headers["x-recovery-envelope"]; if (typeof rec === "string" && rec) store.recoveryEnvelope = rec;
         return json(res, 200, { ok: true, metadata: metadata() });
       }
       if (p === "/api/vault/envelopes" && m === "PUT") {
+        const expected = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));
+        if (expected !== store.version) return json(res, 409, { error: "The vault changed on the server since this key was checked. Reload the vault and try again." });
         const body = JSON.parse((await readBody(req)).toString() || "{}");
         if (body.passwordEnvelope) store.passwordEnvelope = body.passwordEnvelope;
         if (body.recoveryEnvelope) store.recoveryEnvelope = body.recoveryEnvelope;

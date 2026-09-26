@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, FormEvent } from "react";
-import { getJSON, putJSON, patchJSON, deleteJSON, toErrorMessage, HttpError } from "../lib/api";
+import { getJSON, requestJSON, patchJSON, deleteJSON, toErrorMessage, HttpError } from "../lib/api";
 import { wrapVaultKey, bytesToHex, verifyMasterPassword } from "../lib/vaultCrypto";
 import { checkMasterPassword, MIN_MASTER_PASSWORD_LENGTH } from "../lib/masterPassword";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download, RefreshCw } from "lucide-react";
@@ -104,21 +104,32 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
   // Every action below either changes what protects the vault key or shows it.
   // Prove the current master password first; it never leaves the browser.
-  const proveCurrentPassword = async (): Promise<boolean> => {
-    const meta = await getJSON<{ passwordEnvelope?: string; recoveryEnvelope?: string }>("/api/vault/metadata");
+  // Returns the vault version the proof holds for, or null when it fails.
+  const proveCurrentPassword = async (): Promise<number | null> => {
+    const meta = await getJSON<{ version: number; passwordEnvelope?: string; recoveryEnvelope?: string }>("/api/vault/metadata");
     if (!meta.passwordEnvelope && !meta.recoveryEnvelope) {
       setError("No master password or paper code envelope is stored for this vault.");
-      return false;
+      return null;
     }
+    // Load-bearing: verifyMasterPassword requires the stored envelope to open to this tab's key,
+    // so a tab holding a retired key cannot write an old-key envelope over a rotated vault.
     if (meta.passwordEnvelope && (await verifyMasterPassword(meta.passwordEnvelope, currentPassword, vaultKey))) {
-      return true;
+      return meta.version;
     }
     if (meta.recoveryEnvelope && (await verifyMasterPassword(meta.recoveryEnvelope, currentPassword, vaultKey))) {
-      return true;
+      return meta.version;
     }
     setError("The current master password or paper code is incorrect.");
-    return false;
+    return null;
   };
+
+  // The server refuses the envelope with 409 if the vault moved past the proven version.
+  const putEnvelopes = (version: number, body: { passwordEnvelope?: string; recoveryEnvelope?: string }) =>
+    requestJSON("/api/vault/envelopes", {
+      method: "PUT",
+      headers: { "If-Match": `"${version}"` },
+      body: JSON.stringify(body),
+    });
 
   const handleChangePassword = async (e: FormEvent) => {
     e.preventDefault();
@@ -133,8 +144,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
 
     try {
-      if (!(await proveCurrentPassword())) return;
-      if (!alive.current) return;
+      const version = await proveCurrentPassword();
+      if (version === null || !alive.current) return;
 
       // Changing the master password is entirely a re-wrap of the vault key envelope.
       // There is no password on the server to update: it never had one, and the new
@@ -142,9 +153,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       const newEnvelope = await wrapVaultKey(vaultKey, newPassword);
       if (!alive.current) return;
 
-      await putJSON("/api/vault/envelopes", {
-        passwordEnvelope: newEnvelope,
-      });
+      await putEnvelopes(version, { passwordEnvelope: newEnvelope });
       if (!alive.current) return;
 
       setMessage("Master password changed and vault key re-wrapped.");
@@ -171,8 +180,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
 
     try {
-      if (!(await proveCurrentPassword())) return;
-      if (!alive.current) return;
+      const version = await proveCurrentPassword();
+      if (version === null || !alive.current) return;
 
       // Clear any shown code first (and its confirmation) so the hide timer re-arms even
       // when regenerating while a code is already visible: the awaits below give React a
@@ -190,9 +199,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       const recoveryEnv = await wrapVaultKey(vaultKey, code);
       if (!alive.current) return;
 
-      await putJSON("/api/vault/envelopes", {
-        recoveryEnvelope: recoveryEnv,
-      });
+      await putEnvelopes(version, { recoveryEnvelope: recoveryEnv });
       if (!alive.current) return;
 
       setPaperCode(code);
@@ -224,7 +231,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setMessage("");
     setError("");
     try {
-      if (!(await proveCurrentPassword())) return;
+      if ((await proveCurrentPassword()) === null) return;
       if (!alive.current) return;
       setVaultKeyCopied(false);
       setShowVaultKey(true);
@@ -262,7 +269,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
     setUnrevoked([]);
     try {
-      if (!(await proveCurrentPassword())) return;
+      if ((await proveCurrentPassword()) === null) return;
       if (!alive.current) return;
       setPaperCode(null);
       setPaperConfirmInput("");
