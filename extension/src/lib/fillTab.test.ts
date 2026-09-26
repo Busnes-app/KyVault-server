@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runInNewContext } from "node:vm";
 import { fillFrame, fillTab, type FillArgs, type FillIO } from "./fillTab";
+import { checkFillFrame } from "./fillFrame.fixture";
 
 const login = { url: "https://example.com/login", username: "alice", password: "hunter2" };
 const probe = (frameId: number, origin: string, targets: unknown = { password: 1, username: 0 }, count = 2) => ({
@@ -92,58 +92,8 @@ test("pages that refuse injection and pages that changed get a sentence", async 
   await assert.rejects(fillTab(refused, login), /^Error: KyVault cannot fill on this page\.$/);
   const changed = io("https://example.com/", [probe(0, "https://example.com")], false);
   await assert.rejects(fillTab(changed.fake, login), /The page changed before filling\. Try again\./);
+  const navigated: FillIO = { ...changed.fake, fill: async () => { throw new Error("Frame with ID 3 is showing error page"); } };
+  await assert.rejects(fillTab(navigated, login), /^Error: The page changed before filling\. Try again\.$/);
 });
 
-// A fake DOM just big enough for fillFrame; run through toString the way
-// scripting.executeScript serializes `func`, so a closure over module scope fails here.
-function page(origin: string, types: string[]) {
-  const events: string[] = [];
-  class HTMLInputElement {
-    type: string;
-    _value = "";
-    constructor(type: string) { this.type = type; }
-    focus() { events.push(`focus:${this.type}`); }
-    dispatchEvent(e: { type: string; bubbles: boolean }) { events.push(`${e.type}:${this.type}:${e.bubbles}`); return true; }
-    // A page overriding the instance setter must not see the value.
-    set value(_v: string) { events.push("instance-setter"); }
-  }
-  Object.defineProperty(HTMLInputElement.prototype, "value", {
-    set(this: HTMLInputElement, v: string) { this._value = v; },
-    get(this: HTMLInputElement) { return this._value; },
-    configurable: true,
-  });
-  const inputs = types.map((t) => new HTMLInputElement(t));
-  class Event { type: string; bubbles: boolean; constructor(type: string, init?: { bubbles?: boolean }) { this.type = type; this.bubbles = Boolean(init?.bubbles); } }
-  const context = { location: { origin }, document: { querySelectorAll: () => inputs }, HTMLInputElement, Event };
-  return { context, inputs, events };
-}
-
-function run(context: object, args: FillArgs): unknown {
-  return runInNewContext(`(${fillFrame.toString()})(...args)`, { ...context, args });
-}
-
-test("fillFrame sets values through the native setter and dispatches bubbling events", () => {
-  const { context, inputs, events } = page("https://example.com", ["email", "password"]);
-  assert.equal(run(context, ["https://example.com", 2, 1, 0, "alice", "hunter2"]), true);
-  assert.equal(inputs[0]._value, "alice");
-  assert.equal(inputs[1]._value, "hunter2");
-  assert.deepEqual(events, [
-    "focus:email", "input:email:true", "change:email:true",
-    "focus:password", "input:password:true", "change:password:true",
-  ]);
-  assert.deepEqual(Object.keys(context).sort(), ["Event", "HTMLInputElement", "document", "location"]);
-});
-
-test("fillFrame refuses a navigated frame or a changed form without touching it", () => {
-  for (const [origin, types, args] of [
-    ["https://evil.test", ["email", "password"], ["https://example.com", 2, 1, 0, "a", "p"]],
-    ["https://example.com", ["email", "password", "text"], ["https://example.com", 2, 1, 0, "a", "p"]],
-    ["https://example.com", ["email", "text"], ["https://example.com", 2, 1, 0, "a", "p"]],
-    ["https://example.com", ["password", "password"], ["https://example.com", 2, 1, 0, "a", "p"]],
-  ] as [string, string[], FillArgs][]) {
-    const { context, inputs, events } = page(origin, types);
-    assert.equal(run(context, args), false);
-    assert.deepEqual(events, []);
-    assert.ok(inputs.every((i) => i._value === ""));
-  }
-});
+test("fillFrame from source", () => checkFillFrame(fillFrame.toString()));

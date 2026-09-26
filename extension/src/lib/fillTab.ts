@@ -64,8 +64,12 @@ export async function fillTab(io: FillIO, login: Login): Promise<{ username: boo
 
   const { origin, count, targets } = target.probe;
   const username = login.username !== "" && targets.username !== undefined;
-  const filled = await io.fill(target.frameId, [origin, count, targets.password, username ? targets.username! : -1, login.username, login.password]);
-  if (filled !== true) throw new Error("The page changed before filling. Try again.");
+  const changed = new Error("The page changed before filling. Try again.");
+  // A frame that navigated away since the probe is refused by the browser itself.
+  const filled = await io
+    .fill(target.frameId, [origin, count, targets.password, username ? targets.username! : -1, login.username, login.password])
+    .catch(() => { throw changed; });
+  if (filled !== true) throw changed;
   return { username };
 }
 

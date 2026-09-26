@@ -160,10 +160,11 @@ checks.
     sets values through `HTMLInputElement.prototype`'s setter, fires bubbling `input` and
     `change`, never submits, and clears its credential locals.
   - `fillTargets.test.ts` (the plan's pinned tests), `fillTab.test.ts` (host and frame
-    rules on fakes; `fillFrame` run from its source text in a `vm` fake DOM), and
-    `src/content/fill.test.ts` (builds the content script with the real config, asserts no
-    `import`/`export`, runs it as a classic script in a `vm` context, checks the returned
-    probe and that no global was added).
+    rules on fakes; `fillFrame` run from its source text in the `vm` fake DOM of
+    `fillFrame.fixture.ts`), and `src/content/fill.test.ts` (builds the content script with
+    the real config, asserts no `import`/`export`, runs it as a classic script in a `vm`
+    context, checks the returned probe and that no global was added; also builds the
+    background bundle and runs the minified `fillFrame` text through the same fixture).
   - `ponytail:` inputs inside shadow roots are not found; upgrade path is walking open
     shadow roots in `probe` and `fillFrame` alike.
 - `src/lib/save.ts`, `src/lib/vaultState.ts` (`saveLogin`), `src/background.ts`
