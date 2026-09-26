@@ -335,6 +335,46 @@ function mapRowToEntry(
   };
 }
 
+export type ColumnMapping = {
+  title?: number;
+  username?: number;
+  password?: number;
+  url?: number;
+  notes?: number;
+  totp?: number;
+  folder?: number;
+};
+
+/**
+ * Build previews from a generic CSV using an explicit column mapping instead of
+ * provider auto-detection. Missing columns become empty strings; a row with no
+ * title, username or password is skipped.
+ */
+export function applyMapping(rows: string[][], mapping: ColumnMapping, hasHeader: boolean): ImportedEntryPreview[] {
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const field = (row: string[], idx?: number): string => (idx === undefined ? "" : (row[idx] ?? "").trim());
+
+  const entries: ImportedEntryPreview[] = [];
+  for (const row of dataRows) {
+    const title = field(row, mapping.title);
+    const username = field(row, mapping.username);
+    const password = field(row, mapping.password);
+    if (!title && !username && !password) continue;
+    entries.push({
+      id: crypto.randomUUID(),
+      title,
+      username,
+      password,
+      url: field(row, mapping.url),
+      notes: field(row, mapping.notes),
+      totpSeed: field(row, mapping.totp),
+      folder: field(row, mapping.folder),
+      selected: true,
+    });
+  }
+  return entries;
+}
+
 /**
  * Parse CSV text into a structured summary with previews and auto-detection
  */

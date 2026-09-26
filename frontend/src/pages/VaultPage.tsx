@@ -15,6 +15,8 @@ import { HistoryModal } from "../components/HistoryModal";
 import { EntryHistoryModal } from "../components/EntryHistoryModal";
 import { EntryAttachments } from "../components/EntryAttachments";
 import { CsvImportModal } from "../components/CsvImportModal";
+import { exportCsv } from "../lib/csvExport";
+import { downloadBlob } from "../lib/download";
 import { useDialogs } from "../components/DialogHost";
 import type { Route } from "../lib/route";
 import { useMediaQuery, NARROW } from "../lib/useMediaQuery";
@@ -517,6 +519,18 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     }
   };
 
+  const handleExportCsv = async () => {
+    const ok = await dialogs.confirm({
+      title: "Export passwords as plain text?",
+      message: "The CSV contains every password and TOTP secret unencrypted. Save it only to a device you control and delete it when you are done.",
+      confirmLabel: "Export",
+      danger: true,
+    });
+    if (!ok) return;
+    const pathMap = new Map(vault.getLiveGroups().map((g) => [g.uuid, g.path]));
+    downloadBlob(new Blob([exportCsv(vault.getLiveEntries(), pathMap)], { type: "text/csv" }), "vault-export.csv");
+  };
+
   const filteredEntries = useMemo(() => {
     const smartFiltered = entries.filter((e) => {
       const matchesGroup =
@@ -634,6 +648,9 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             </button>
             <button className="btn btn-secondary btn-sm" onClick={onExport} disabled={saving}>
               <Download size={14} /> Download .kdbx
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => void handleExportCsv()}>
+              <FileSpreadsheet size={14} /> Export CSV
             </button>
           </div>
         </div>

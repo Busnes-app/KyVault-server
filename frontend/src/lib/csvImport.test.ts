@@ -6,6 +6,7 @@ import {
   parseAndPreviewCsv,
   applyImportToVault,
   findDuplicateImports,
+  applyMapping,
 } from "./csvImport.js";
 import { KeePassVault } from "./kdbx.js";
 
@@ -340,4 +341,15 @@ test("duplicate detection excludes recycle-bin descendants using identity, not f
   const liveGroup = vault.createGroup("Recycle Bin");
   vault.createEntry({ ...row, groupUuid: liveGroup.uuid });
   assert.equal(findDuplicateImports(vault, [row]).size, 1, "a live group named Recycle Bin still counts");
+});
+
+test("generic CSV uses an explicit column mapping", () => {
+  const rows = [["Site", "Login", "Pass", "Where"], ["Bank", "me", "pw", "Finance/Banks"]];
+  const out = applyMapping(rows, { title: 0, username: 1, password: 2, folder: 3 }, true);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].title, "Bank");
+  assert.equal(out[0].folder, "Finance/Banks");
+  assert.equal(out[0].url, "");
+  const noHeader = applyMapping(rows, { title: 0, password: 2 }, false);
+  assert.equal(noHeader.length, 2);
 });
