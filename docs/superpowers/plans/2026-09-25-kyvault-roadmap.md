@@ -1,9 +1,16 @@
 # KyVault Fix-Everything Roadmap
 
-> **For agentic workers:** This is the master roadmap from the 2026-09-25 site audit. Each phase
-> gets its own bite-sized plan in this directory when it starts. Phase 1 is written:
-> `2026-09-25-phase1-security.md`. Do not start Phase N+1 until Phase N is merged to `master`
-> and CI is green.
+> **Status (2026-09-26): complete.** Every phase is on `master`: Phase 1 (#56), 2 (#59),
+> 3a (#60), 3b (#61), 4a (#62), 4b (#64), 5 (#65 via #66), plus the history-id hotfix (#63).
+> Per-phase plans live beside this file. Two items were deliberately left out: the entry
+> icon picker (Phase 4, needs the KeePass icon set bundled; open as a follow-up) and the
+> KyForge attestation track (plan only, outside this repo). Known follow-ups: run the
+> extension in real Firefox before store submission (`extension/README.md`), and confirm
+> whether KyAuth calls `PUT /api/vault/envelopes`, which now requires `If-Match`.
+>
+> **For agentic workers:** This was the master roadmap from the 2026-09-25 site audit. Each
+> phase got its own bite-sized plan in this directory. Phases were merged in order, each
+> only after the previous one was on `master` with CI green.
 
 **Goal:** Close every finding from the 2026-09-25 audit, security first, then ship Chrome and
 Firefox extensions that pair with the server like any other device.
