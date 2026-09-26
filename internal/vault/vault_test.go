@@ -2,10 +2,13 @@ package vault
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -222,5 +225,44 @@ func TestHistoryCapPreservesTimeCoverage(t *testing.T) {
 				t.Fatalf("write %d erased time band %d", version, band)
 			}
 		}
+	}
+}
+
+// A stale upload's rejected bytes are named after the saving device. The id is
+// server-minted hex, but the filename must stay inside the conflicts directory no
+// matter what reaches this call.
+func TestConflictFilenameCannotEscape(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v1"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	evil := "../../../../" + t.Name() + "-escaped"
+	_, err = store.SaveVault("u1", 0, []byte("stale"), "", "", evil)
+	var conf *ConflictError
+	if !errors.As(err, &conf) {
+		t.Fatalf("stale save = %v, want ConflictError", err)
+	}
+	if strings.Contains(conf.ConflictID, "/") || strings.Contains(conf.ConflictID, "..") {
+		t.Fatalf("conflict id carries path syntax: %q", conf.ConflictID)
+	}
+	var escaped []string
+	_ = filepath.WalkDir(filepath.Dir(dir), func(p string, d fs.DirEntry, _ error) error {
+		if d != nil && !d.IsDir() && strings.Contains(p, "-escaped") {
+			escaped = append(escaped, p)
+		}
+		return nil
+	})
+	if len(escaped) != 0 {
+		t.Fatalf("conflict written outside the store: %v", escaped)
+	}
+	if got, want := fileToken("0123abcd-_"), "0123abcd-_"; got != want {
+		t.Fatalf("fileToken(%q) = %q", want, got)
+	}
+	if got := fileToken(""); got != "web" {
+		t.Fatalf("fileToken(\"\") = %q, want web", got)
 	}
 }

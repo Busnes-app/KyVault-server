@@ -50,7 +50,6 @@ type VaultUploadRequest struct {
 	KdbxBase64       string `json:"kdbxBase64"`
 	PasswordEnvelope string `json:"passwordEnvelope,omitempty"`
 	RecoveryEnvelope string `json:"recoveryEnvelope,omitempty"`
-	DeviceID         string `json:"deviceId,omitempty"`
 }
 
 func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u users.User) {
@@ -69,7 +68,10 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 	var kdbxData []byte
 	var pwEnv string
 	var recEnv string
-	var devID string
+	// The device that saved is what the session proves, never what the body or a header
+	// claims: the id is audited and becomes part of a conflict filename.
+	current, _ := s.currentSession(r)
+	devID := current.DeviceID
 
 	expectedVersion = ifMatchVersion(r)
 
@@ -84,7 +86,6 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		}
 		pwEnv = req.PasswordEnvelope
 		recEnv = req.RecoveryEnvelope
-		devID = req.DeviceID
 		decoded, err := base64.StdEncoding.DecodeString(req.KdbxBase64)
 		if err != nil || len(decoded) == 0 {
 			http.Error(w, "kdbxBase64 must be non-empty standard base64", http.StatusBadRequest)
@@ -95,7 +96,6 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		// Raw binary stream
 		pwEnv = r.Header.Get("X-Password-Envelope")
 		recEnv = r.Header.Get("X-Recovery-Envelope")
-		devID = r.Header.Get("X-Device-ID")
 		kdbxData = data
 	}
 
