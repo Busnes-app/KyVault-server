@@ -190,7 +190,7 @@ export function App() {
         await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
         if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
         try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {}
-        setSaveQueue(new VaultSaveQueue(newVault, version));
+        setSaveQueue(new VaultSaveQueue(newVault, version, pwEnvelope));
         setVaultKey(key);
         setVault(newVault);
         setLockedReason(null);
@@ -275,7 +275,7 @@ export function App() {
       if (!current()) return;
       memoryDraft.current = undefined;
       setRecoveryPending(local.kind === "unavailable");
-      const queue = new VaultSaveQueue(loadedVault, recovered?.metadata.version ?? meta.version);
+      const queue = new VaultSaveQueue(loadedVault, recovered?.metadata.version ?? meta.version, meta.passwordEnvelope);
       if (recovered?.metadata.dirty) queue.recoverUnsaved();
       setInitialDraft(recovered?.metadata.entry ?? null);
       setSaveQueue(queue);
@@ -328,12 +328,13 @@ export function App() {
   const rotateKey = async (password: string, paperCode: string): Promise<void> => {
     const queue = saveQueue, oldKey = vaultKey, u = user, generation = unlockGeneration.current;
     if (!vault || !queue || !oldKey || !u) throw new Error("Unlock the vault first.");
-    let rotated: { key: Uint8Array; version: number };
+    let rotated: { key: Uint8Array; version: number; passwordEnvelope: string };
     try {
       rotated = await queue.exclusive((live) => {
         if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
-        return rotateAndUpload(live, oldKey, password, paperCode, {
-          upload: (binary, pw, rec) => uploadVault(binary, queue.getSnapshot().version, pw, rec),
+        const version = queue.getSnapshot().version;
+        return rotateAndUpload(live, oldKey, password, paperCode, version, {
+          upload: (binary, pw, rec) => uploadVault(binary, version, pw, rec),
           metadata: () => getJSON("/api/vault/metadata"),
         });
       });
@@ -354,7 +355,7 @@ export function App() {
       return;
     }
     setVaultKey(rotated.key);
-    setSaveQueue(new VaultSaveQueue(vault, rotated.version));
+    setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
     await recache.then(() => storeDeviceVaultKey(u.username, bytesToHex(rotated.key)))
       .catch(() => setLockNotice("Could not cache the new device key; you may need your master password again."));
   };

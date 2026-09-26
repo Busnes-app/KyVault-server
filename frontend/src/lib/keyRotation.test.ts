@@ -39,7 +39,7 @@ test("rotation sends the KDBX and both envelopes in one upload and restores the 
   const code = generatePaperCode();
   const calls: Array<{ binary: ArrayBuffer; pw: string; rec: string }> = [];
   let metadataReads = 0;
-  const refused = rotateAndUpload(vault, oldKey, PASSWORD, code, {
+  const refused = rotateAndUpload(vault, oldKey, PASSWORD, code, 2, {
     upload: async (binary, pw, rec) => { calls.push({ binary, pw, rec }); throw new HttpError(409, "conflict"); },
     metadata: async () => { metadataReads++; return {}; },
   });
@@ -51,11 +51,12 @@ test("rotation sends the KDBX and both envelopes in one upload and restores the 
   assert.ok(afterFailure.getLiveEntries().some((x) => x.uuid === entry.uuid), "the live vault is back on the old key");
 
   const sent: Array<{ pw: string; rec: string }> = [];
-  const done = await rotateAndUpload(vault, oldKey, PASSWORD, code, {
+  const done = await rotateAndUpload(vault, oldKey, PASSWORD, code, 2, {
     upload: async (_binary, pw, rec) => { sent.push({ pw, rec }); return 9; },
     metadata: async () => { throw new Error("not consulted on success"); },
   });
   assert.equal(done.version, 9);
+  assert.equal(done.passwordEnvelope, sent[0].pw);
   assert.equal(sent.length, 1);
   assert.deepEqual([...await unwrapVaultKey(sent[0].pw, PASSWORD)], [...done.key]);
   assert.deepEqual([...await unwrapVaultKey(sent[0].rec, code)], [...done.key]);
@@ -68,23 +69,33 @@ test("a lost upload response is reconciled against the stored envelopes", async 
   const code = generatePaperCode();
   // The server wrote the rotation, then the connection dropped before the answer arrived.
   let stored: { version: number; passwordEnvelope?: string; recoveryEnvelope?: string } = { version: 3 };
-  const landed = await rotateAndUpload(vault, oldKey, PASSWORD, code, {
+  const landed = await rotateAndUpload(vault, oldKey, PASSWORD, code, 3, {
     upload: async (_b, pw, rec) => { stored = { version: 4, passwordEnvelope: pw, recoveryEnvelope: rec }; throw new TypeError("Failed to fetch"); },
     metadata: async () => stored,
   });
   assert.equal(landed.version, 4);
+  assert.equal(landed.passwordEnvelope, stored.passwordEnvelope);
   assert.ok(await KeePassVault.open(await vault.exportBinary(), landed.key));
+
+  // Our envelopes landed, but another tab has saved on top since: adopting that later version
+  // would let this tab overwrite that save without a 409, so the caller must lock instead.
+  const beforeLater = landed.key;
+  await assert.rejects(rotateAndUpload(vault, beforeLater, PASSWORD, code, 4, {
+    upload: async (_b, pw, rec) => { stored = { version: 6, passwordEnvelope: pw, recoveryEnvelope: rec }; throw new TypeError("Failed to fetch"); },
+    metadata: async () => stored,
+  }), RotationUnconfirmedError);
 
   // The request never arrived: the stored envelopes are not ours, so the old key comes back.
   const currentKey = landed.key;
-  await assert.rejects(rotateAndUpload(vault, currentKey, PASSWORD, code, {
+  stored = { version: 4 };
+  await assert.rejects(rotateAndUpload(vault, currentKey, PASSWORD, code, 4, {
     upload: async () => { throw new TypeError("Failed to fetch"); },
     metadata: async () => stored,
   }), /Failed to fetch/);
   assert.ok(await KeePassVault.open(await vault.exportBinary(), currentKey));
 
   // Neither the answer nor the metadata arrived: the caller is told to lock, not to carry on.
-  await assert.rejects(rotateAndUpload(vault, currentKey, PASSWORD, code, {
+  await assert.rejects(rotateAndUpload(vault, currentKey, PASSWORD, code, 4, {
     upload: async () => { throw new TypeError("Failed to fetch"); },
     metadata: async () => { throw new TypeError("Failed to fetch"); },
   }), RotationUnconfirmedError);

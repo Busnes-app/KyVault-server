@@ -39,7 +39,9 @@ export class VaultSaveQueue {
   private exporting: Promise<unknown> = Promise.resolve();
   private onlineRetry: (() => void) | undefined;
 
-  constructor(private vault: KeePassVault | null, version: number) {
+  // passwordEnvelope is the one this vault was unlocked against: a different stored one
+  // means another session rotated the key, and this copy must not overwrite the server's.
+  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string) {
     this.state = { kind: "saved", version };
   }
 
@@ -100,8 +102,9 @@ export class VaultSaveQueue {
     try {
       if (options.overwrite) {
         // The server's copy stays in version history; ours becomes the head.
-        const meta = await requestJSON<{ version?: unknown }>("/api/vault/metadata", { method: "GET", signal: this.controller.signal });
+        const meta = await requestJSON<{ version?: unknown; passwordEnvelope?: string }>("/api/vault/metadata", { method: "GET", signal: this.controller.signal });
         if (typeof meta.version !== "number" || !Number.isSafeInteger(meta.version)) throw new Error("The server did not report its vault version.");
+        if (meta.passwordEnvelope !== this.passwordEnvelope) throw new Error("The vault key was rotated in another session. Download this copy, then lock and unlock with your master password.");
         this.state = { ...this.state, version: meta.version };
       }
       while (this.savedRevision < this.revision) {

@@ -251,6 +251,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       title: "Rotate the vault key?",
       message: "All paired devices and extensions will be signed out and need pairing again. " +
         "Snapshots and preserved conflicts from before now cannot be opened with the new key, so download the vault first if you may need them. " +
+        "The download opens only with the offline vault key shown below; reveal and save it first. " +
         "Your master password does not change. A new paper recovery code will be shown once; the old one stops working.",
       confirmLabel: "Rotate",
       danger: true,
@@ -544,7 +545,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           the same. Every paired device and extension is signed out, and snapshots and preserved conflicts
           from before the rotation can no longer be opened here. A new paper code is shown once afterwards;
           if this tab closes before you save it, your master password still unlocks the vault and you can
-          generate another code.
+          generate another code. The download opens only with the offline vault key shown below; reveal and
+          save it first.
         </p>
         {unrevoked.length > 0 ? (
           <div role="alert" style={{ marginBottom: "1rem", fontSize: "0.85rem" }}>
