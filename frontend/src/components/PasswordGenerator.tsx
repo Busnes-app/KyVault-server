@@ -34,6 +34,7 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [lengthText, setLengthText] = useState(() => String(options.length));
+  const [wordsText, setWordsText] = useState(() => String(phraseOptions.words));
 
   const update = (patch: Partial<GeneratorOptions>) => {
     const next = { ...options, ...patch };
@@ -95,6 +96,7 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
             type="button"
             className={mode === "characters" ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
             style={{ flex: 1 }}
+            aria-pressed={mode === "characters"}
             onClick={() => changeMode("characters")}
           >
             Characters
@@ -103,6 +105,7 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
             type="button"
             className={mode === "passphrase" ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
             style={{ flex: 1 }}
+            aria-pressed={mode === "passphrase"}
             onClick={() => changeMode("passphrase")}
           >
             Passphrase
@@ -227,10 +230,18 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
                   max={10}
                   className="input"
                   style={{ width: "5rem", textAlign: "right" }}
-                  value={phraseOptions.words}
+                  value={wordsText}
                   onChange={(e) => {
-                    const n = parseInt(e.target.value, 10);
+                    const text = e.target.value;
+                    setWordsText(text);
+                    const n = parseInt(text, 10);
                     if (Number.isInteger(n) && n >= 4 && n <= 10) updatePhrase({ words: n });
+                  }}
+                  onBlur={() => {
+                    const n = parseInt(wordsText, 10);
+                    const clamped = Number.isInteger(n) ? Math.min(10, Math.max(4, n)) : phraseOptions.words;
+                    setWordsText(String(clamped));
+                    if (clamped !== phraseOptions.words) updatePhrase({ words: clamped });
                   }}
                 />
               </div>
@@ -239,7 +250,11 @@ export function PasswordGenerator({ onSelect, onClose, currentValue }: Props) {
                 min="4"
                 max="10"
                 value={phraseOptions.words}
-                onChange={(e) => updatePhrase({ words: parseInt(e.target.value, 10) })}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  updatePhrase({ words: n });
+                  setWordsText(String(n));
+                }}
                 style={{ width: "100%", accentColor: "var(--accent)" }}
               />
             </div>
