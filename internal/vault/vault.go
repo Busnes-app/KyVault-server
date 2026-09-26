@@ -468,8 +468,12 @@ func (s *Store) RestoreHistory(userID, historyID string) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	histFile := filepath.Join(s.historyDir(userID), historyID+".kdbx")
-	histData, err := os.ReadFile(histFile)
+	file, err := openFileID(s.historyDir(userID), historyID)
+	if err != nil {
+		return Metadata{}, err
+	}
+	histData, err := io.ReadAll(file)
+	file.Close()
 	if err != nil {
 		return Metadata{}, fmt.Errorf("read history file: %w", err)
 	}
@@ -556,24 +560,20 @@ func (s *Store) ListConflicts(userID string) ([]ConflictEntry, error) {
 	return entries, nil
 }
 
-// Conflict IDs are filenames, never paths, even when supplied by an authenticated client.
-func validConflictID(id string) bool {
+// Conflict and snapshot IDs are filenames, never paths, even when supplied by an authenticated client.
+func validFileID(id string) bool {
 	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, "/\\\x00")
 }
 
-// OpenConflict exposes only ciphertext within this user's conflict directory.
-func (s *Store) OpenConflict(userID, conflictID string) (io.ReadCloser, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !validConflictID(conflictID) {
+// openFileID opens dir/id.kdbx as a regular file that cannot resolve outside dir.
+func openFileID(dir, id string) (io.ReadCloser, error) {
+	if !validFileID(id) {
 		return nil, ErrNotFound
 	}
-	file, err := os.OpenInRoot(s.conflictsDir(userID), conflictID+".kdbx")
-	if os.IsNotExist(err) {
-		return nil, ErrNotFound
-	}
+	// Missing files and symlinks escaping dir are equally not there.
+	file, err := os.OpenInRoot(dir, id+".kdbx")
 	if err != nil {
-		return nil, err
+		return nil, ErrNotFound
 	}
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
@@ -583,9 +583,16 @@ func (s *Store) OpenConflict(userID, conflictID string) (io.ReadCloser, error) {
 	return file, nil
 }
 
+// OpenConflict exposes only ciphertext within this user's conflict directory.
+func (s *Store) OpenConflict(userID, conflictID string) (io.ReadCloser, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return openFileID(s.conflictsDir(userID), conflictID)
+}
+
 // DiscardConflict removes a conflict file.
 func (s *Store) DiscardConflict(userID, conflictID string) error {
-	if !validConflictID(conflictID) {
+	if !validFileID(conflictID) {
 		return ErrNotFound
 	}
 	s.mu.Lock()

@@ -281,6 +281,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   filename and uses `os.OpenInRoot` to prevent escaping symlinks. Discard shares filename
   validation. API/store tests cover anonymous/cross-user access, traversal, symlinks and
   read-only retrieval. Recoveries do not bypass If-Match or server conflict preservation.
+  History rollback ids are validated like conflict ids (shared `openFileID`) before any path
+  use; a path-shaped or symlinked id is 404 and changes nothing (`history_restore_id_test.go`).
 
 - `frontend/src/lib/kdbx.ts` recycle helpers identify the bin and descendants by metadata
   UUID. `VaultPage` excludes them from All Items and folder selectors and offers a read-only

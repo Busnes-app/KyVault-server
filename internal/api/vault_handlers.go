@@ -166,6 +166,10 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 	}
 
 	meta, err := s.vault.RestoreHistory(u.ID, id)
+	if errors.Is(err, vault.ErrNotFound) {
+		http.Error(w, "snapshot not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		http.Error(w, "failed to restore history: "+err.Error(), http.StatusInternalServerError)
 		return
