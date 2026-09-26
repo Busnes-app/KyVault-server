@@ -17,6 +17,7 @@ import {
 import { checkMasterPassword } from "./lib/masterPassword";
 import { unlockMode, checkCreatePassword } from "./lib/unlockMode";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
+import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
@@ -187,8 +188,9 @@ export function App() {
         const version = await uploadVault(binary, 0, pwEnvelope);
         if (!current()) return;
         setMeta({ ...meta, version, passwordEnvelope: pwEnvelope });
-        await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
-        if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
+        const cached = await cacheDeviceKey({ store: () => storeDeviceVaultKey(u.username, bytesToHex(key)), clear: () => clearDeviceVaultKey(u.username), stillCurrent: current });
+        if (cached === "failed") notices.push("Could not cache the device key; you may need your master password again.");
+        if (!current()) return;
         try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {}
         setSaveQueue(new VaultSaveQueue(newVault, version, pwEnvelope));
         setVaultKey(key);
@@ -258,8 +260,9 @@ export function App() {
         } catch { setLockedReason("locked"); return; }
       }
       if (masterPassword) {
-        await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
-        if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
+        const cached = await cacheDeviceKey({ store: () => storeDeviceVaultKey(u.username, bytesToHex(key)), clear: () => clearDeviceVaultKey(u.username), stillCurrent: current });
+        if (cached === "failed") notices.push("Could not cache the device key; you may need your master password again.");
+        if (!current()) return;
       }
       if (recovered) {
         memoryDraft.current = stored;
@@ -363,8 +366,14 @@ export function App() {
     }
     setVaultKey(rotated.key);
     setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
-    await recache.then(() => storeDeviceVaultKey(u.username, bytesToHex(rotated.key)))
-      .catch(() => setLockNotice("Could not cache the new device key; you may need your master password again."));
+    // Forget This Device or a lock can land while this write is pending; the helper
+    // undoes a write that lost that race so the forgotten device keeps nothing.
+    const cached = await recache.then(() => cacheDeviceKey({
+      store: () => storeDeviceVaultKey(u.username, bytesToHex(rotated.key)),
+      clear: () => clearDeviceVaultKey(u.username),
+      stillCurrent: () => generation === unlockGeneration.current,
+    }), () => "failed" as const);
+    if (cached === "failed") setLockNotice("Could not cache the new device key; you may need your master password again.");
   };
 
   const closeVault = () => {
