@@ -46,8 +46,9 @@ function fakes(serve: Serve, session = new Map<string, unknown>()) {
 }
 
 const META = { version: 3, checksum: "abc", passwordEnvelope: "{}", recoveryEnvelope: "" };
-const fakeUnwrap = (ok = true) => async (_env: Array<string | undefined>, password: string) => {
-  if (!ok || password !== "pw") throw new Error("Incorrect master password or paper code");
+// WebCrypto's AES-GCM failure, which is what a wrong password produces.
+const fakeUnwrap = (ok = true) => async (_env: string, password: string) => {
+  if (!ok || password !== "pw") throw new DOMException("The operation failed", "OperationError");
   return KEY.slice();
 };
 const fakeOpen = (seen: Uint8Array[] = []) => async (_bytes: ArrayBuffer, key: Uint8Array) => {
@@ -63,8 +64,9 @@ test("unlock opens a real vault, and a fresh worker reopens it from the session 
   const envelope = await wrapVaultKey(KEY, "correct horse");
   const f = fakes({ meta: { ...META, passwordEnvelope: envelope }, kdbx: bytes, version: "3" });
 
+  await assert.rejects(createVaultState(f.deps).unlock("wrong horse"), /That password did not unlock the vault\./);
   await createVaultState(f.deps).unlock("correct horse");
-  assert.deepEqual(f.log.paths, ["/api/vault/metadata", "/api/vault/kdbx"]);
+  assert.deepEqual(f.log.paths, ["/api/vault/metadata", "/api/vault/metadata", "/api/vault/kdbx"]);
   assert.equal(f.session.get("keyHex"), bytesToHex(KEY));
   assert.equal(f.session.get("lockAt"), T0 + 5 * 60_000);
   assert.deepEqual(f.log.alarms, [["lock", T0 + 5 * 60_000]]);
@@ -180,4 +182,29 @@ test("a lock during an unlock in flight wins", async () => {
   await assert.rejects(pending, LockedError);
   assert.equal(f.session.size, 0);
   await assert.rejects(state.ensure(), LockedError);
+});
+
+test("a corrupt or unknown-kdf envelope is not reported as a wrong password", async () => {
+  const good = { kdf: "argon2id", salt: "00".repeat(16), iv: "00".repeat(12), ciphertext: "00".repeat(48), memoryKiB: 65536, iterations: 3, parallelism: 1 };
+  for (const envelope of ["not json", "null", JSON.stringify({ ...good, kdf: "scrypt" }), JSON.stringify({ ...good, salt: "zz" }), JSON.stringify({ ...good, memoryKiB: 0 })]) {
+    const f = fakes({ meta: { ...META, passwordEnvelope: envelope }, kdbx: new ArrayBuffer(8) });
+    await assert.rejects(
+      createVaultState({ ...f.deps, openVault: fakeOpen() }).unlock("pw"),
+      /^Error: The stored key envelope could not be read\. Unlock in the KyVault web app to check the vault\.$/,
+      envelope,
+    );
+    assert.equal(f.session.size, 0);
+  }
+});
+
+test("a download that dies mid-body is a sentence and leaves nothing behind", async () => {
+  const f = fakes({ meta: META });
+  const broken = new ReadableStream({ start: (c) => c.error(new TypeError("network error")) });
+  const fetchDeps = { ...f.deps, fetch: async (url: string, init: RequestInit) =>
+    new URL(url).pathname === "/api/vault/kdbx" ? new Response(broken, { headers: { "X-Vault-Version": "3" } }) : f.deps.fetch(url, init) };
+  await assert.rejects(
+    createVaultState({ ...fetchDeps, unwrap: fakeUnwrap(), openVault: fakeOpen() }).unlock("pw"),
+    /^Error: The download was interrupted\. Check your connection and try again\.$/,
+  );
+  assert.equal(f.session.size, 0);
 });

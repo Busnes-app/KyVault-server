@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { RevokedError, serverFetch } from "./session";
+import { readBody, RevokedError, serverFetch } from "./session";
 
 function io(status: number) {
   const seen: { url?: string; init?: RequestInit; forgot: number } = { forgot: 0 };
@@ -81,4 +81,10 @@ test("only settings.ts touches storage.local, and only vaultState.ts names the s
   assert.deepEqual(using("storage.local."), ["lib/settings.ts"]);
   assert.deepEqual(using("keyHex"), ["lib/vaultState.ts"]);
   assert.deepEqual(using("setAccessLevel"), []);
+});
+
+test("a body that stalls past the timeout is a sentence, not an AbortError", async () => {
+  const signal = AbortSignal.timeout(10);
+  const stalled = new ReadableStream({ start: (c) => signal.addEventListener("abort", () => c.error(signal.reason)) });
+  await assert.rejects(readBody(new Response(stalled)), /^Error: The server did not answer in time\./);
 });

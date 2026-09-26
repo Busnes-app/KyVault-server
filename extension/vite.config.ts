@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  // kdbxweb's UMD wrapper falls back to Function("return this") when globalThis is
+  // missing; it never is here, and web-ext lint flags the dead eval.
+  define: { "typeof globalThis": '"object"' },
   build: {
     outDir: "build",
     emptyOutDir: true,

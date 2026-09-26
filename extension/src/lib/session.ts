@@ -43,14 +43,27 @@ export async function serverFetch(io: SessionIO, path: string, init: RequestInit
       signal: AbortSignal.timeout(io.timeoutMs ?? 120_000),
     });
   } catch (err) {
-    if (err instanceof DOMException && err.name === "TimeoutError") {
-      throw new Error("The server did not answer in time. Check your connection and try again.");
-    }
-    throw new Error(`Could not reach ${origin}. Check your connection and try again.`);
+    throw timedOut(err) ?? new Error(`Could not reach ${origin}. Check your connection and try again.`);
   }
   if (res.status === 401) {
     await io.forget();
     throw new RevokedError();
   }
   return res;
+}
+
+function timedOut(err: unknown): Error | undefined {
+  if (err instanceof DOMException && err.name === "TimeoutError") {
+    return new Error("The server did not answer in time. Check your connection and try again.");
+  }
+  return undefined;
+}
+
+// The timeout signal covers the body too; a stalled or dropped download gets a sentence.
+export async function readBody(res: Response): Promise<ArrayBuffer> {
+  try {
+    return await res.arrayBuffer();
+  } catch (err) {
+    throw timedOut(err) ?? new Error("The download was interrupted. Check your connection and try again.");
+  }
 }

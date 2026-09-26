@@ -2,9 +2,9 @@
 // envelope and dropped; the key lives in storage.session (keyHex) and, for the length
 // of one open call, in memory, where it is zeroed afterwards.
 import { KeePassVault, isWrongVaultKey } from "../../../frontend/src/lib/kdbx";
-import { bytesToHex, hexToBytes, unwrapVaultKeyFromEnvelopes } from "../../../frontend/src/lib/vaultCrypto";
+import { bytesToHex, hexToBytes, unwrapVaultKey } from "../../../frontend/src/lib/vaultCrypto";
 import { isLocked, lockDeadline } from "./lock";
-import { RevokedError, serverFetch, type SessionIO } from "./session";
+import { readBody, RevokedError, serverFetch, type SessionIO } from "./session";
 
 export class LockedError extends Error {
   constructor() {
@@ -23,7 +23,8 @@ export type VaultDeps = SessionIO & {
   };
   alarms: { create: (name: string, info: { when: number }) => unknown; clear: (name: string) => unknown };
   now?: () => number;
-  unwrap?: typeof unwrapVaultKeyFromEnvelopes;
+  // One envelope. Throws a DOMException "OperationError" (AES-GCM) for a wrong password.
+  unwrap?: typeof unwrapVaultKey;
   openVault?: (bytes: ArrayBuffer, key: Uint8Array) => Promise<KeePassVault>;
 };
 
@@ -33,9 +34,28 @@ const NO_ENVELOPE = "This vault has no master password yet. Set one in the KyVau
 const WRONG = "That password did not unlock the vault. Check it and try again.";
 const ROTATED = "The vault key changed. Unlock with your master password again.";
 const UNREADABLE = "The vault file could not be opened. Try again, or open it in the KyVault web app.";
+const CORRUPT = "The stored key envelope could not be read. Unlock in the KyVault web app to check the vault.";
 const UNEXPECTED = "The server sent an unexpected answer. Try again later.";
 
 const failed = (res: Response) => new Error(`The server answered ${res.status}. Try again later.`);
+
+const HEX = /^(?:[0-9a-f]{2})+$/;
+const positiveInt = (v: unknown) => Number.isSafeInteger(v) && (v as number) > 0;
+
+// unwrapVaultKey reads an unknown kdf as PBKDF2 and garbage as a failed decrypt; check
+// the shape first so a broken envelope is not reported as a wrong password.
+async function unwrapChecked(envelopeJSON: string, password: string): Promise<Uint8Array> {
+  const e = JSON.parse(envelopeJSON) as Record<string, unknown> | null;
+  const hex = (v: unknown) => typeof v === "string" && HEX.test(v);
+  const params =
+    e?.kdf === "argon2id" ? positiveInt(e.memoryKiB) && positiveInt(e.iterations) && positiveInt(e.parallelism)
+    : e?.kdf === undefined ? e?.iterations === undefined || positiveInt(e.iterations)
+    : false;
+  if (!e || typeof e !== "object" || !params || !hex(e.salt) || !hex(e.iv) || !hex(e.ciphertext)) throw new Error("malformed envelope");
+  return unwrapVaultKey(envelopeJSON, password);
+}
+
+const isWrongPassword = (err: unknown) => err instanceof DOMException && err.name === "OperationError";
 
 function parseMetadata(raw: unknown): { version: number; envelopes: string[] } {
   const m = raw as { version?: unknown; passwordEnvelope?: unknown; recoveryEnvelope?: unknown } | null;
@@ -46,7 +66,7 @@ function parseMetadata(raw: unknown): { version: number; envelopes: string[] } {
 
 export function createVaultState(deps: VaultDeps) {
   const now = deps.now ?? Date.now;
-  const unwrap = deps.unwrap ?? unwrapVaultKeyFromEnvelopes;
+  const unwrap = deps.unwrap ?? unwrapChecked;
   const openVault = deps.openVault ?? ((bytes, key) => KeePassVault.open(bytes, key));
   let open: OpenVault | undefined;
   let reopening: Promise<OpenVault> | undefined;
@@ -81,7 +101,7 @@ export function createVaultState(deps: VaultDeps) {
       const version = Number(res.headers.get("X-Vault-Version"));
       if (!Number.isSafeInteger(version) || version < 1) throw new Error(UNEXPECTED);
       const checksum = res.headers.get("X-Vault-Checksum") ?? "";
-      const bytes = await res.arrayBuffer();
+      const bytes = await readBody(res);
       let vault: KeePassVault;
       try {
         vault = await openVault(bytes, key);
@@ -117,15 +137,25 @@ export function createVaultState(deps: VaultDeps) {
     return guarded(async () => {
       const res = await serverFetch(deps, "/api/vault/metadata", { method: "GET" });
       if (!res.ok) throw failed(res);
-      const meta = parseMetadata(await res.json().catch(() => null));
+      const text = new TextDecoder().decode(await readBody(res));
+      let raw: unknown = null;
+      try { raw = JSON.parse(text); } catch { /* parseMetadata refuses null */ }
+      const meta = parseMetadata(raw);
       if (meta.version === 0) throw new Error(EMPTY);
       if (meta.envelopes.length === 0) throw new Error(NO_ENVELOPE);
-      let key: Uint8Array;
-      try {
-        key = await unwrap(meta.envelopes, password);
-      } catch {
-        throw new Error(WRONG);
+      // The password or the paper code; each has its own envelope. A malformed envelope
+      // wins over a wrong password, since retyping cannot fix it.
+      let key: Uint8Array | undefined;
+      let malformed = false;
+      for (const envelope of meta.envelopes) {
+        try {
+          key = await unwrap(envelope, password);
+          break;
+        } catch (err) {
+          if (!isWrongPassword(err)) malformed = true;
+        }
       }
+      if (!key) throw new Error(malformed ? CORRUPT : WRONG);
       const keyHex = bytesToHex(key);
       await commit(gen, await download(key, gen), keyHex);
     });

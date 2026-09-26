@@ -93,7 +93,9 @@ checks.
   Unlock: metadata, envelope unwrap, `GET /api/vault/kdbx`, `KeePassVault.open`
   with the hex credential; the version comes from the kdbx response's
   `X-Vault-Version`. `InvalidKey` after a good unwrap means the key was
-  rotated elsewhere: lock and say so. Lock rules: `lockAt = now + minutes`,
+  rotated elsewhere: lock and say so. Only an AES-GCM `OperationError` means a
+  wrong password; a malformed or unknown-kdf envelope gets its own sentence
+  pointing at the web app. Lock rules: `lockAt = now + minutes`,
   armed as alarm `lock`; every message runs `status()` first, which locks when
   `isLocked` says so by the clock (a missed alarm cannot extend the window, and
   a deadline further ahead than the window plus a minute means the clock went
@@ -105,7 +107,7 @@ checks.
   the state locks, and the popup shows the revoked sentence with an options
   link. Every request goes through `serverFetch`: bearer header,
   `credentials: "omit"`, `redirect: "error"`, `cache: "no-store"`, a 120 s
-  timeout, and the stored origin re-checked as bare `https:`. The background
+  timeout that also covers the body (`readBody` maps it to a sentence), and the stored origin re-checked as bare `https:`. The background
   answers only its own extension pages (`sender.url` under
   `runtime.getURL("")`). The popup imports `frontend/src/ky-ui/tokens.css`
   for the Busnes themes. `vaultState.test.ts` holds the one real crypto round
