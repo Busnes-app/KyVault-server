@@ -64,3 +64,24 @@ export async function switchTo(target: Selected, row: SharedVaultSummary | undef
 // only the personal selection, with the queue rotation started on (or none yet), takes it.
 export const applyRotation = <Q>(selected: Selected, started: Q, current: Q | null): boolean =>
   selected.kind === "personal" && (current === null || current === started);
+
+// What goes on screen when a locked checkpoint was recovered for a vault this user may only
+// read: nothing of it. A reader's edits can never be uploaded, so the server copy opens and
+// the checkpoint is left unread — settle never runs, so a session that can save it still
+// has it — because the notice says the server copy and that has to be true.
+export type OpenedDraft<V, E> = {
+  vault: V;
+  version: number;
+  dirty: boolean;
+  entry: E | null;
+  recovered: boolean;
+  settle: (current: () => boolean) => Promise<boolean>;
+};
+
+export const READ_ONLY_DRAFT = "This vault is read-only for you, so the recovered local edits cannot be applied. Showing the server copy.";
+
+export function resolveDraft<V, E>(server: { vault: V; version: number }, draft: OpenedDraft<V, E>, readOnly: boolean, notices: string[]): OpenedDraft<V, E> {
+  if (!draft.recovered || !readOnly) return draft;
+  notices.unshift(READ_ONLY_DRAFT);
+  return { vault: server.vault, version: server.version, dirty: false, entry: null, recovered: false, settle: async () => true };
+}

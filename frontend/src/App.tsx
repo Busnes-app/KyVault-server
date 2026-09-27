@@ -24,8 +24,8 @@ import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./l
 import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
 import { personal, selectionScope, selectionBase, sameSelection, resolveSelection, openShared, type Selected } from "./lib/vaultSelection";
-import { switchTo, lostAccess, restorePlan, applyRotation, type OpenedPersonal } from "./lib/appSelection";
-import { useSharedVaults, sharedApi, type SharedVaultSummary } from "./lib/sharedVaults";
+import { switchTo, lostAccess, restorePlan, applyRotation, resolveDraft, type OpenedPersonal } from "./lib/appSelection";
+import { useSharedVaults, sharedApi, sharedNameError, type SharedVaultSummary } from "./lib/sharedVaults";
 import { retryPending, zeroKeys, type ResealPending } from "./lib/keyReplaceReseal";
 import { ResealPanel } from "./components/ResealPanel";
 import { VaultSwitcher } from "./components/VaultSwitcher";
@@ -631,7 +631,7 @@ export function App() {
       onPinChanged: () => { void savePersonalPins(); },
       lookupKey: (v, id) => lookupKey(v, id),
       pinKey,
-      me: { id: user.id, publicKey: userKey.publicKey, seed: userKey.seed, fingerprint: myFingerprint },
+      me: { id: user.id, publicKey: userKey.publicKey, fingerprint: myFingerprint },
     };
   }, [user, pinVault, userKey, myFingerprint, savePersonalPins]);
 
@@ -659,7 +659,7 @@ export function App() {
           if (userKey?.kind !== "ready") throw new Error("Your user key is not available; reload and unlock again.");
           const o = await openShared(r, userKey.seed);
           const notices: string[] = [];
-          const d = await restoreDraft(u, selectionScope({ kind: "shared", id: r.id }), o.vault, o.key, o.version, notices);
+          const d = resolveDraft(o, await restoreDraft(u, selectionScope({ kind: "shared", id: r.id }), o.vault, o.key, o.version, notices), o.readOnly, notices);
           pendingOpen.current = { dirty: d.dirty, entry: d.entry, recovered: d.recovered, notices, settle: d.settle };
           return { ...o, vault: d.vault, version: d.version };
         },
@@ -670,13 +670,12 @@ export function App() {
           sharedKeyRef.current = n.selected.kind === "shared" ? n.key : null;
           const pending = n.selected.kind === "shared" ? pendingOpen.current : null;
           pendingOpen.current = null;
-          // A reader's recovered edits could never upload; keep the server copy and say so.
-          const blocked = !!pending?.recovered && n.readOnly;
-          if (pending?.dirty && !blocked) n.queue.recoverUnsaved();
-          if (blocked) pending!.notices.unshift("This vault is read-only for you, so the recovered local edits cannot be applied. Showing the server copy.");
+          // openShared already refused a reader's recovered draft, so what arrives here is
+          // whatever this selection may actually save.
+          if (pending?.dirty) n.queue.recoverUnsaved();
           draft.current = null;
           setHasDraft(false);
-          setInitialDraft(blocked ? null : pending?.entry ?? null);
+          setInitialDraft(pending?.entry ?? null);
           setSelected(n.selected);
           setVault(n.vault);
           setVaultKey(n.key);
@@ -690,7 +689,7 @@ export function App() {
           if (pending) {
             const current = () => generation === unlockGeneration.current;
             void pending.settle(current).then(() => {
-              const text = [pending.recovered && !blocked ? "Recovered local edits. Review them before saving." : "", ...pending.notices].filter(Boolean).join(" ");
+              const text = [pending.recovered ? "Recovered local edits. Review them before saving." : "", ...pending.notices].filter(Boolean).join(" ");
               if (text && current()) setLockNotice(text);
             });
           }
@@ -728,7 +727,7 @@ export function App() {
     const name = await dialogs.prompt({
       title: "New shared vault",
       label: "Name",
-      validate: (v) => (v.trim().length >= 1 && v.trim().length <= 64 && !/[\p{Cc}\p{Cf}]/u.test(v) ? null : "1 to 64 characters, no control characters"),
+      validate: sharedNameError,
     });
     if (name === null) return;
     try {

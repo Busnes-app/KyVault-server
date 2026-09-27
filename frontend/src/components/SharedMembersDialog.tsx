@@ -3,7 +3,8 @@ import { Dialog } from "./Dialog";
 import { useDialogs } from "./DialogHost";
 import { toErrorMessage } from "../lib/api";
 import { inviteMember, resealMember, resolveInvitee, REPIN_FIRST, type FlowDeps, type PinStatus } from "../lib/sharedFlows";
-import type { LookupResult, Member, Role, SharedVaultDetail } from "../lib/sharedVaults";
+import { sharedNameError, type LookupResult, type Member, type Role, type SharedVaultDetail } from "../lib/sharedVaults";
+import { ErrorLine } from "./ErrorLine";
 import { Users } from "lucide-react";
 
 type Props = {
@@ -17,35 +18,34 @@ type Props = {
   onClose: () => void;
 };
 
-// A fresh-session refusal is the one error with a way out on screen.
-function ErrorLine({ text }: { text: string }) {
-  return (
-    <p role="alert" style={{ color: "var(--danger)" }}>
-      {text}
-      {text.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login?reauth=true">Sign in again</a></> : null}
-    </p>
-  );
-}
-
 const ROLES: Role[] = ["owner", "editor", "reader"];
-const NAME_OK = (v: string) => v.trim().length >= 1 && v.trim().length <= 64 && !/[\p{Cc}\p{Cf}]/u.test(v);
 
 // What a member row knows about that member's published key. A row without a verdict must
 // not show m.keyFingerprint in its place: for a stale row that is the key they no longer hold.
-type KeyView = { key: PinStatus } | { problem: string };
+// `mine` is my own row: a pin for yourself is never written, so the pin states do not apply —
+// the key this browser holds is the comparison, and only a mismatch is a warning.
+export type KeyView = { key: PinStatus; mine?: boolean } | { problem: string };
 
-const pinLabel = (p: PinStatus) =>
-  p.state === "pinned" ? "Key pinned" : p.state === "unknown" ? "Key not verified" : "Key changed since you pinned it";
+const sameKey = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+// My own row: the published key either is the one this tab holds or it is a problem worth
+// the danger colour. It is never "not verified" — that label has to keep meaning something.
+export const selfView = (key: PinStatus, mine: Uint8Array): KeyView =>
+  ({ key: { ...key, state: sameKey(key.publicKey, mine) ? "pinned" : "changed" }, mine: true });
+
+const pinLabel = (p: PinStatus, mine?: boolean) =>
+  mine ? (p.state === "pinned" ? "Your key" : "Not the key this browser holds")
+    : p.state === "pinned" ? "Key pinned" : p.state === "unknown" ? "Key not verified" : "Key changed since you pinned it";
 const pinColor = (p: PinStatus) =>
   p.state === "pinned" ? "var(--success)" : p.state === "unknown" ? "var(--warning)" : "var(--danger)";
 
-function MemberKey({ username, view }: { username: string; view: KeyView | undefined }) {
+export function MemberKey({ username, view }: { username: string; view: KeyView | undefined }) {
   if (!view) return <span>Checking…</span>;
   if ("problem" in view) return <span style={{ color: "var(--warning)" }}>{view.problem}</span>;
   return (
     <>
       <code className="font-mono" style={{ overflowWrap: "anywhere" }} aria-label={`${username} key fingerprint`}>{view.key.fingerprint}</code>
-      <span style={{ color: pinColor(view.key) }}>{pinLabel(view.key)}</span>
+      <span style={{ color: pinColor(view.key) }}>{pinLabel(view.key, view.mine)}</span>
     </>
   );
 }
@@ -73,7 +73,10 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
       try {
         const l = await deps.lookupKey(deps.pinVault, m.userId);
         if (!l.published) return [m.userId, { problem: "No published key" }];
-        return [m.userId, { key: { state: l.state, fingerprint: l.published.fingerprint, publicKey: l.published.publicKey } }];
+        const key: PinStatus = { state: l.state, fingerprint: l.published.fingerprint, publicKey: l.published.publicKey };
+        // My own row is checked against the key this tab holds, never against a pin.
+        if (m.userId === myId) return [m.userId, selfView(key, deps.me.publicKey)];
+        return [m.userId, { key }];
       } catch {
         return [m.userId, { problem: "Could not check this key" }];
       }
@@ -114,7 +117,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
       title: "Rename shared vault",
       label: "Name",
       defaultValue: detail?.name ?? "",
-      validate: (v) => (NAME_OK(v) ? null : "1 to 64 characters, no control characters"),
+      validate: sharedNameError,
     });
     if (name === null) return;
     await run(() => deps.api.rename(vaultId, name.trim()), "Could not rename this vault.");
@@ -152,9 +155,12 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
 
   const changeRole = (m: Member, next: Role) => void run(() => deps.api.updateMember(vaultId, m.userId, { role: next }), `Could not change ${m.username}'s role.`);
 
+  // The key sealed is the one whose fingerprint this row is showing, not a fresh lookup.
   const reseal = (m: Member) => void run(async () => {
     if (!sharedKey) throw new Error("Open this vault before re-sealing a member's key.");
-    await resealMember(vaultId, m.userId, sharedKey, deps);
+    const view = keys[m.userId];
+    if (!view || !("key" in view)) throw new Error("This member's key has not been checked yet; reopen this dialog and try again.");
+    await resealMember(vaultId, m.userId, view.key, sharedKey, deps);
   }, `Could not re-seal ${m.username}'s key.`);
 
   const lookup = async () => {

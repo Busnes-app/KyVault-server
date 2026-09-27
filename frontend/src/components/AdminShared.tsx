@@ -4,18 +4,9 @@ import { toErrorMessage } from "../lib/api";
 import { adminSharedApi, type AdminSharedVault } from "../lib/sharedVaults";
 import { formatWhen } from "../lib/format";
 import { useDialogs } from "./DialogHost";
+import { ErrorLine } from "./ErrorLine";
 
 type Member = AdminSharedVault["members"][number];
-
-// A fresh-session refusal is the one error with a way out on screen.
-export function ErrorLine({ text }: { text: string }) {
-  return (
-    <p role="alert" style={{ color: "var(--danger)" }}>
-      {text}
-      {text.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login?reauth=true">Sign in again</a></> : null}
-    </p>
-  );
-}
 
 const stateBadgeClass = (state: Member["state"]) =>
   state === "active" ? "badge badge-green" : state === "invited" ? "badge badge-cyan" : "badge badge-warning";

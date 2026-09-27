@@ -290,7 +290,9 @@ test("a shared-vault queue reads and uploads against its base path and skips the
   const seen: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options: RequestInit = {}) => {
     seen.push(`${options.method ?? "GET"} ${url}`);
-    if (String(url).endsWith("/metadata")) return Response.json({ version: 7 });
+    // A shared vault's metadata carries an envelope this queue was never unlocked against;
+    // only the personal base compares them, so the overwrite must go through regardless.
+    if (String(url).endsWith("/metadata")) return Response.json({ version: 7, passwordEnvelope: "someone-elses-envelope" });
     return Response.json({ metadata: { version: 8 } });
   });
   queue.changed();

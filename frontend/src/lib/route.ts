@@ -1,9 +1,9 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { SHARED_ID } from "./sharedVaults";
 
 export type AdminTab = "sso" | "users" | "audit" | "backup" | "shared";
 export type Route = { tab: "vault" | "watchtower" | "security" | "admin"; admin?: AdminTab; entry?: string; shared?: string };
 const ADMIN_TABS: AdminTab[] = ["sso", "users", "audit", "backup", "shared"];
-const SHARED_ID = /^sv_[A-Za-z0-9_-]{22}$/;
 
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);

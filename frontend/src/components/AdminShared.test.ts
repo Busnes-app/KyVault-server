@@ -4,7 +4,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { HttpError } from "../lib/api";
 import { type AdminSharedVault } from "../lib/sharedVaults";
-import { ErrorLine, VaultRow, rowBusy, saveRestricted } from "./AdminShared";
+import { VaultRow, rowBusy, saveRestricted } from "./AdminShared";
+import { ErrorLine } from "./ErrorLine";
 
 const vault = (over: Partial<AdminSharedVault> = {}): AdminSharedVault => ({
   id: "sv_abcdefghijklmnopqrstuv", name: "Finance", createdBy: "u-1", createdAt: "2026-09-27T10:00:00Z",

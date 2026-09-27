@@ -12,6 +12,10 @@ export type LookupResult = { userId: string; username: string; fingerprint: stri
 export const SHARED_ID = /^sv_[A-Za-z0-9_-]{22}$/;
 export const sharedBase = (id: string) => `/api/shared/${encodeURIComponent(id)}`;
 
+// The server's rule for a shared vault name, in the shape every prompt's validate() wants.
+export const sharedNameError = (v: string) =>
+  v.trim().length >= 1 && v.trim().length <= 64 && !/[\p{Cc}\p{Cf}]/u.test(v) ? null : "1 to 64 characters, no control characters";
+
 export const sharedApi = {
   list: () => getJSON<SharedVaultSummary[]>("/api/shared"),
   get: (id: string) => getJSON<SharedVaultDetail>(sharedBase(id)),

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateUserKey, fingerprint } from "./userKey";
 import { openSharedKey } from "./sharedKey";
-import { createSharedVault, resolveInvitee, inviteMember, resealMember, acceptInvitation, inviterStatus, type FlowDeps } from "./sharedFlows";
+import { createSharedVault, resolveInvitee, inviteMember, resealMember, acceptInvitation, inviterStatus, type FlowDeps, type PinStatus } from "./sharedFlows";
 import { lookupKey, pinKey, readPin, type PublishedKey } from "./keyPins";
 import type { KeePassVault } from "./kdbx";
 import type { SharedApi, SharedVaultSummary } from "./sharedVaults";
@@ -43,7 +43,7 @@ async function setup() {
     onPinChanged: () => { pinSaves++; },
     lookupKey: (v, id) => lookupKey(v, id, async (u) => published[u] ?? null),
     pinKey,
-    me: { id: "u-alice", publicKey: alice.publicKey, seed: alice.seed, fingerprint: published["u-alice"].fingerprint },
+    me: { id: "u-alice", publicKey: alice.publicKey, fingerprint: published["u-alice"].fingerprint },
   };
   return { alice, bob, api, calls, deps, pinVault, published, pinSaves: () => pinSaves };
 }
@@ -90,24 +90,39 @@ test("invite refuses a changed pin and an unknown username", async () => {
   assert.equal(await resolveInvitee("nobody", s.deps), null);
 });
 
+// The row's own verdict, as the dialog loaded it: what resealMember is handed.
+const shown = (s: Awaited<ReturnType<typeof setup>>, userId: string, state: PinStatus["state"] = "unknown"): PinStatus =>
+  ({ state, fingerprint: s.published[userId].fingerprint, publicKey: s.published[userId].publicKey });
+
 test("re-seal follows the same pin rules and patches the member", async () => {
   const s = await setup();
   const key = crypto.getRandomValues(new Uint8Array(32));
-  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", key, s.deps);
+  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", shown(s, "u-bob"), key, s.deps);
   const [, vaultId, userId, patch] = s.calls.find((c) => c[0] === "update")! as [string, string, string, { sealedKey: string; keyFingerprint: string }];
   assert.equal(vaultId, "sv_abcdefghijklmnopqrstuv");
   assert.equal(userId, "u-bob");
   assert.equal(patch.keyFingerprint, s.published["u-bob"].fingerprint);
   assert.deepEqual([...(await openSharedKey(s.bob.seed, patch.sealedKey))], [...key]);
 
-  await pinKey(s.pinVault, "u-bob", s.alice.publicKey, () => {});
-  await assert.rejects(resealMember("sv_x", "u-bob", key, s.deps), /Re-pin/);
+  await assert.rejects(resealMember("sv_x", "u-bob", shown(s, "u-bob", "changed"), key, s.deps), /Re-pin/);
+});
+
+test("re-seal seals the key the row displayed, not whatever is published when it is clicked", async () => {
+  const s = await setup();
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  const row = shown(s, "u-bob", "pinned");
+  // bob's published key moves after the row was drawn: the seal must still go to the key
+  // whose fingerprint the user was looking at.
+  s.published["u-bob"] = { ...s.published["u-bob"], publicKey: s.alice.publicKey };
+  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", row, key, s.deps);
+  const patch = s.calls.find((c) => c[0] === "update")![3] as { sealedKey: string; keyFingerprint: string };
+  assert.deepEqual([...(await openSharedKey(s.bob.seed, patch.sealedKey))], [...key]);
 });
 
 test("re-sealing my own row uses my own key and pins nothing", async () => {
   const s = await setup();
   const key = crypto.getRandomValues(new Uint8Array(32));
-  await resealMember("sv_abcdefghijklmnopqrstuv", "u-alice", key, s.deps);
+  await resealMember("sv_abcdefghijklmnopqrstuv", "u-alice", shown(s, "u-alice"), key, s.deps);
   const patch = s.calls.find((c) => c[0] === "update")![3] as { sealedKey: string; keyFingerprint: string };
   assert.equal(patch.keyFingerprint, s.deps.me.fingerprint);
   assert.deepEqual([...(await openSharedKey(s.alice.seed, patch.sealedKey))], [...key]);

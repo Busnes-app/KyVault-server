@@ -20,7 +20,7 @@ export type FlowDeps = {
   onPinChanged: () => void;
   lookupKey: (vault: KeePassVault, userId: string) => Promise<Lookup>;
   pinKey: (vault: KeePassVault, userId: string, publicKey: Uint8Array, onChanged: () => void) => Promise<unknown>;
-  me: { id: string; publicKey: Uint8Array; seed: Uint8Array; fingerprint: string };
+  me: { id: string; publicKey: Uint8Array; fingerprint: string };
 };
 
 export const REPIN_FIRST = "This user's key changed since you pinned it. Re-pin it from Security → Known keys first.";
@@ -61,11 +61,13 @@ export async function inviteMember(vaultId: string, invitee: { user: LookupResul
   await deps.api.invite(vaultId, invitee.user.userId, role, s.sealedKey, s.keyFingerprint);
 }
 
-export async function resealMember(vaultId: string, userId: string, sharedKey: Uint8Array, deps: FlowDeps): Promise<void> {
+// `shown` is the verdict the caller put on screen, not a fresh lookup: the key sealed here
+// has to be the one whose fingerprint the user was looking at when they clicked.
+export async function resealMember(vaultId: string, userId: string, shown: PinStatus, sharedKey: Uint8Array, deps: FlowDeps): Promise<void> {
   // My own key needs no pin: I hold it.
   const pin: PinStatus = userId === deps.me.id
     ? { state: "pinned", fingerprint: deps.me.fingerprint, publicKey: deps.me.publicKey }
-    : statusOf(await deps.lookupKey(deps.pinVault, userId));
+    : shown;
   if (!pin.publicKey.length) throw new Error(NO_KEY);
   const s = await sealFor(userId, pin, sharedKey, deps);
   await deps.api.updateMember(vaultId, userId, s);
