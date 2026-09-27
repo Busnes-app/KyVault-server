@@ -32,10 +32,31 @@ function optionsButton(): HTMLButtonElement {
   return button;
 }
 
-function showError(res: Extract<Response, { type: "error" }>): void {
+// Opens the server's Security page, where the user signs in through KySignOn and starts
+// a new pairing. Shown only when a server address is still known, that is after a 401.
+function signInButton(serverOrigin: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Sign in to KyVault";
+  button.addEventListener("click", () => void ext.tabs.create({ url: `${serverOrigin}/#/security` }));
+  return button;
+}
+
+async function showError(res: Extract<Response, { type: "error" }>): Promise<void> {
   if (res.locked) return renderLocked(res.message);
+  if (res.revoked) return renderUnpaired(res.message);
   root.replaceChildren(text("p", res.message, "error"));
-  if (res.revoked) root.append(optionsButton());
+}
+
+// A 401 keeps the server address (settings.forgetSession), so the way back is two
+// clicks: sign in on the server, then pair again from the options page.
+async function renderUnpaired(notice?: string): Promise<void> {
+  lockButton.hidden = true;
+  const res = await send({ type: "status" });
+  const serverOrigin = res.type === "status" ? res.status.serverOrigin : undefined;
+  root.replaceChildren(text("p", notice ?? "Pair this extension with your KyVault server first.", notice ? "error" : undefined));
+  if (serverOrigin) root.append(signInButton(serverOrigin));
+  root.append(optionsButton());
 }
 
 async function render(): Promise<void> {
@@ -43,7 +64,7 @@ async function render(): Promise<void> {
   if (res.type !== "status") return showError(res as Extract<Response, { type: "error" }>);
   lockButton.hidden = !res.status.unlocked;
   if (!res.status.paired) {
-    root.replaceChildren(text("p", "Pair this extension with your KyVault server first."), optionsButton());
+    await renderUnpaired(res.status.serverOrigin ? "This extension needs pairing again. Sign in to KyVault, then pair it from the options page." : undefined);
   } else if (!res.status.unlocked) {
     renderLocked();
   } else {

@@ -3,7 +3,7 @@ import { parseServerOrigin } from "./serverUrl";
 
 export class RevokedError extends Error {
   constructor() {
-    super("This device was revoked. Pair again from the KyVault options page.");
+    super("KyVault no longer accepts this pairing. Sign in to KyVault, then pair this extension again from the options page.");
     this.name = "RevokedError";
   }
 }

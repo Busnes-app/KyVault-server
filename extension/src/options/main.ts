@@ -51,7 +51,7 @@ async function render(): Promise<void> {
   if (status.paired && status.serverOrigin) {
     renderPaired(status.serverOrigin, status.deviceName || "this device", status.autoLockMinutes);
   } else {
-    renderPairingForm(status.autoLockMinutes);
+    renderPairingForm(status.autoLockMinutes, status.serverOrigin, status.deviceName);
   }
 }
 
@@ -82,13 +82,18 @@ function renderPaired(origin: string, deviceName: string, autoLockMinutes: AutoL
   root.append(status, lock.label, lock.select, saved, note, unpairButton);
 }
 
-function renderPairingForm(autoLockMinutes: AutoLockMinutes): void {
+// lastOrigin and lastName are kept across a 401 so pairing again is one code, not three
+// fields; a fresh install has neither.
+function renderPairingForm(autoLockMinutes: AutoLockMinutes, lastOrigin?: string, lastName?: string): void {
   const intro = el("p");
-  intro.textContent = "In KyVault, open Security, then Devices, then Pair a device.";
+  intro.textContent = lastOrigin
+    ? "This extension needs pairing again. Sign in to KyVault, open Security, then Devices, then Pair a device, and enter the code here."
+    : "In KyVault, open Security, then Devices, then Pair a device.";
 
   const serverLabel = el("label");
   serverLabel.textContent = "Server address";
   const serverInput = el("input", { type: "text", placeholder: "https://vault.example.com" });
+  if (lastOrigin) serverInput.value = lastOrigin;
 
   const codeLabel = el("label");
   codeLabel.textContent = "Pairing code or PIN";
@@ -97,7 +102,7 @@ function renderPairingForm(autoLockMinutes: AutoLockMinutes): void {
   const nameLabel = el("label");
   nameLabel.textContent = "Device name";
   const nameInput = el("input", { type: "text", maxlength: "64" });
-  nameInput.value = "Browser extension";
+  nameInput.value = lastName || "Browser extension";
 
   const { label: lockLabel, select: lockSelect } = lockField(autoLockMinutes);
 

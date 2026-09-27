@@ -23,7 +23,7 @@ const MESSAGES = {
   wrongPassword: "That password did not unlock the vault. Check it and try again.",
   conflict: "The vault changed elsewhere. Unlock again to refresh, then add the login again.",
   unconfirmed: `Could not reach ${SERVER_ORIGIN}. Check your connection and try again. KyVault could not confirm the save. Check the list above before adding it again.`,
-  revoked: "This device was revoked. Pair again from the KyVault options page.",
+  revoked: "KyVault no longer accepts this pairing. Sign in to KyVault, then pair this extension again from the options page.",
 };
 
 function findChrome() {
@@ -523,8 +523,18 @@ function suite() {
     const { local, session } = await storage();
     assert.ok(!("sessionToken" in local) && !("deviceId" in local), JSON.stringify(Object.keys(local)));
     assert.deepEqual(session, {});
-    note(`${Math.round((Date.now() - contact) / 1000)} s after the last contact: "${MESSAGES.revoked}"; sessionToken and deviceId gone, storage.session {}`);
+    // The way back is on screen: a sign-in button for the kept server and the options link.
+    const buttons = await popup.$$eval("button", (els) => els.map((b) => b.textContent));
+    assert.ok(buttons.includes("Sign in to KyVault") && buttons.includes("Open options"), JSON.stringify(buttons));
+    note(`${Math.round((Date.now() - contact) / 1000)} s after the last contact: "${MESSAGES.revoked}"; sessionToken and deviceId gone, storage.session {}; Sign in to KyVault and Open options offered`);
     await popup.close();
+
+    // The options page is prefilled with the kept server address and device name.
+    await openOptions();
+    const prefilled = await options.$$eval("input[type=text]", (els) => els.map((i) => i.value));
+    assert.equal(prefilled[0], local.serverOrigin, `server field = ${prefilled[0]}`);
+    assert.equal(prefilled[2], local.deviceName, `device name field = ${prefilled[2]}`);
+    note(`options pairing form prefilled with ${prefilled[0]} and "${prefilled[2]}"`);
   });
 
   // ---- 10

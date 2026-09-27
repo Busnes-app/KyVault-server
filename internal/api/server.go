@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,7 +27,10 @@ import (
 )
 
 type Session struct {
+	// ID names the session in the inventory; it is random and unrelated to the token.
+	ID              string
 	UserID          string
+	IP              string
 	IssuedAt        time.Time
 	AuthenticatedAt time.Time
 	ExpiresAt       time.Time
@@ -49,6 +53,15 @@ type Server struct {
 	recovery      backup.RecoveryClient
 	pairingSecret string
 	scimToken     string
+	dataDir       string
+	pairings      *pairingLimiter
+	// trustedProxies are the peers whose X-Forwarded-For sourceKey may believe.
+	trustedProxies []netip.Prefix
+	// sessionsDirty is set when sessions.json could not be written; see saveSessionsLocked.
+	sessionsDirty bool // guarded by sessMu
+	// logoutPending holds jtis whose session write failed, so the sender's retry is
+	// answered 200 once the write lands instead of 400 as a replay.
+	logoutPending map[string]struct{} // guarded by sessMu
 
 	// auditFailures counts audit writes that did not reach the log. Sticky: the
 	// missing record never comes back, so only a restart — after someone has
@@ -85,6 +98,9 @@ type Config struct {
 	RetentionDays int
 	Backup        backup.Config
 	AppVersion    string
+	// TrustedProxies lists reverse proxies (KYVAULT_TRUSTED_PROXIES) whose
+	// X-Forwarded-For names the client for per-source limits. Empty trusts nobody.
+	TrustedProxies []netip.Prefix
 }
 
 // NewServer constructs the KyVault Server.
@@ -141,21 +157,28 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		users:         uStore,
-		vault:         vStore,
-		devices:       dStore,
-		audit:         aStore,
-		ssoStore:      ssoSt,
-		logouts:       logouts,
-		backupState:   backupState,
-		recovery:      recovery,
-		pairingSecret: cfg.PairingSecret,
-		scimToken:     cfg.SCIMToken,
-		sessions:      make(map[string]Session),
-		oidcPending:   make(map[string]oidcAttempt), oidcHTTP: sso.NewHTTPClient(), syncReceipts: make(map[string]syncReceipt),
+		users:          uStore,
+		vault:          vStore,
+		devices:        dStore,
+		audit:          aStore,
+		ssoStore:       ssoSt,
+		logouts:        logouts,
+		backupState:    backupState,
+		recovery:       recovery,
+		pairingSecret:  cfg.PairingSecret,
+		scimToken:      cfg.SCIMToken,
+		dataDir:        cfg.DataDir,
+		pairings:       newPairingLimiter(),
+		trustedProxies: cfg.TrustedProxies,
+		sessions:       make(map[string]Session),
+		logoutPending:  make(map[string]struct{}),
+		oidcPending:    make(map[string]oidcAttempt), oidcHTTP: sso.NewHTTPClient(), syncReceipts: make(map[string]syncReceipt),
 		rejects:   newAuditBudget(auditBudgetWindow, auditBudgetBurst),
 		flushStop: make(chan struct{}),
 		flushDone: make(chan struct{}),
+	}
+	if err := s.loadSessions(); err != nil {
+		return nil, fmt.Errorf("load sessions: %w", err)
 	}
 	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery, Config: cfg.Backup}
 	go s.flushSuppressed()
@@ -185,6 +208,8 @@ func (s *Server) Routes() http.Handler {
 	// Unlinking SSO is gone too — it would only be a way to lock yourself out for good.
 	mux.HandleFunc("GET /api/auth/me", s.withAuth(s.handleMe))
 	mux.HandleFunc("POST /api/auth/logout", s.withAuth(s.handleLogout))
+	mux.HandleFunc("GET /api/auth/sessions", s.withAuth(s.handleSessionsList))
+	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.withAuth(s.handleSessionEnd))
 
 	// Vault Operations
 	mux.HandleFunc("GET /api/vault/metadata", s.withAuth(s.handleVaultMetadata))
@@ -315,14 +340,20 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID str
 	if s.logouts.Fenced(id, now) {
 		return errLoginFenced
 	}
-	s.sessions[token] = Session{
+	s.pruneSessionsLocked(now)
+	s.sessions[sessionKey(token)] = Session{
+		ID:              randomHex(16),
 		UserID:          userID,
+		IP:              clientIP(r),
 		IssuedAt:        now,
 		AuthenticatedAt: authenticatedAt,
 		ExpiresAt:       now.Add(24 * time.Hour),
 		CSRFToken:       csrfToken,
 		SSO:             id,
 	}
+	// A mint that is not durable is a session lost on restart, not a security gap;
+	// the flush retries and the login stands.
+	_ = s.saveSessionsLocked()
 
 	secure := isRequestSecure(r)
 	http.SetCookie(w, &http.Cookie{
@@ -372,7 +403,7 @@ func (s *Server) currentSession(r *http.Request) (Session, bool) {
 	}
 
 	s.sessMu.RLock()
-	sess, ok := s.sessions[token]
+	sess, ok := s.sessions[sessionKey(token)]
 	s.sessMu.RUnlock()
 
 	if !ok || time.Now().UTC().After(sess.ExpiresAt) {
@@ -407,7 +438,7 @@ func (s *Server) validCSRF(r *http.Request) bool {
 		return false
 	}
 	s.sessMu.RLock()
-	session, ok := s.sessions[sessionCookie.Value]
+	session, ok := s.sessions[sessionKey(sessionCookie.Value)]
 	s.sessMu.RUnlock()
 	header := r.Header.Get("X-CSRF-Token")
 	return ok && subtle.ConstantTimeCompare([]byte(header), []byte(csrfCookie.Value)) == 1 &&

@@ -10,6 +10,16 @@ type Store = {
 };
 
 export function mockApi(): Plugin {
+  const endedSessions = new Set<string>();
+  const sessions = () => {
+    const now = Date.now();
+    const rows = [
+      { id: "browser-current", kind: "browser", ip: "192.0.2.10", issuedAt: new Date(now - 3_600_000).toISOString(), authenticatedAt: new Date(now - 3_600_000).toISOString(), expiresAt: new Date(now + 82_800_000).toISOString(), current: true },
+      { id: "browser-other", kind: "browser", ip: "198.51.100.7", issuedAt: new Date(now - 7_200_000).toISOString(), authenticatedAt: new Date(now - 7_200_000).toISOString(), expiresAt: new Date(now + 79_200_000).toISOString(), current: false },
+      ...store.devices.map((d) => ({ id: `device-${d.id}`, kind: "device", deviceId: d.id, deviceName: d.name, ip: d.lastIp, issuedAt: d.lastSeenAt, expiresAt: new Date(now + 89 * 86_400_000).toISOString(), current: false })),
+    ];
+    return rows.filter((r) => !endedSessions.has(r.id));
+  };
   const store: Store = { version: 0, keyEpochSince: 0, bytes: null, history: [], conflicts: [], devices: [
     { id: "dev-1", name: "Pixel 9", platform: "android", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.7", current: false },
     { id: "dev-2", name: "Firefox extension", platform: "browser", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.8", current: false },
@@ -50,6 +60,14 @@ export function mockApi(): Plugin {
       if (p === "/api/auth/me") return json(res, 200, { authenticated: true, user });
       if (p === "/api/auth/sso-config") return json(res, 200, { enabled: true, issuerUrl: "https://signon.mock" });
       if (p === "/api/auth/logout") return json(res, 200, { ok: true });
+      if (p === "/api/auth/sessions" && m === "GET") return json(res, 200, sessions());
+      if (p.startsWith("/api/auth/sessions/") && m === "DELETE") {
+        const id = p.slice("/api/auth/sessions/".length);
+        if (id === "browser-current") return json(res, 400, { error: "use logout to end the current session" });
+        endedSessions.add(id);
+        store.devices = store.devices.filter((d) => `device-${d.id}` !== id);
+        return json(res, 200, { ok: true });
+      }
       if (p === "/api/vault/metadata") return json(res, 200, metadata());
       if (p === "/api/vault/kdbx") {
         if (!store.bytes) return json(res, 404, { error: "vault does not exist yet" });

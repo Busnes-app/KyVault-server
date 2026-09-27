@@ -10,7 +10,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 3. **Atomic Sync & Conflict Preservation**: Optimistic concurrency via ETag / version check (`If-Match: "{version}"`). Conflicting uploads are rejected and preserved in `conflicts/` for client deconfliction.
 4. **Bounded Version History & Rollback**: Keep up to 100 snapshots per user spread across a default 90-day age window, with one-click rollback. Saves and rollbacks prune synchronously under the store lock. After age expiry, preserve the oldest/newest snapshots and thin the closest-spaced interior snapshots so a burst of writes cannot erase the pre-session recovery window.
 5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side user credential. See "Replication" and "Authentication" below.
-6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions. Device sessions carry `DeviceID`; revoking a device deletes its sessions. `GET /api/devices` marks the caller's own device `current`; `PATCH /api/devices/{id}` renames (1 to 64 characters, no control runes). `api_test.go` covers revoke ending the session and rename validation.
+6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions. `POST /api/devices/pairing/redeem` takes no credential, so `pairing_limit.go` closes it to a source (`Server.sourceKey`: the peer address, or the client a `KYVAULT_TRUSTED_PROXIES` peer forwarded, read right to left past trusted hops; `TestSourceKeyReadsForwardedForOnlyFromTrustedProxies`, `TestPairingLimitIsolatesClientsBehindATrustedProxy`) for 15 minutes after 3 wrong codes (429, audited as `device.pairing_failed`); a successful redeem clears the count and expired codes are swept on the next pairing start. `TestPairingRedeemLocksASourceAfterThreeWrongCodes` pins it. Device sessions carry `DeviceID`; revoking a device deletes its sessions. `GET /api/devices` marks the caller's own device `current`; `PATCH /api/devices/{id}` renames (1 to 64 characters, no control runes). `api_test.go` covers revoke ending the session and rename validation.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
 8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps. Installable as a PWA through `frontend/public/manifest.webmanifest` (icons from `logo.png` and a 512px export of `KyVault.png`; no service worker, so nothing works offline). `pwa.test.ts` validates the manifest and the `index.html` references; `static.go` serves `.webmanifest` as `application/manifest+json`.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
@@ -22,6 +22,28 @@ no password hash, no salt, no client-derived verifier, no recovery hash. A test 
 `internal/users/users_test.go` asserts those JSON keys never reappear; if you find
 yourself adding one, the design has been misread.
 
+- Sessions (browser, 24 h, and device, 90 days) live in `sessions.go`: the map is keyed
+  by `sessionKey`, the SHA-256 of the token, and written through to `DATA_DIR/sessions.json`
+  under the session lock on every mint, logout, revocation and directory deactivation, so
+  a restart or deploy ends nothing and the file holds no token a request could present.
+  `saveSessionsLocked` returns `errSessionsNotDurable` on a failed write and sets
+  `sessionsDirty`; logout, device revoke, session end and back-channel logout answer 500
+  (the revocation holds in memory), the flush and `Close` retry the write, and a
+  back-channel retry of the same `jti` is answered 200 once the write lands
+  (`logoutPending`). `loadSessions` also drops sessions of devices that no longer exist
+  and sessions a retained logout fences, so a stale file cannot resurrect those two.
+  Mints and directory deactivation ignore the error: a lost mint is a login repeated,
+  and `currentUser` refuses inactive accounts. `TestRevocationIsNotAcknowledgedUntilDurable`
+  and `TestBackchannelLogoutRetryCompletesAFailedSessionWrite` pin this.
+  Expired sessions are pruned at every mint, on load, and by the periodic audit flush
+  (`pruneSessions`). The file is not in the sealed capsule; a restored instance starts
+  with no sessions. Each session has a random `ID` and records the client IP for the
+  inventory: `GET /api/auth/sessions` lists the caller's own sessions (kind, device name,
+  IP, issued, authenticated, expires, `current`) and `DELETE /api/auth/sessions/{id}` ends
+  one other session; ending a device session revokes the device (`device.revoked`), a
+  browser session is `auth.session_ended`, and the current session is refused with 400.
+  Security → Signed-in Sessions is the UI. `sessions_test.go` pins restart survival, the
+  hash-only file, pruning and the inventory rules.
 - Pending OIDC attempts are bounded at 1024; at capacity, evict the earliest expiry
   and admit new logins. Evicted attempts must restart. Issuer configuration is normalized
   by removing trailing slashes before both discovery and token verification; discovered
@@ -52,7 +74,7 @@ yourself adding one, the design has been misread.
   token predates a retained logout is refused with 403 (`auth.sso_login_fenced`).
   Admission and revocation share the session lock with session minting, so a login
   cannot slip between them. That file is not in the sealed capsule: events expire in
-  minutes and a restored process holds no sessions. Rejections are audited within the
+  minutes and a restored process holds no sessions (`sessions.json` is not sealed either). Rejections are audited within the
   source's budget as `auth.logout_rejected`; success is `auth.sso_logout` with the `jti`.
 - The master password is not a credential. It unwraps the vault key envelope in the
   browser and is never transmitted. Changing it is a client-side re-wrap against

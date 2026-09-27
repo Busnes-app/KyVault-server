@@ -37,7 +37,7 @@ func csrfRequest(t *testing.T, srv *Server, session *http.Cookie, method, path, 
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.AddCookie(session)
 	srv.sessMu.RLock()
-	token := srv.sessions[session.Value].CSRFToken
+	token := srv.sessions[sessionKey(session.Value)].CSRFToken
 	srv.sessMu.RUnlock()
 	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: token})
 	req.Header.Set("X-CSRF-Token", token)

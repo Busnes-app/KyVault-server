@@ -29,9 +29,9 @@ func TestDevicePairingCannotRefreshAnAdminSession(t *testing.T) {
 	srv := newTestServer(t)
 	admin, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
 	srv.sessMu.Lock()
-	sess := srv.sessions[cookie.Value]
+	sess := srv.sessions[sessionKey(cookie.Value)]
 	sess.AuthenticatedAt = sess.AuthenticatedAt.Add(-freshSessionWindow - time.Second)
-	srv.sessions[cookie.Value] = sess
+	srv.sessions[sessionKey(cookie.Value)] = sess
 	srv.sessMu.Unlock()
 
 	start := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/start", nil)
@@ -81,9 +81,9 @@ func TestDestructiveBackupRoutesRequireAFreshSession(t *testing.T) {
 	}
 
 	srv.sessMu.Lock()
-	sess := srv.sessions[cookie.Value]
+	sess := srv.sessions[sessionKey(cookie.Value)]
 	sess.AuthenticatedAt = sess.AuthenticatedAt.Add(-freshSessionWindow - time.Second)
-	srv.sessions[cookie.Value] = sess
+	srv.sessions[sessionKey(cookie.Value)] = sess
 	srv.sessMu.Unlock()
 
 	for _, tc := range destructiveBackupRoutes {

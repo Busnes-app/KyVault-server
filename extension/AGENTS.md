@@ -132,8 +132,13 @@ prerequisites, what each item proves and the headless limits are in
   password. `lock()` bumps a generation so an unlock in flight cannot commit
   after it. 401 rule: `serverFetch` calls `forgetSession` (drops
   `sessionToken` and `deviceId`, keeps `serverOrigin` and `deviceName`),
-  the state locks, and the popup shows the revoked sentence with an options
-  link. List, copy and fill work from memory, so an unlocked `status` or
+  the state locks, and the popup renders the unpaired view (`renderUnpaired`):
+  the revoked sentence, a "Sign in to KyVault" button that opens
+  `<serverOrigin>/#/security` in a tab, and the options link. The options
+  page's pairing form is prefilled with the kept server address and device
+  name, so pairing again is one code. The server persists sessions across
+  restarts, so a 401 means revoked, ended from Security → Signed-in
+  Sessions, rotated or expired, never a redeploy. List, copy and fill work from memory, so an unlocked `status` or
   `entries` message first runs `checkDevice`: when the last server contact is
   more than 60 seconds old it sends one `GET /api/vault/metadata` (5 s
   timeout). A 401 takes the revoked path; an unreachable server is ignored and

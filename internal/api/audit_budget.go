@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -133,32 +135,69 @@ func (b *auditBudget) collect(all bool) map[string]int64 {
 	return out
 }
 
-// sourceKey is the peer address, deliberately not clientIP: X-Forwarded-For is written by
-// the caller, and a budget keyed on a header the attacker controls is no budget at all —
-// a fresh value per request would draw a fresh allowance every time. Behind a reverse
-// proxy every caller shares one budget, which folds more records than it needs to but
-// still loses none of them.
+// sourceKey names the network source of a request for per-source limits (the audit
+// budget and the pairing limiter). It is the peer address, deliberately not clientIP:
+// X-Forwarded-For is written by the caller, and a budget keyed on a header the attacker
+// controls is no budget at all — a fresh value per request would draw a fresh allowance
+// every time.
 //
-// An IPv6 peer is keyed by its /64. That is the allocation a single host ordinarily
+// The one exception is a peer the operator listed in KYVAULT_TRUSTED_PROXIES. Such a
+// proxy appends the address it saw, so the header is read right to left and the first
+// address that is not itself a trusted proxy is the client. Without that setting every
+// caller behind one proxy shares one budget: more folding than needed, no record lost,
+// and three wrong pairing codes from anyone close redeem for everyone behind it.
+// TestSourceKeyReadsForwardedForOnlyFromTrustedProxies.
+//
+// An IPv6 source is keyed by its /64. That is the allocation a single host ordinarily
 // controls in full, so keying on the whole address would let one host draw a fresh
 // allowance per address it invents. TestAuditBudgetIsBoundedAcrossAnIPv6Prefix.
-func sourceKey(r *http.Request) string {
+func (s *Server) sourceKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || ip.To4() != nil {
+	peer, err := netip.ParseAddr(host)
+	if err != nil {
 		return host
 	}
-	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+	src := peer
+	if s.trustedProxy(peer) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			hops := strings.Split(xff, ",")
+			for i := len(hops) - 1; i >= 0; i-- {
+				hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+				if err != nil {
+					break // a malformed hop is the proxy's client, not further trust
+				}
+				if !s.trustedProxy(hop) {
+					src = hop
+					break
+				}
+			}
+		}
+	}
+	src = src.Unmap()
+	if src.Is4() {
+		return src.String()
+	}
+	return netip.PrefixFrom(src, 64).Masked().String()
+}
+
+func (s *Server) trustedProxy(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	for _, p := range s.trustedProxies {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // recordAnonymousRejection records a rejection an unauthenticated caller caused, within
 // that caller's audit budget. The answer to the request is unchanged either way: the
 // budget folds the record, it does not refuse the caller.
 func (s *Server) recordAnonymousRejection(r *http.Request, action, ip, details string) {
-	src := sourceKey(r)
+	src := s.sourceKey(r)
 	record, folded := s.rejects.take(src)
 	if folded > 0 {
 		s.recordSuppressed(r.Context(), src, folded)
@@ -191,6 +230,8 @@ func (s *Server) flushSuppressed() {
 }
 
 func (s *Server) flushOnce() {
+	s.pruneSessions()
+	s.pairings.sweep()
 	for src, n := range s.rejects.sweep() {
 		s.recordSuppressed(context.Background(), src, n)
 	}
@@ -208,5 +249,6 @@ func (s *Server) Close() {
 		for src, n := range s.rejects.drain() {
 			s.recordSuppressed(context.Background(), src, n)
 		}
+		_ = s.retrySessionSave()
 	})
 }
