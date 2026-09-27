@@ -458,10 +458,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   and if that fails too the tab locks. The personal vault, key, version and envelope stay in
   `personalRef` while a shared vault is selected (re-fetched when its edits were discarded); the
   shared key lives only in `sharedKeyRef` and is zeroed on switch and lock. `restorePlan` reopens
-  `#/shared/<id>` once per unlock after the list loads and the user key is ready; later vault-tab
-  routes follow. A save 403/404 on a shared vault (`lostAccess`) switches home without asking.
+  `#/shared/<id>` once per unlock after the list loads and the user key is ready (a user key that
+  settled unusable shows a notice instead); later vault-tab routes follow. A finished rotation
+  replaces the live vault only if no switch took over (`applyRotation`); the switcher is busy
+  meanwhile. The idle lock fires mid-switch too, with no checkpoint. A save 403/404 on a shared vault (`lostAccess`) switches home without asking.
   Readers get `readOnly` on `VaultPage`/`HistoryModal`: every mutating handler refuses. Security
-  hides master password, paper code, rotation, offline key and device cards while shared.
+  hides master password, paper code, rotation, offline key and device cards while shared; Forget
+  This Device stays in the replacement card.
   Drafts are scoped: pointer `kyvault.draft:<userId>[:<sharedId>]`. `appSelection.test.ts`.
 
 - `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which

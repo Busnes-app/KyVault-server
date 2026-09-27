@@ -519,6 +519,11 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       {!personalOnly ? (
         <section className="field-card" style={{ marginBottom: "2rem" }}>
           <p style={{ margin: 0 }}>Switch to My vault to change the master password, paper code, device key or rotate the vault key.</p>
+          {onForgetDevice ? (
+            <button className="btn btn-danger btn-sm" style={{ marginTop: "1rem" }} onClick={onForgetDevice}>
+              Forget This Device & Sign Out
+            </button>
+          ) : null}
         </section>
       ) : null}
 

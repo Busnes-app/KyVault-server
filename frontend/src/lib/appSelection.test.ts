@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { switchTo, lostAccess, restorePlan, type SwitchDeps } from "./appSelection";
+import { switchTo, lostAccess, restorePlan, applyRotation, type SwitchDeps } from "./appSelection";
 import { personal } from "./vaultSelection";
 
 const ID = "sv_abcdefghijklmnopqrstuv";
@@ -67,12 +67,25 @@ test("a missing row falls back to the personal vault", async () => {
 test("route restore after unlock", () => {
   const invited = { ...row, state: "invited" };
   // Waits until the list has loaded and the user key is ready.
-  assert.deepEqual(restorePlan(ID, null, true, false), { action: "wait" });
-  assert.deepEqual(restorePlan(ID, [row], false, false), { action: "wait" });
+  assert.deepEqual(restorePlan(ID, null, "ready", false), { action: "wait" });
+  assert.deepEqual(restorePlan(ID, [row], null, false), { action: "wait" });
   // Nothing to restore, or already done this generation.
-  assert.deepEqual(restorePlan(undefined, null, false, false), { action: "none" });
-  assert.deepEqual(restorePlan(ID, [row], true, true), { action: "none" });
-  assert.deepEqual(restorePlan(ID, [row], true, false), { action: "switch", id: ID });
-  assert.deepEqual(restorePlan(ID, [], true, false), { action: "notice", text: "You are not a member of that shared vault." });
-  assert.equal(restorePlan(ID, [invited], true, false).action, "notice");
+  assert.deepEqual(restorePlan(undefined, null, null, false), { action: "none" });
+  assert.deepEqual(restorePlan(ID, [row], "ready", true), { action: "none" });
+  assert.deepEqual(restorePlan(ID, [row], "ready", false), { action: "switch", id: ID });
+  assert.deepEqual(restorePlan(ID, [], "ready", false), { action: "notice", text: "You are not a member of that shared vault." });
+  assert.equal(restorePlan(ID, [invited], "ready", false).action, "notice");
+  // A user key that settled without being usable never opens anything: say so instead of waiting.
+  const noKey = { action: "notice", text: "Your user key is not available, so the shared vault could not be opened. Showing My vault." };
+  for (const kind of ["none", "mismatch", "unavailable"] as const) assert.deepEqual(restorePlan(ID, [row], kind, false), noKey);
+  assert.deepEqual(restorePlan(ID, null, "unavailable", false), noKey);
+});
+
+test("a finished rotation only replaces the live vault if nothing switched meanwhile", () => {
+  const started: any = {}; const other: any = {};
+  assert.equal(applyRotation(personal, started, started), true);
+  assert.equal(applyRotation(personal, started, null), true, "the switch closed the queue but has not applied yet: still personal");
+  assert.equal(applyRotation({ kind: "shared", id: ID }, started, other), false);
+  assert.equal(applyRotation({ kind: "shared", id: ID }, started, null), false);
+  assert.equal(applyRotation(personal, started, other), false, "a newer personal queue (reopen) wins");
 });

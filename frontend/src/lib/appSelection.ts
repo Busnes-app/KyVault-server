@@ -2,6 +2,7 @@ import { VaultSaveQueue, type SaveState } from "./vaultSave";
 import { resolveSelection, selectionBase, type Selected, type OpenedShared } from "./vaultSelection";
 import type { SharedVaultSummary } from "./sharedVaults";
 import type { KeePassVault } from "./kdbx";
+import type { UserKeyState } from "./userKeyState";
 
 export type OpenedPersonal = { vault: KeePassVault; key: Uint8Array; version: number; passwordEnvelope?: string };
 
@@ -21,9 +22,11 @@ export const lostAccess = (selected: Selected, state: SaveState): boolean =>
 export type RestorePlan = { action: "wait" } | { action: "none" } | { action: "switch"; id: string } | { action: "notice"; text: string };
 
 // Which vault an unlocked tab should reopen from its #/shared/<id> route.
-export function restorePlan(routeShared: string | undefined, vaults: SharedVaultSummary[] | null, userKeyReady: boolean, done: boolean): RestorePlan {
+// userKey is null until the unlock has settled it; any other kind than "ready" is final.
+export function restorePlan(routeShared: string | undefined, vaults: SharedVaultSummary[] | null, userKey: UserKeyState["kind"] | null, done: boolean): RestorePlan {
   if (done || !routeShared) return { action: "none" };
-  if (!vaults || !userKeyReady) return { action: "wait" };
+  if (userKey !== null && userKey !== "ready") return { action: "notice", text: "Your user key is not available, so the shared vault could not be opened. Showing My vault." };
+  if (!vaults || !userKey) return { action: "wait" };
   const { selected, notice } = resolveSelection(routeShared, vaults);
   if (notice) return { action: "notice", text: notice };
   return selected.kind === "shared" ? { action: "switch", id: selected.id } : { action: "none" };
@@ -56,3 +59,8 @@ export async function switchTo(target: Selected, row: SharedVaultSummary | undef
     return false;
   }
 }
+
+// A rotation that finishes after a switch must not put the personal vault back on screen:
+// only the personal selection, with the queue rotation started on (or none yet), takes it.
+export const applyRotation = <Q>(selected: Selected, started: Q, current: Q | null): boolean =>
+  selected.kind === "personal" && (current === null || current === started);

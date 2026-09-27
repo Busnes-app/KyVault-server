@@ -22,7 +22,7 @@ import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./l
 import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
 import { personal, selectionScope, selectionBase, sameSelection, resolveSelection, openShared, type Selected } from "./lib/vaultSelection";
-import { switchTo, lostAccess, restorePlan, type OpenedPersonal } from "./lib/appSelection";
+import { switchTo, lostAccess, restorePlan, applyRotation, type OpenedPersonal } from "./lib/appSelection";
 import { useSharedVaults, type SharedVaultSummary } from "./lib/sharedVaults";
 import { VaultSwitcher } from "./components/VaultSwitcher";
 import { LoginPage } from "./pages/LoginPage";
@@ -121,6 +121,8 @@ export function App() {
   const [readOnly, setReadOnly] = useState(false);
   const [switching, setSwitching] = useState(false);
   const switchingRef = useRef(false);
+  const [rotating, setRotating] = useState(false);
+  const rotatingRef = useRef(false);
   const personalRef = useRef<(OpenedPersonal & { stale?: boolean }) | null>(null);
   const sharedKeyRef = useRef<Uint8Array | null>(null);
   const pendingOpen = useRef<PendingOpen | null>(null);
@@ -454,6 +456,8 @@ export function App() {
     if (!vault || !queue || !oldKey || !u) throw new Error("Unlock the vault first.");
     if (selected.kind !== "personal") throw new Error("Switch to My vault to rotate the vault key.");
     let rotated: { key: Uint8Array; version: number; passwordEnvelope: string; userKeyRecord?: UserKeyRecord };
+    rotatingRef.current = true;
+    setRotating(true);
     try {
       rotated = await queue.exclusive((live) => {
         if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
@@ -470,6 +474,9 @@ export function App() {
         setLockNotice("Could not confirm whether the new vault key reached the server, so the vault is locked. Unlock with your master password, then generate a new paper code from Security.");
       }
       throw err;
+    } finally {
+      rotatingRef.current = false;
+      setRotating(false);
     }
     queue.discard();
     const recache = clearDeviceVaultKey(u.username);
@@ -479,10 +486,13 @@ export function App() {
       setLockNotice("The vault key was rotated while the vault locked. Unlock with your master password, then generate a new paper code from Security.");
       return;
     }
-    setVaultKey(rotated.key);
     if (rotated.userKeyRecord && userKey?.kind === "ready") setUserKey({ ...userKey, record: rotated.userKeyRecord });
-    setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
     personalRef.current = { vault, key: rotated.key, version: rotated.version, passwordEnvelope: rotated.passwordEnvelope };
+    // A switch that closed this queue owns the screen; the personal copy above is what it reopens.
+    if (applyRotation(selectedRef.current, queue, queueRef.current)) {
+      setVaultKey(rotated.key);
+      setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
+    }
     // Forget This Device or a lock can land while this write is pending; the helper
     // undoes a write that lost that race so the forgotten device keeps nothing.
     const cached = await recache.then(() => cacheDeviceKey({
@@ -529,7 +539,7 @@ export function App() {
     if (!p) throw new Error("Vault is locked.");
     if (!p.stale) return p;
     const meta = await getJSON<VaultMetadata>("/api/vault/metadata");
-    const fresh = { vault: await KeePassVault.open(await getBinary("/api/vault/kdbx", new AbortController().signal), p.key), key: p.key, version: meta.version, passwordEnvelope: p.passwordEnvelope };
+    const fresh = { vault: await KeePassVault.open(await getBinary("/api/vault/kdbx"), p.key), key: p.key, version: meta.version, passwordEnvelope: meta.passwordEnvelope };
     if (personalRef.current === p) personalRef.current = fresh;
     return fresh;
   };
@@ -559,7 +569,7 @@ export function App() {
 
   const switchVault = async (target: Selected, row?: SharedVaultSummary, opts: { force?: boolean } = {}): Promise<boolean> => {
     const u = user;
-    if (!u || !personalRef.current || switchingRef.current) return false;
+    if (!u || !personalRef.current || switchingRef.current || rotatingRef.current) return false;
     switchingRef.current = true;
     setSwitching(true);
     const from = selected, queue = saveQueue, discarding = saveState.kind !== "saved" || hasDraft;
@@ -592,10 +602,13 @@ export function App() {
           sharedKeyRef.current = n.selected.kind === "shared" ? n.key : null;
           const pending = n.selected.kind === "shared" ? pendingOpen.current : null;
           pendingOpen.current = null;
-          if (pending?.dirty) n.queue.recoverUnsaved();
+          // A reader's recovered edits could never upload; keep the server copy and say so.
+          const blocked = !!pending?.recovered && n.readOnly;
+          if (pending?.dirty && !blocked) n.queue.recoverUnsaved();
+          if (blocked) pending!.notices.unshift("This vault is read-only for you, so the recovered local edits cannot be applied. Showing the server copy.");
           draft.current = null;
           setHasDraft(false);
-          setInitialDraft(pending?.entry ?? null);
+          setInitialDraft(blocked ? null : pending?.entry ?? null);
           setSelected(n.selected);
           setVault(n.vault);
           setVaultKey(n.key);
@@ -609,12 +622,12 @@ export function App() {
           if (pending) {
             const current = () => generation === unlockGeneration.current;
             void pending.settle(current).then(() => {
-              const text = [pending.recovered ? "Recovered local edits. Review them before saving." : "", ...pending.notices].filter(Boolean).join(" ");
+              const text = [pending.recovered && !blocked ? "Recovered local edits. Review them before saving." : "", ...pending.notices].filter(Boolean).join(" ");
               if (text && current()) setLockNotice(text);
             });
           }
         },
-        notify: setLockNotice,
+        notify: (text) => { if (generation === unlockGeneration.current) setLockNotice(text); },
         generation: () => unlockGeneration.current,
       });
       // Declined: put the route back on the vault that is still open.
@@ -645,7 +658,7 @@ export function App() {
   useEffect(() => {
     if (!vault || switchingRef.current) return;
     const generation = unlockGeneration.current;
-    const plan = restorePlan(route.shared, shared.loaded ? shared.vaults : null, userKey?.kind === "ready", restored.current === generation);
+    const plan = restorePlan(route.shared, shared.loaded ? shared.vaults : null, userKey?.kind ?? null, restored.current === generation);
     if (plan.action === "wait") return;
     restored.current = generation;
     if (plan.action === "switch" && !sameSelection(selected, { kind: "shared", id: plan.id })) void switchVault({ kind: "shared", id: plan.id }, sharedRow(plan.id));
@@ -675,6 +688,16 @@ export function App() {
 
   const autoLock = useRef(() => {});
   autoLock.current = () => {
+    // A switch in flight has no queue: its discard was already confirmed, so lock with no
+    // checkpoint. The open's continuation fails its generation check and zeroes its key.
+    if (vault && user && !saveQueue) {
+      const u = user;
+      autoLock.current = () => {};
+      closeVault();
+      setLockNotice("Vault locked after inactivity.");
+      void clearDeviceVaultKey(u.username).catch(() => { setLockNotice("Vault locked. Could not remove the cached device key; keep this tab locked until browser storage is available."); });
+      return;
+    }
     if (!vault || !vaultKey || !saveQueue || !user) return;
     const u = user;
     const scope = selectionScope(selected);
@@ -916,7 +939,7 @@ export function App() {
               onDecline={() => {}}
               onMembers={() => {}}
               canCreate={userKey?.kind === "ready"}
-              busy={switching}
+              busy={switching || rotating}
               error={shared.error}
             />}
           />
@@ -937,7 +960,7 @@ export function App() {
           onAutoLockChange={changeAutoLock}
           onUserUpdated={async () => { if (await confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
-          canRotate={!unsaved}
+          canRotate={!unsaved && !switching}
           onExport={handleExportKdbx}
           onRotateKey={rotateKey}
           userKey={userKey}
