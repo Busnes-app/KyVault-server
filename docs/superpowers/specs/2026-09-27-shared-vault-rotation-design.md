@@ -77,9 +77,12 @@ is cleared. An ownerless vault cannot rotate.
 ### Route
 
 `POST /api/shared/{id}/rotate`, `withAuth`, active owners only, `validCSRF`, `requireFresh`.
-`multipart/form-data` with exactly two parts: `kdbx` (the re-encrypted vault, the existing
-50 MiB `MaxBytesReader` limit, read as a stream) and `keys` (JSON `{"epoch": N, "sealed":
-[{userId, sealedKey, keyFingerprint}]}`, ≤ 1 MiB). `If-Match` carries the vault data version.
+`multipart/form-data` with exactly two parts: `kdbx` (the re-encrypted vault, read as a stream)
+and `keys` (JSON `{"epoch": N, "sealed": [{userId, sealedKey, keyFingerprint}]}`, ≤ 1 MiB).
+`epoch` is the epoch the client is rotating **from**, i.e. what it believes is current.
+`MaxBytesReader` caps the whole request body at 50 MiB plus a 1 MiB allowance for the keys
+part and the multipart framing, so an oversized vault is still refused before any mutation.
+`If-Match` carries the vault data version.
 
 The handler holds `shared.mu` for the whole operation through `WithWriter`'s lock order
 (`shared.mu` then `vault.mu`) and: refuses `epoch != v.KeyEpoch` with 409; writes the KDBX
@@ -174,7 +177,8 @@ existing treatment covers: no open, and an owner must re-seal them.
   1 MiB, a missing part, the epoch 409 and version 409, the fresh-session and CSRF gates, the
   audit row's contents, history and conflicts gone afterwards, and that a failure at the vault
   write leaves the membership record untouched.
-- `internal/vault`: deleting a key's snapshots and conflicts under the store lock.
+- `internal/vault`: a new `ClearHistory(key)` that removes a key's snapshots and preserved
+  conflicts under the store lock, leaving the current vault and metadata intact.
 - Frontend: `planRotation` over every pin verdict; the lost-response adoption; the epoch on
   writes and the re-open on an epoch 409; `sharedFlows` self-reseal refusing an epoch-stale row.
 - Mock API gains the rotate route and the flag so the banner, the confirmation and the
