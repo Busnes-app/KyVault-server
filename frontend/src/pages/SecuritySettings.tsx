@@ -12,7 +12,9 @@ import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 import { groupHex, useHideAfter } from "../lib/secretDisplay";
 import { generatePaperCode } from "../lib/paperCode";
 import { revokeDevices } from "../lib/keyRotation";
+import { newUserKeyRecord } from "../lib/userKeyState";
 import type { UserKeyState } from "../lib/userKeyState";
+import { fingerprint } from "../lib/userKey";
 
 // Type-it-back comparison ignores formatting, not case or characters.
 function normalizeCode(value: string): string {
@@ -50,11 +52,11 @@ type Props = {
   canRotate: boolean;
   onExport: () => Promise<void>;
   onRotateKey: (password: string, paperCode: string) => Promise<void>;
-  userKey?: UserKeyState | null;
-  onUserKeyReplaced?: (state: UserKeyState) => void;
+  userKey: UserKeyState | null;
+  onUserKeyReplaced: (state: UserKeyState) => void;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced }: Props) {
   const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -77,6 +79,14 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [error, setError] = useState("");
   const [revoking, setRevoking] = useState<string | null>(null);
   const [unrevoked, setUnrevoked] = useState<Device[]>([]);
+  const [keyFingerprint, setKeyFingerprint] = useState<string>("");
+
+  useEffect(() => {
+    let live = true;
+    if (userKey?.kind === "ready") void fingerprint(userKey.publicKey).then((f) => { if (live) setKeyFingerprint(f); });
+    else setKeyFingerprint("");
+    return () => { live = false; };
+  }, [userKey]);
 
   const hideVaultKey = useCallback(() => setShowVaultKey(false), []);
   const hidePaperCode = useCallback(() => setPaperCode(null), []);
@@ -330,6 +340,33 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         : `Could not rotate the vault key, so nothing changed on the server. ${toErrorMessage(err, "")}`.trim());
     } finally {
       if (alive.current) setBusy(false);
+    }
+  };
+
+  // A new pair, published over the old one. Needs the master password like every other
+  // change to what protects the vault; the old public key stays in `previous` so peers can
+  // see the change was ours.
+  const replaceUserKey = async () => {
+    setError("");
+    const version = await proveCurrentPassword("password");
+    if (version === null) return;
+    const confirmed = await dialogs.confirm({
+      title: "Replace your key?",
+      message: "Anyone who has verified your current key will be asked to verify the new one. Do this if you believe your private key was exposed.",
+      confirmLabel: "Replace key",
+      danger: true,
+    });
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      const made = await newUserKeyRecord(vaultKey, user.id);
+      await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
+      onUserKeyReplaced({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record });
+      setCurrentPassword("");
+    } catch (err) {
+      setError(toErrorMessage(err, "Could not replace the key."));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -608,6 +645,33 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+          <KeyRound size={20} color="var(--accent)" />
+          <h3 style={{ margin: 0 }}>Your key</h3>
+        </div>
+        <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+          Other users encrypt to this key when they share with you. Compare the fingerprint out of band before trusting a key.
+        </p>
+        {userKey === null || userKey.kind === "none" ? (
+          <p style={{ color: "var(--ink-muted)", margin: 0 }}>{userKey === null ? "Unlock the vault to see your key." : "No key published yet. It is created the next time you unlock."}</p>
+        ) : userKey.kind === "mismatch" ? (
+          <div role="alert" style={{ marginBottom: "1rem" }}>
+            <p style={{ margin: "0 0 0.5rem", color: "var(--danger)" }}>{userKey.reason} Replace it to publish a key this vault can use.</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+            <code className="font-mono" style={{ fontSize: "1.1rem" }} aria-label="Key fingerprint">{keyFingerprint}</code>
+            <button type="button" className="btn btn-quiet btn-sm" onClick={() => void copyText(keyFingerprint)}>Copy</button>
+            <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>Created {formatWhen(userKey.record.createdAt)}</span>
+          </div>
+        )}
+        {userKey && userKey.kind !== "none" ? (
+          <button type="button" className="btn btn-danger" onClick={() => void replaceUserKey()} disabled={busy || !currentPassword}
+            title={currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
+        ) : null}
+      </section>
+
+      <section className="field-card" style={{ marginBottom: "2rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <RefreshCw size={20} color="var(--accent)" />
           <h3 style={{ margin: 0 }}>Rotate Vault Key</h3>
         </div>
@@ -632,12 +696,13 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <Download size={14} /> Download vault first
           </button>
           <button type="button" className="btn btn-danger" onClick={handleRotateKey}
-            disabled={busy || !currentPassword || !canRotate}
-            title={canRotate ? undefined : "Save or discard your unsaved edits first."}>
+            disabled={busy || !currentPassword || !canRotate || userKey?.kind === "mismatch"}
+            title={userKey?.kind === "mismatch" ? "Replace your key first: the stored private key cannot be re-wrapped." : canRotate ? undefined : "Save or discard your unsaved edits first."}>
             Rotate key
           </button>
         </div>
         {!canRotate ? <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.5rem" }}>Save or discard your unsaved edits first.</p> : null}
+        {userKey?.kind === "mismatch" ? <p style={{ fontSize: "0.8rem", color: "var(--danger)", marginTop: "0.5rem" }}>Replace your key first: the stored private key cannot be re-wrapped.</p> : null}
       </section>
 
       {/* Offline recovery: the key that opens a downloaded vault in any KeePass client */}
