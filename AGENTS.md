@@ -473,9 +473,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   is sealed by each side and opened by the other (`internal/userkey` `-update`, JS `UPDATE_VECTOR=1`).
   **Load the seed with `kem.importKey("raw", seed, false)`; `deriveKeyPair` yields a different key.**
   Fingerprint = SHA-256 of the public key, first 20 hex upper in fours; Go and JS pin the same vector.
-  Unlock adopts the record (mismatch → Security warning, key unused; a settle failure that never
-  reaches a verdict, e.g. a decode error or the lazy hpke chunk 404ing, is `unavailable`, no Replace,
-  Rotate disabled) or generates and publishes one. First publish is create-only (`If-None-Match: *`,
+  Unlock adopts the record (a seed that will not unwrap or a public key that will not decode or
+  match is `mismatch` → Security warning, key unused; a failure before any verdict, e.g. the lazy
+  hpke chunk 404ing after a deploy, is `unavailable`, no Replace, Rotate disabled, reload to retry) or generates and publishes one. First publish is create-only (`If-None-Match: *`,
   `If-Match` on the vault version, no version bump); a 409 means another tab won the race, so this tab
   re-reads metadata and adopts what that tab wrote instead of overwriting it. Rotation re-wraps the
   seed and sends it as `X-User-Key` in the same upload; the server refuses a rotation that drops or

@@ -18,14 +18,15 @@ export async function adoptUserKey(record: UserKeyRecord | undefined, vaultKey: 
   } catch {
     return { kind: "mismatch", record, reason: "The stored private key could not be opened with this vault key." };
   }
-  let publicKey: Uint8Array;
   let publishedKey: Uint8Array;
   try {
-    publicKey = await publicKeyFromSeed(seed);
     publishedKey = b64.decode(record.publicKey);
   } catch {
     return { kind: "mismatch", record, reason: "Your published key could not be read." };
   }
+  // Deriving needs the lazy hpke chunk; a load failure is not a bad key, so it propagates
+  // and the caller reports "unavailable" instead of telling the user to Replace a sound key.
+  const publicKey = await publicKeyFromSeed(seed);
   if (!same(publicKey, publishedKey)) {
     return { kind: "mismatch", record, reason: "Your published public key does not match your private key." };
   }

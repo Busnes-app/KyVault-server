@@ -15,7 +15,7 @@ import (
 // it was wrapped against so a tab holding a retired vault key cannot publish a seed
 // nobody can open.
 func (s *Server) handleUserKeyPut(w http.ResponseWriter, r *http.Request, u users.User) {
-	if current, ok := s.currentSession(r); ok && current.DeviceID != "" {
+	if current, ok := s.currentSession(r); !ok || current.DeviceID != "" {
 		http.Error(w, "device sessions cannot publish a user key", http.StatusForbidden)
 		return
 	}
