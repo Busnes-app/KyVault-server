@@ -23,9 +23,11 @@ const (
 // wrong codes from anyone close redeem for everyone for the lockout; the upgrade path is
 // a trusted-proxy setting that lets sourceKey read X-Forwarded-For.
 type pairingLimiter struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	sources map[string]*pairingSource
+	mu          sync.Mutex
+	now         func() time.Time
+	sources     map[string]*pairingSource
+	maxFailures int
+	lockout     time.Duration
 }
 
 type pairingSource struct {
@@ -34,7 +36,11 @@ type pairingSource struct {
 }
 
 func newPairingLimiter() *pairingLimiter {
-	return &pairingLimiter{now: time.Now, sources: map[string]*pairingSource{}}
+	return newLimiter(pairingMaxFailures, pairingLockout)
+}
+
+func newLimiter(maxFailures int, lockout time.Duration) *pairingLimiter {
+	return &pairingLimiter{now: time.Now, sources: map[string]*pairingSource{}, maxFailures: maxFailures, lockout: lockout}
 }
 
 func (l *pairingLimiter) key(src string) string {
@@ -52,7 +58,7 @@ func (l *pairingLimiter) allow(src string) bool {
 	if !ok || !l.now().Before(p.until) {
 		return true
 	}
-	return p.failures < pairingMaxFailures
+	return p.failures < l.maxFailures
 }
 
 // fail records a wrong code. The third within the window starts the lockout.
@@ -67,7 +73,7 @@ func (l *pairingLimiter) fail(src string) {
 		l.sources[k] = p
 	}
 	p.failures++
-	p.until = now.Add(pairingLockout)
+	p.until = now.Add(l.lockout)
 }
 
 // reset clears a source after a redeem succeeded: the code was the user's own.
