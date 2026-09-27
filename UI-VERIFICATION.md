@@ -78,7 +78,7 @@ Checked against the mock outside the browser (`curl`), because the UI refuses th
 
 Not exercised: a real KyVault server (everything here is the mock), dark mode and mobile widths for these screens, a second signed-in user, shared key rotation (3c, not built), the stale self-reseal screen (it needs another user's key replace), and the KySignOn sign-in behind the "Sign in again" link. The Accept dialog's "changed" state was captured as the invitation drift; the other route to it — a published key that no longer matches the pin — is covered by `sharedFlows.test.ts`, not by a screenshot, because the mock's dana key is fixed for the life of the process. `POST /api/mock/role` is a dev-only mock route with no server counterpart, used in step 8 because the UI deliberately refuses to change your own role.
 
-Noted while capturing, not fixed here: the Members dialog labels the signed-in user's own key "Key not verified", because a pin for yourself is never written; it reads as a warning about your own key.
+Found while capturing and fixed after it: the Members dialog labelled the signed-in user's own key "Key not verified", because a pin for yourself is never written. Your own row now reads "Your key", or "Not the key this browser holds" when the published key is not the one this tab holds. `docs/shared-members.png` predates the fix and still shows the old label.
 
 ### Screenshots
 
