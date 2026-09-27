@@ -14,7 +14,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
 8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps. Installable as a PWA through `frontend/public/manifest.webmanifest` (icons from `logo.png` and a 512px export of `KyVault.png`; no service worker, so nothing works offline). `pwa.test.ts` validates the manifest and the `index.html` references; `static.go` serves `.webmanifest` as `application/manifest+json`.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
-10. **Shared Vaults (server side)**: `internal/shared` keeps membership (roles, states, each member's copy of the vault key HPKE-sealed to their user key); the KDBX lives in `internal/vault` under key `shared/<id>`. Roles are enforced server-side; neither the server nor an admin can read contents. No UI yet. See `internal/shared/AGENTS.md`.
+10. **Shared Vaults (server side)**: `internal/shared` keeps membership (roles, states, each member's copy of the vault key HPKE-sealed to their user key); the KDBX lives in `internal/vault` under key `shared/<id>`. Roles are enforced server-side; neither the server nor an admin can read contents. The web client is the vault switcher, the Accept and Members dialogs, Security → Known keys and Admin → Shared vaults; see the Child DOX Index. See `internal/shared/AGENTS.md`.
 
 ## Authentication
 
@@ -194,6 +194,7 @@ the user's, not the directory's.
 - Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`. Run them before `npm ci` in `extension/`: a Go package inside `extension/node_modules` is otherwise picked up by `go vet ./...`.
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
 - UI without KySignOn: `npm run dev:mock` in `frontend/` serves the app with an in-process mock of the API (`frontend/mock/api.ts`, dev only, never built) for manual and screenshot checks.
+  It serves the shared-vault routes with the status codes the client branches on (404 not a member, 403 a reader write or an unaccepted row, 409 the last owner, 400 a fingerprint that moved), seeds two invitations from `dana` (u-2) — one matching her published key, one sealed by a key she no longer publishes — and generates a real X-Wing key pair for her at startup, so sealing from the browser is real HPKE. One admin delete answers a plain-text `re-authenticate to continue` so that refusal and its link are reachable. `POST /api/mock/role` has no server counterpart: it sets the mock user's role in a vault, which the UI cannot do and a reader's read-only screen needs.
 - Extension: `npm test && npm run build && npm run lint` in `extension/` (`build` runs `tsc` first, so it is the typecheck gate too; `lint` is `web-ext lint --source-dir dist/firefox` and must report 0 errors). See `extension/AGENTS.md`.
 - Daemon build: `go build -o ./kyvault-server ./cmd/server`
 - Docker build: `docker build -t kyvault-server:latest .`
@@ -493,6 +494,26 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   rule. Known keys lists the pins in the personal vault with Re-pin (both fingerprints, then
   confirm) and Forget.
 
+- `frontend/src/lib/sharedVaults.ts`, `sharedKey.ts`, `vaultSelection.ts` and
+  `components/AdminShared.tsx`: `sharedApi`/`adminSharedApi` are the whole shared surface, and
+  `useSharedVaults` reloads the list after unlock and while the tab is visible (`loaded` stays
+  false until the first success, so a route restore never reads "not loaded" as "not a member").
+  A shared vault key is 32 random bytes sealed with `seal(pk, "kyvault/shared-vault-key/1", key)`;
+  the blob is exactly 1168 bytes, and both helpers refuse any other length. `openShared` opens my
+  own sealed copy, and a copy that will not open says to ask an owner to re-seal it rather than
+  guessing why; an empty vault is created and uploaded by an owner or editor and refused to a
+  reader. Vault transport is `basePath`-relative (`/api/vault` or `/api/shared/<id>`) through
+  `vaultSave.ts`, `HistoryModal` and `ConflictComparison`, and locked drafts are scoped by
+  selection, so two vaults never share a checkpoint. A reader's recovered draft is never applied:
+  the server copy opens instead, with a notice, because those edits could never be uploaded.
+  Admin → Shared vaults lists every vault with its members, flags `ownerless`, deletes a vault,
+  removes a member and owns the create-restriction setting; it never sees key material, its
+  optimistic setting toggle puts the server's value back when the PUT is refused
+  (`saveRestricted`), a running action marks only its own vault's row busy (`rowBusy`), and a
+  fresh-session 403 renders the "Sign in again" link. `AdminShared.test.ts` pins those three.
+  Invite lookup is `GET /api/users/lookup?username=` (exact username, 404 for a miss).
+  Not built: shared key rotation (3c), the extension and KyAuth (3d).
+
 - `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
   appends the anchor and revokes the object URL a second later so Firefox and Safari do not
   cancel it.
@@ -594,7 +615,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   hand-off — the unlock generation, never whether the page is still mounted — and `checkAuth`
   losing the session drops the pending like `closeVault` does. `closeVault` and the state setter
   are the only things that zero them, Replace is disabled while a pending exists, and the
-  panel's re-auth link opens in a new tab so the document never navigates.
+  panel's re-auth link opens in a new tab so the document never navigates. The held keys are
+  this tab's memory and nothing else: a lock, a sign-out or a reload loses them, and the rows
+  still sealed to the retired key stay stale until another owner re-seals them.
   `keyReplaceReseal.test.ts` covers the order, the list failure publishing nothing, the
   warning branches and the zeroing. `PUT /api/vault/user-key` is
   refused with 403 for a device-session bearer token (a stolen extension token must not be able to

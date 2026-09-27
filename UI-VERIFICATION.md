@@ -57,3 +57,38 @@ Exercised in the browser (Playwright), summarised from the Task 6 manual pass:
 All Task 6 Step 3 checks from the brief passed as observed above; see `.superpowers/sdd/2026-09-27-user-keys/task-6-report.md` for the full transcript.
 
 Not exercised: live KySignOn SSO/vault unlock end to end, KyAuth or the browser extension against the same interop vector, and a genuine cross-tab publish race (the create-only 409 path is covered by `internal/api` and `userKey.test.ts` unit tests, not manually).
+
+## Shared vaults
+
+Captured 2026-09-27 from `npm run dev:mock` on :5878 (`frontend/mock/api.ts`, dev-only, never built), Chromium through the Playwright MCP tools at 1280×900 CSS pixels, theme System (Busnes) following the OS, which resolved light. No backend, no KySignOn: the mock serves the shared routes, and `dana` (u-2) is a mock identity with a real X-Wing key pair generated at startup, so everything the browser sealed to her was real HPKE. She never signs in — there is no second browser session in this pass.
+
+Exercised in the browser, in this order:
+
+1. Created a vault (master password `correct horse battery staple`), which published a user key. The switcher showed both seeded invitations from dana as badges next to the vault select.
+2. Accept on "Household" before any pin: the inviter's fingerprint with "Not verified. Verify with dana before you rely on this vault." and the line "KyVault trusts the server for who is in a vault, never for its contents."
+3. Accept on "Legal", whose invitation was sealed by a key dana no longer publishes: "Their key changed since this invitation was sent." — the `invitation` drift.
+4. Created the shared vault "Team Finance" from the switcher. It sealed a fresh key to my own published key, created the KDBX in the browser, uploaded it and selected the new vault (`#/shared/<id>`), so create → seal → open works end to end against real HPKE.
+5. Members → looked up `dana` → her fingerprint with "Key not verified" and the compare-out-of-band line → Invite as reader. Her row came back `invited` with "Key pinned": trust on first use pinned her key as it was used.
+6. Leave vault as the only owner: refused inline with "a shared vault keeps at least one active owner" (409) and the membership unchanged.
+7. Accept on "Household" again, now that dana is pinned: "Matches the key you pinned." Accepting added Household to the switcher and left "Team Finance" selected — accepting does not open the vault.
+8. Added an entry to Team Finance, which autosaved to v2. Demoted my own row to `reader` (see below) and reloaded: the switcher read "Team Finance — Read-only", the folder pane carried a READ-ONLY badge, and Add Entry, Add Folder, the import buttons and the entry's edit and delete controls were gone; Entry History, Download .kdbx and Export CSV stayed.
+9. Admin → Shared vaults: all three vaults, expandable member lists with role and state badges, Team Finance flagged `Ownerless` after the demotion, "Created by u-2" (the server sends the user id here, not a username). Delete vault was refused with "re-authenticate to continue…" and its "Sign in again" link; removing a member succeeded and the list reloaded; the create-restriction checkbox toggled and the mock stored it.
+
+Checked against the mock outside the browser (`curl`), because the UI refuses these client-side: a reader's upload is 403, a non-member's vault is 404, an unaccepted row reading data is 403, demoting the last owner is 409, and a re-seal with a fingerprint the user no longer publishes is 400.
+
+Not exercised: a real KyVault server (everything here is the mock), dark mode and mobile widths for these screens, a second signed-in user, shared key rotation (3c, not built), the stale self-reseal screen (it needs another user's key replace), and the KySignOn sign-in behind the "Sign in again" link. The Accept dialog's "changed" state was captured as the invitation drift; the other route to it — a published key that no longer matches the pin — is covered by `sharedFlows.test.ts`, not by a screenshot, because the mock's dana key is fixed for the life of the process. `POST /api/mock/role` is a dev-only mock route with no server counterpart, used in step 8 because the UI deliberately refuses to change your own role.
+
+Noted while capturing, not fixed here: the Members dialog labels the signed-in user's own key "Key not verified", because a pin for yourself is never written; it reads as a warning about your own key.
+
+### Screenshots
+
+| What | Image |
+| --- | --- |
+| Switcher with invitation badges | ![Switcher](docs/shared-switcher.png) |
+| Accept, key not pinned | ![Accept unpinned](docs/shared-accept-unpinned.png) |
+| Accept, key pinned | ![Accept pinned](docs/shared-accept-pinned.png) |
+| Accept, inviter's key changed | ![Accept changed](docs/shared-accept-changed.png) |
+| Members with the invite form | ![Members](docs/shared-members.png) |
+| A reader's read-only vault | ![Read-only](docs/shared-readonly.png) |
+| Admin → Shared vaults | ![Admin](docs/shared-admin.png) |
+| Admin refusing a delete without a fresh sign-in | ![Admin re-auth](docs/shared-admin-reauth.png) |
