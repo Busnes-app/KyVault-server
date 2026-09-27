@@ -1,7 +1,8 @@
 import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
-import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore, Copy, Check } from "lucide-react";
+import { Users, Users2, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore, Copy, Check } from "lucide-react";
 import { AdminBackup } from "../components/AdminBackup";
+import { AdminShared } from "../components/AdminShared";
 import { formatWhen } from "../lib/format";
 import { useDialogs } from "../components/DialogHost";
 import { copyText } from "../lib/clipboard";
@@ -214,6 +215,12 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
           onClick={() => navigate({ tab: "admin", admin: "backup" })}
         >
           <ArchiveRestore size={16} /> Backup &amp; Recovery
+        </button>
+        <button
+          className={`nav-link-btn ${activeTab === "shared" ? "active" : ""}`}
+          onClick={() => navigate({ tab: "admin", admin: "shared" })}
+        >
+          <Users2 size={16} /> Shared vaults
         </button>
       </div>
 
@@ -446,6 +453,8 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
         </div>
       ) : activeTab === "backup" ? (
         <AdminBackup />
+      ) : activeTab === "shared" ? (
+        <AdminShared />
       ) : (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>

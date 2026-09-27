@@ -35,6 +35,24 @@ export const sharedApi = {
 };
 export type SharedApi = typeof sharedApi;
 
+export type AdminSharedVault = {
+  id: string;
+  name: string;
+  createdBy: string;
+  createdAt: string;
+  keyEpoch: number;
+  ownerless: boolean;
+  members: { userId: string; username: string; role: Role; state: MemberState }[];
+};
+
+export const adminSharedApi = {
+  list: () => getJSON<AdminSharedVault[]>("/api/admin/shared"),
+  remove: async (id: string) => { await deleteJSON(`/api/admin/shared/${encodeURIComponent(id)}`); },
+  removeMember: async (id: string, userId: string) => { await deleteJSON(`/api/admin/shared/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`); },
+  settings: () => getJSON<{ createRestrictedToAdmins: boolean }>("/api/admin/shared/settings"),
+  saveSettings: async (s: { createRestrictedToAdmins: boolean }) => { await putJSON("/api/admin/shared/settings", s); },
+};
+
 export const canOpen = (v: SharedVaultSummary) => v.state === "active";
 
 export function stateLabel(v: SharedVaultSummary): string | null {
