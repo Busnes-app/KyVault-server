@@ -406,6 +406,14 @@ func (s *Store) RotateVault(userID string, expectedVersion int64, kdbxData []byt
 	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true, userKey)
 }
 
+// SaveRotated writes a vault re-encrypted under a new key and marks the version it writes as
+// the start of the new key epoch, so every older snapshot is refused for rollback. It is the
+// shared-vault counterpart of RotateVault, which additionally requires the personal envelopes
+// and user key a shared vault does not have.
+func (s *Store) SaveRotated(key string, expectedVersion int64, kdbxData []byte, deviceID string) (Metadata, error) {
+	return s.saveVault(key, expectedVersion, kdbxData, "", "", deviceID, true, nil)
+}
+
 func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated bool, userKey *userkey.Record) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

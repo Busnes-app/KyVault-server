@@ -599,3 +599,62 @@ func TestClearHistoryRemovesSnapshotsAndConflicts(t *testing.T) {
 		t.Fatalf("retired = %v", err)
 	}
 }
+
+// SaveRotated is the shared-vault rotation write: it starts a new key epoch, so every
+// snapshot taken under the retired key is flagged and refused for rollback even if the
+// caller never manages to delete those snapshots.
+func TestSaveRotatedStartsANewKeyEpoch(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_0123456789012345678901"
+	if _, err := store.SaveVault(key, 0, []byte("one"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault(key, 1, []byte("two"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].StaleKey {
+		t.Fatalf("history before the rotation = %+v", before)
+	}
+
+	meta, err := store.SaveRotated(key, 2, []byte("rekeyed"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Version != 3 || meta.KeyEpochSince != 3 {
+		t.Fatalf("rotated metadata = %+v", meta)
+	}
+	after, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) == 0 {
+		t.Fatal("no snapshots to flag")
+	}
+	for _, h := range after {
+		if !h.StaleKey {
+			t.Fatalf("snapshot %s (v%d) is not flagged stale: %+v", h.ID, h.Version, h)
+		}
+		if _, err := store.RestoreHistory(key, h.ID); !errors.Is(err, ErrStaleKey) {
+			t.Fatalf("restore of %s = %v, want ErrStaleKey", h.ID, err)
+		}
+	}
+	rc, current, err := store.OpenVault(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "rekeyed" || current.Version != 3 {
+		t.Fatalf("a refused rollback changed the vault: %q v%d", data, current.Version)
+	}
+}

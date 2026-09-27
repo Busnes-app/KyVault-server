@@ -362,18 +362,28 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   and refused, never truncated, when over; the whole body is capped at their sum. `epoch` is
   the epoch being rotated **from** and `If-Match` the vault data version. Every
   `keyFingerprint` must equal that member's current published key (400 otherwise): the store
-  trusts the route for that, as invite and reseal do. `shared.Store.Rotate` validates and
+  trusts the route for that, as invite and reseal do. Exactly two parts: a third is 400.
+  `shared.Store.Rotate` validates and
   commits the record around the vault write, which re-reads the metadata and refuses a
-  version mismatch (409) *before* `SaveVault`, so no refusal leaves the re-encrypted bytes
-  behind as a conflict nobody can open. `vault.Store.ClearHistory` runs after the commit,
+  version mismatch (409) *before* the save, so no refusal leaves the re-encrypted bytes
+  behind as a conflict nobody can open. The save is `vault.Store.SaveRotated` (the shared
+  counterpart of `RotateVault`, without the personal envelopes and user key), so the
+  rotation's version becomes `Metadata.KeyEpochSince` and every older snapshot is flagged
+  `staleKey` and refused for rollback with 409 whatever epoch header the caller sends: that
+  header proves which key a writer holds, never that the bytes are current.
+  `vault.Store.ClearHistory` runs after the commit,
   outside the lock: snapshots and conflicts are ciphertext under the retired key, and a crash
-  before the record lands leaves the pre-rotation snapshot to roll back to (a failure to clear
-  is logged and audited `shared.hook_failed`, not a failed rotation). Audit
+  before the record lands leaves the pre-rotation snapshot to roll back to. A failure to clear
+  is logged, audited `shared.hook_failed` and reported as `historyCleared:false` on an
+  otherwise successful rotation so the owner can rotate again; it is not a failed rotation,
+  and `KeyEpochSince` is the backstop meanwhile. Audit
   `shared.key_rotated`, detail `<id>: rotated to epoch N, sealed to X members, Y left
-  behind`; the response is `{ok, metadata, keyEpoch, leftBehind}`. `shared_test.go` covers
-  the rotation, every refusal leaving record/ciphertext/history/conflicts untouched,
-  oversized parts and four simultaneous rotations leaving exactly one winner. The client is
-  Task 5 of 3c and is not wired yet.
+  behind`; the response is `{ok, metadata, keyEpoch, leftBehind, historyCleared}`.
+  `shared_test.go` covers the rotation (the members it leaves behind and the audit detail
+  included), every refusal leaving record/ciphertext/history/conflicts untouched, oversized
+  parts, a third part, parts out of order, a retired snapshot that survives a failed clear
+  staying unrestorable, and four simultaneous rotations leaving exactly one winner. The client
+  is Task 5 of 3c and is not wired yet.
 
 - `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
   History reads native KeePass history in the unlocked browser. Changed Apply Edits
