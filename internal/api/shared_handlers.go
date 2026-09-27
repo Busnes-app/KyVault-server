@@ -50,7 +50,14 @@ func (c sharedCtx) canWrite() bool {
 	return c.me.State == shared.StateActive && (c.me.Role == shared.RoleOwner || c.me.Role == shared.RoleEditor)
 }
 func (c sharedCtx) canRead() bool {
-	return c.me.State == shared.StateActive || c.me.State == shared.StateStale
+	return c.me.State == shared.StateActive || (c.me.State == shared.StateStale && c.me.AcceptedAt != nil)
+}
+
+// unaccepted reports whether the caller's row has never been through Accept: a fresh
+// invitation, or a stale row that went stale before it was ever accepted. Both are
+// declinable and expose nothing beyond the caller's own list entry.
+func (c sharedCtx) unaccepted() bool {
+	return c.me.State == shared.StateInvited || (c.me.State == shared.StateStale && c.me.AcceptedAt == nil)
 }
 
 // sharedTarget points the vault data handlers at a shared vault. The history/conflict id
@@ -64,8 +71,9 @@ func sharedTarget(r *http.Request, c sharedCtx) vaultTarget {
 		filename: backup.FilenameSafe(c.vault.Name) + ".kdbx", fileParam: param}
 }
 
-// withSharedRead admits active and stale rows. Invited and suspended rows get a bare 403:
-// an invitation reveals nothing beyond the list entry.
+// withSharedRead admits active rows and stale rows that had accepted before going stale.
+// Invited, never-accepted-stale and suspended rows get a bare 403: an invitation reveals
+// nothing beyond the list entry.
 func (s *Server) withSharedRead(next func(http.ResponseWriter, *http.Request, vaultTarget)) func(http.ResponseWriter, *http.Request, users.User) {
 	return func(w http.ResponseWriter, r *http.Request, u users.User) {
 		c, ok := s.sharedMember(w, r, u)
@@ -353,7 +361,7 @@ func (s *Server) handleSharedGet(w http.ResponseWriter, r *http.Request, u users
 	if !found {
 		return
 	}
-	if c.me.State == shared.StateInvited {
+	if c.unaccepted() {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -574,7 +582,7 @@ func (s *Server) handleSharedMemberRemove(w http.ResponseWriter, r *http.Request
 	}
 	action := "shared.member_removed"
 	switch {
-	case self && row.State == shared.StateInvited:
+	case self && (row.State == shared.StateInvited || (row.State == shared.StateStale && row.AcceptedAt == nil)):
 		action = "shared.member_declined"
 	case self:
 		action = "shared.member_left"
@@ -610,7 +618,7 @@ func (s *Server) handleSharedDecline(w http.ResponseWriter, r *http.Request, u u
 	if !found {
 		return
 	}
-	if c.me.State != shared.StateInvited {
+	if !c.unaccepted() {
 		http.Error(w, "only an invitation can be declined", http.StatusConflict)
 		return
 	}

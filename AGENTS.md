@@ -96,13 +96,17 @@ yourself adding one, the design has been misread.
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.
 - Shared vaults (`/api/shared/*`, `withAuth`): any `{id}` route answers 404 unless the
-  caller has a row, and `GET /api/shared/{id}` is 404 to an invited row too. Rename, delete,
-  invite, member update and removing someone else need an active owner (403); anyone removes
-  their own row (leave), and a `stale` member may re-seal their own row
-  (`PUT …/members/{self}`, `sealedKey` + their current `keyFingerprint`, no `role`, fresh
-  session via `requireFresh`). Accept and decline need an invited row (409 otherwise). Data reads
-  (metadata, kdbx, history, conflicts) admit active and stale rows; writes (upload, history
-  restore, conflict discard) admit active owners and editors; other rows get 403. The route
+  caller has a row, and `GET /api/shared/{id}` is 404 to an invited row, or a `stale` row
+  that had never accepted, too — a row `MarkStale` flipped before `Accept` ran is an
+  invitation, not a lapsed member. Rename, delete, invite, member update and removing
+  someone else need an active owner (403); anyone removes their own row (leave, or decline
+  for an invited or never-accepted-stale row), and a `stale` member may re-seal their own
+  row (`PUT …/members/{self}`, `sealedKey` + their current `keyFingerprint`, no `role`,
+  fresh session via `requireFresh`). Accept needs an invited row (409 otherwise); decline
+  needs an invited row or a stale row with no `acceptedAt`. Data reads (metadata, kdbx,
+  history, conflicts) admit active rows and `stale` rows that had accepted before going
+  stale; writes (upload, history restore, conflict discard) admit active owners and
+  editors; other rows get 403. The route
   checks early, and the store write runs inside `shared.Store.WithWriter`, which re-checks
   under the membership lock (removed 404, demoted 403, vault unchanged). Every
   state-changing shared and admin-shared route checks `validCSRF` (bearer tokens pass).

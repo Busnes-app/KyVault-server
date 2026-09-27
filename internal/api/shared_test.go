@@ -792,6 +792,77 @@ func TestSharedHooksStaleAndSuspended(t *testing.T) {
 	}
 }
 
+// A row that goes stale before it was ever accepted is not a member who once had access:
+// it must read nothing, same as a plain invitation, though it still shows in the
+// invitee's own list and can still be declined.
+func TestSharedUnacceptedStaleMemberReadsNothing(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	bobFP := publishKey(t, srv, bob, 2)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
+
+	// Bob replaces his user key before ever accepting: stale with no AcceptedAt.
+	bobMeta, err := srv.vault.GetMetadata(bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, putUserKey(srv.Routes(), bobC, `"`+strconv.FormatInt(bobMeta.Version, 10)+`"`, userKeyBody(t, 9)), http.StatusOK, "replace bob's key")
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateStale || m.AcceptedAt != nil {
+		t.Fatalf("bob after key replace: %s accepted=%v", m.State, m.AcceptedAt)
+	}
+
+	for _, r := range dataRoutes(id) {
+		rec := rawReq(srv, r.method, r.path, bobC, "", false, "x", map[string]string{"If-Match": `"0"`})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("unaccepted stale %s %s = %d %q", r.method, r.path, rec.Code, rec.Body.String())
+		}
+	}
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusNotFound, "unaccepted stale member GET")
+
+	if rec := do(t, srv, http.MethodGet, "/api/shared", bobC, nil); !strings.Contains(rec.Body.String(), id) {
+		t.Fatalf("bob's own list: %s", rec.Body.String())
+	}
+
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/decline", bobC, nil), http.StatusOK, "decline unaccepted stale")
+	v, err := srv.shared.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := v.Members[bob.ID]; ok {
+		t.Fatal("bob's row still exists after decline")
+	}
+	assertAudited(t, srv, "shared.member_declined")
+}
+
+// An unaccepted stale row must not gain access just because the vault has no owner: the
+// ownerless carve-out is for members who already had a foothold, not a route around
+// acceptance.
+func TestSharedUnacceptedStaleCannotReadOwnerlessVault(t *testing.T) {
+	srv := newTestServer(t)
+	_, adminC := signedInUser(t, srv, "root", users.RoleAdmin)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	bobFP := publishKey(t, srv, bob, 2)
+	invite(t, srv, aliceC, id, bob.ID, "reader", sealedKeyFor(0xB2), bobFP)
+
+	bobMeta, err := srv.vault.GetMetadata(bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, putUserKey(srv.Routes(), bobC, `"`+strconv.FormatInt(bobMeta.Version, 10)+`"`, userKeyBody(t, 9)), http.StatusOK, "replace bob's key")
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateStale || m.AcceptedAt != nil {
+		t.Fatalf("bob after key replace: %s accepted=%v", m.State, m.AcceptedAt)
+	}
+
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+alice.ID, adminC, nil), http.StatusOK, "admin remove sole owner")
+
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusNotFound, "unaccepted stale member GET ownerless")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/metadata", bobC, nil), http.StatusForbidden, "unaccepted stale member metadata ownerless")
+}
+
 // SCIM and the signed webhook suspend and restore memberships when they change the flag.
 func TestSharedHooksFollowDirectory(t *testing.T) {
 	srv, client := scimTestClient(t)
