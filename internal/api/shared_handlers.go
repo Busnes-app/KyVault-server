@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Busnes-app/kyvault-server/internal/backup"
 	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 )
@@ -50,6 +51,82 @@ func (c sharedCtx) canWrite() bool {
 }
 func (c sharedCtx) canRead() bool {
 	return c.me.State == shared.StateActive || c.me.State == shared.StateStale
+}
+
+// sharedTarget points the vault data handlers at a shared vault. The history/conflict id
+// is {hid} or {cid}; {id} is the vault.
+func sharedTarget(r *http.Request, c sharedCtx) vaultTarget {
+	param := "cid"
+	if r.PathValue("hid") != "" {
+		param = "hid"
+	}
+	return vaultTarget{key: shared.StoreKey(c.vault.ID), user: c.user, deviceID: c.session.DeviceID, shared: true,
+		filename: backup.FilenameSafe(c.vault.Name) + ".kdbx", fileParam: param}
+}
+
+// withSharedRead admits active and stale rows. Invited and suspended rows get a bare 403:
+// an invitation reveals nothing beyond the list entry.
+func (s *Server) withSharedRead(next func(http.ResponseWriter, *http.Request, vaultTarget)) func(http.ResponseWriter, *http.Request, users.User) {
+	return func(w http.ResponseWriter, r *http.Request, u users.User) {
+		c, ok := s.sharedMember(w, r, u)
+		if !ok {
+			return
+		}
+		if !c.canRead() {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r, sharedTarget(r, c))
+	}
+}
+
+// withSharedWrite admits active owners and editors, with the CSRF token on a cookie session.
+func (s *Server) withSharedWrite(next func(http.ResponseWriter, *http.Request, vaultTarget)) func(http.ResponseWriter, *http.Request, users.User) {
+	return func(w http.ResponseWriter, r *http.Request, u users.User) {
+		c, ok := s.sharedMember(w, r, u)
+		if !ok {
+			return
+		}
+		if !c.canRead() {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if !c.canWrite() {
+			http.Error(w, "this shared vault is read-only for you", http.StatusForbidden)
+			return
+		}
+		if !s.sharedCSRF(w, r) {
+			return
+		}
+		next(w, r, sharedTarget(r, c))
+	}
+}
+
+// userActiveChanged mirrors a change of an account's active flag onto its memberships.
+// Best effort: the account change already happened, so a failure is audited, not returned.
+func (s *Server) userActiveChanged(r *http.Request, userID string, active bool) {
+	ids, err := s.shared.SetSuspended(userID, !active)
+	action := "shared.member_suspended"
+	if active {
+		action = "shared.member_restored"
+	}
+	s.recordHook(r, userID, action, ids, err)
+}
+
+// userKeyReplaced marks every membership sealed to another key than fingerprint stale.
+func (s *Server) userKeyReplaced(r *http.Request, userID, fingerprint string) {
+	ids, err := s.shared.MarkStale(userID, fingerprint)
+	s.recordHook(r, userID, "shared.member_stale", ids, err)
+}
+
+// recordHook audits each vault a hook touched, then the failure that stopped it, if any.
+func (s *Server) recordHook(r *http.Request, userID, action string, ids []string, err error) {
+	for _, id := range ids {
+		s.record(r, action, userID, "", clientIP(r), id+" "+userID)
+	}
+	if err != nil {
+		s.record(r, "shared.hook_failed", userID, "", clientIP(r), action+" "+userID+": "+err.Error())
+	}
 }
 
 // targetRow answers 404 unless the {userId} path user has a row in the vault.

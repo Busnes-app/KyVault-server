@@ -54,6 +54,9 @@ func (s *Server) handleUserKeyPut(w http.ResponseWriter, r *http.Request, u user
 		action = "user_key.published"
 	}
 	s.record(r, action, u.ID, "", clientIP(r), fp)
+	if !created {
+		s.userKeyReplaced(r, u.ID, fp)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "fingerprint": fp})
 }
 

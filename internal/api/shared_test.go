@@ -2,17 +2,22 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/scim"
 	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/userkey"
 	"github.com/Busnes-app/kyvault-server/internal/users"
@@ -67,16 +72,21 @@ func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, bod
 	req := httptest.NewRequest(method, path, rd)
 	req.Header.Set("Content-Type", "application/json")
 	if cookie != nil {
-		req.AddCookie(cookie)
-		srv.sessMu.RLock()
-		token := srv.sessions[sessionKey(cookie.Value)].CSRFToken
-		srv.sessMu.RUnlock()
-		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: token})
-		req.Header.Set("X-CSRF-Token", token)
+		browserAuth(srv, req, cookie)
 	}
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
 	return rec
+}
+
+// browserAuth adds a cookie session and its CSRF token to req.
+func browserAuth(srv *Server, req *http.Request, cookie *http.Cookie) {
+	req.AddCookie(cookie)
+	srv.sessMu.RLock()
+	token := srv.sessions[sessionKey(cookie.Value)].CSRFToken
+	srv.sessMu.RUnlock()
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: token})
+	req.Header.Set("X-CSRF-Token", token)
 }
 
 func createShared(t *testing.T, srv *Server, cookie *http.Cookie, name, sealedKey, fp string) string {
@@ -499,4 +509,377 @@ func TestSharedOwnerRemovedMidRequestIsRefused(t *testing.T) {
 	if _, in := v.Members[bob.ID]; in || len(v.Members) != 1 || v.Name != "Finance" {
 		t.Fatalf("refused writes changed the vault: %+v", v)
 	}
+}
+
+// rawReq sends a raw body. cookie != nil authenticates as a browser (with CSRF unless
+// noCSRF); otherwise bearer, if set, authenticates as a device.
+func rawReq(srv *Server, method, path string, cookie *http.Cookie, bearer string, noCSRF bool, body string, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	switch {
+	case cookie != nil && noCSRF:
+		req.AddCookie(cookie)
+	case cookie != nil:
+		browserAuth(srv, req, cookie)
+	case bearer != "":
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func uploadShared(srv *Server, cookie *http.Cookie, id, ifMatch, body string, extra map[string]string) *httptest.ResponseRecorder {
+	headers := map[string]string{"If-Match": ifMatch}
+	for k, v := range extra {
+		headers[k] = v
+	}
+	return rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", cookie, "", false, body, headers)
+}
+
+func sharedMeta(t *testing.T, srv *Server, id string) vault.Metadata {
+	t.Helper()
+	meta, err := srv.vault.GetMetadata(shared.StoreKey(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return meta
+}
+
+func decodeIDs(t *testing.T, rec *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = r.ID
+	}
+	return ids
+}
+
+// dataRoutes lists every shared data route with a path-shaped placeholder id.
+func dataRoutes(id string) []struct{ method, path string } {
+	return []struct{ method, path string }{
+		{"GET", "/api/shared/" + id + "/metadata"}, {"GET", "/api/shared/" + id + "/kdbx"},
+		{"POST", "/api/shared/" + id + "/upload"}, {"GET", "/api/shared/" + id + "/history"},
+		{"GET", "/api/shared/" + id + "/history/h1"}, {"POST", "/api/shared/" + id + "/history/h1/restore"},
+		{"GET", "/api/shared/" + id + "/conflicts"}, {"GET", "/api/shared/" + id + "/conflicts/c1"},
+		{"DELETE", "/api/shared/" + id + "/conflicts/c1"},
+	}
+}
+
+func TestSharedDataRoutesAndRoles(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	carol, carolC := signedInUser(t, srv, "carol", users.RoleUser)
+	erin, erinC := signedInUser(t, srv, "erin", users.RoleUser)
+	_, daveC := signedInUser(t, srv, "dave", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	invite(t, srv, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), publishKey(t, srv, carol, 3))
+	invite(t, srv, aliceC, id, erin.ID, "reader", sealedKeyFor(0xE5), publishKey(t, srv, erin, 5))
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", carolC, nil), http.StatusOK, "carol accept")
+
+	// Envelope headers and JSON envelope fields are ignored; the rotation header is refused.
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx-v1", map[string]string{"X-Password-Envelope": "pw-env", "X-Recovery-Envelope": "rec-env"}), http.StatusOK, "owner upload")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "kdbx-rot", map[string]string{"X-Vault-Key-Rotated": "1", "X-Password-Envelope": "p", "X-Recovery-Envelope": "r"}), http.StatusBadRequest, "rotation header")
+	if meta := sharedMeta(t, srv, id); meta.Version != 1 {
+		t.Fatalf("rotation attempt changed the vault: %+v", meta)
+	}
+	jsonBody, err := json.Marshal(VaultUploadRequest{ExpectedVersion: 1, KdbxBase64: base64.StdEncoding.EncodeToString([]byte("kdbx-v2")), PasswordEnvelope: "pw-env", RecoveryEnvelope: "rec-env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, uploadShared(srv, bobC, id, "", string(jsonBody), map[string]string{"Content-Type": "application/json"}), http.StatusOK, "editor JSON upload")
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 || meta.PasswordEnvelope != "" || meta.RecoveryEnvelope != "" || len(meta.DeviceEnvelopes) != 0 {
+		t.Fatalf("shared metadata carries envelopes: %+v", meta)
+	}
+
+	// Reader: reads, cannot write. Writes need CSRF on a cookie session.
+	expectCode(t, uploadShared(srv, carolC, id, `"2"`, "kdbx-v3", nil), http.StatusForbidden, "reader upload")
+	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", bobC, "", true, "kdbx-v3", map[string]string{"If-Match": `"2"`}), http.StatusForbidden, "editor upload without CSRF")
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
+		t.Fatalf("a refused upload saved: %+v", meta)
+	}
+	for _, p := range []string{"/metadata", "/kdbx", "/history", "/conflicts"} {
+		expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id+p, carolC, nil), http.StatusOK, "reader GET "+p)
+	}
+	rec := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", carolC, nil)
+	if rec.Body.String() != "kdbx-v2" || rec.Header().Get("Content-Disposition") != `attachment; filename="Finance.kdbx"` {
+		t.Fatalf("download body/disposition: %q %q", rec.Body.String(), rec.Header().Get("Content-Disposition"))
+	}
+
+	// Non-member: 404 on every data route. Invited: 403 on every one, only the list entry.
+	for _, m := range dataRoutes(id) {
+		expectCode(t, rawReq(srv, m.method, m.path, daveC, "", false, "x", map[string]string{"If-Match": `"2"`}), http.StatusNotFound, "non-member "+m.method+" "+m.path)
+		rec := rawReq(srv, m.method, m.path, erinC, "", false, "x", map[string]string{"If-Match": `"2"`})
+		if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "forbidden" {
+			t.Fatalf("invited %s %s = %d %q", m.method, m.path, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := do(t, srv, http.MethodGet, "/api/shared", erinC, nil); !strings.Contains(rec.Body.String(), id) || !strings.Contains(rec.Body.String(), `"state":"invited"`) {
+		t.Fatalf("invited list: %s", rec.Body.String())
+	}
+
+	// Conflict: preserved on a stale If-Match; reader downloads but cannot discard.
+	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "kdbx-stale", nil), http.StatusConflict, "stale upload")
+	conflicts := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/conflicts", bobC, nil))
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts: %v", conflicts)
+	}
+	cpath := "/api/shared/" + id + "/conflicts/" + conflicts[0]
+	if rec := do(t, srv, http.MethodGet, cpath, carolC, nil); rec.Code != http.StatusOK || rec.Body.String() != "kdbx-stale" {
+		t.Fatalf("reader conflict download = %d %q", rec.Code, rec.Body.String())
+	}
+	expectCode(t, do(t, srv, http.MethodDelete, cpath, carolC, nil), http.StatusForbidden, "reader discard")
+	expectCode(t, rawReq(srv, http.MethodDelete, cpath, bobC, "", true, "", nil), http.StatusForbidden, "editor discard without CSRF")
+	expectCode(t, do(t, srv, http.MethodDelete, cpath, bobC, nil), http.StatusOK, "editor discard")
+
+	// Snapshot: reader downloads; restore is a write and leaves envelopes and membership alone.
+	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", bobC, nil))
+	if len(hist) == 0 {
+		t.Fatal("no history")
+	}
+	hpath := "/api/shared/" + id + "/history/" + hist[0]
+	if rec := do(t, srv, http.MethodGet, hpath, carolC, nil); rec.Code != http.StatusOK || rec.Body.String() != "kdbx-v1" {
+		t.Fatalf("reader snapshot download = %d %q", rec.Code, rec.Body.String())
+	}
+	expectCode(t, do(t, srv, http.MethodPost, hpath+"/restore", carolC, nil), http.StatusForbidden, "reader restore")
+	expectCode(t, rawReq(srv, http.MethodPost, hpath+"/restore", bobC, "", true, "", nil), http.StatusForbidden, "editor restore without CSRF")
+	before, err := srv.shared.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, do(t, srv, http.MethodPost, hpath+"/restore", bobC, nil), http.StatusOK, "editor restore")
+	meta := sharedMeta(t, srv, id)
+	if meta.Version != 3 || meta.PasswordEnvelope != "" || meta.RecoveryEnvelope != "" || meta.UserKey != nil {
+		t.Fatalf("restore polluted metadata: %+v", meta)
+	}
+	if after, err := srv.shared.Get(id); err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("restore touched the membership record (err %v)", err)
+	}
+
+	// An editor's device token reads and writes; the save records the session's device.
+	deviceID, token := pairDeviceForTest(t, srv.Routes(), bobC)
+	expectCode(t, rawReq(srv, http.MethodGet, "/api/shared/"+id+"/metadata", nil, token, false, "", nil), http.StatusOK, "device read")
+	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", nil, token, false, "kdbx-dev", map[string]string{"If-Match": `"` + strconv.FormatInt(meta.Version, 10) + `"`}), http.StatusOK, "device upload")
+	if meta := sharedMeta(t, srv, id); meta.UpdatedByDevice != deviceID {
+		t.Fatalf("shared save device = %q, want %q", meta.UpdatedByDevice, deviceID)
+	}
+
+	assertAudited(t, srv, "shared.saved", "shared.downloaded", "shared.snapshot_downloaded", "shared.conflict_downloaded", "shared.rolled_back", "shared.conflict_discarded", "shared.conflict_rejected")
+	entries, err := srv.audit.List(500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Action, "shared.") && !strings.Contains(e.Details, id) {
+			t.Fatalf("audit %s lacks the vault id: %q", e.Action, e.Details)
+		}
+	}
+}
+
+func TestSharedDownloadFilenameIsSanitised(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	id := createShared(t, srv, aliceC, `Fin"an;ce`, sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx", nil), http.StatusOK, "upload")
+	rec := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil)
+	expectCode(t, rec, http.StatusOK, "download")
+	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="Fin-an-ce.kdbx"` {
+		t.Fatalf("Content-Disposition = %q", got)
+	}
+}
+
+func memberState(t *testing.T, srv *Server, id, userID string) shared.Member {
+	t.Helper()
+	v, err := srv.shared.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v.Members[userID]
+}
+
+func TestSharedHooksStaleAndSuspended(t *testing.T) {
+	srv := newTestServer(t)
+	_, adminC := signedInUser(t, srv, "root", users.RoleAdmin)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	dave, _ := signedInUser(t, srv, "dave", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	invite(t, srv, aliceC, id, dave.ID, "reader", sealedKeyFor(0xD4), publishKey(t, srv, dave, 4))
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", nil), http.StatusOK, "owner upload")
+
+	// Bob replaces his user key through the route: his row goes stale, alice's does not.
+	bobMeta, err := srv.vault.GetMetadata(bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, putUserKey(srv.Routes(), bobC, `"`+strconv.FormatInt(bobMeta.Version, 10)+`"`, userKeyBody(t, 9)), http.StatusOK, "replace bob's key")
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateStale {
+		t.Fatalf("bob after key replace: %s/%s", m.State, m.SuspendedFrom)
+	}
+	if m := memberState(t, srv, id, alice.ID); m.State != shared.StateActive {
+		t.Fatalf("alice after bob's key replace: %s/%s", m.State, m.SuspendedFrom)
+	}
+	// Stale reads, cannot write.
+	for _, p := range []string{"/metadata", "/kdbx", "/history", "/conflicts"} {
+		expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id+p, bobC, nil), http.StatusOK, "stale GET "+p)
+	}
+	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "v2", nil), http.StatusForbidden, "stale upload")
+	newBobFP := userkey.Fingerprint(bytes.Repeat([]byte{9}, userkey.PublicKeyBytes))
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xB3), "keyFingerprint": newBobFP}), http.StatusOK, "reseal")
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive {
+		t.Fatalf("bob after reseal: %s/%s", m.State, m.SuspendedFrom)
+	}
+
+	// Suspended (the store state, account still able to sign in) reads and writes nothing.
+	if _, err := srv.shared.SetSuspended(bob.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range dataRoutes(id) {
+		expectCode(t, rawReq(srv, m.method, m.path, bobC, "", false, "x", map[string]string{"If-Match": `"1"`}), http.StatusForbidden, "suspended "+m.method+" "+m.path)
+	}
+	if _, err := srv.shared.SetSuspended(bob.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Admin deactivation suspends every row, remembering the prior state; reactivation restores it.
+	for _, u := range []users.User{bob, dave} {
+		expectCode(t, do(t, srv, http.MethodPost, "/api/admin/users/"+u.ID+"/deactivate", adminC, nil), http.StatusOK, "deactivate "+u.Username)
+	}
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateSuspended || m.SuspendedFrom != shared.StateActive {
+		t.Fatalf("bob suspended: %s/%s", m.State, m.SuspendedFrom)
+	}
+	if m := memberState(t, srv, id, dave.ID); m.State != shared.StateSuspended || m.SuspendedFrom != shared.StateInvited {
+		t.Fatalf("dave suspended: %s/%s", m.State, m.SuspendedFrom)
+	}
+	rec := do(t, srv, http.MethodGet, "/api/admin/shared", adminC, nil)
+	if !strings.Contains(rec.Body.String(), `"state":"suspended"`) {
+		t.Fatalf("admin list after deactivation: %s", rec.Body.String())
+	}
+	for _, u := range []users.User{bob, dave} {
+		expectCode(t, do(t, srv, http.MethodPost, "/api/admin/users/"+u.ID+"/reactivate", adminC, nil), http.StatusOK, "reactivate "+u.Username)
+	}
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive {
+		t.Fatalf("bob restored: %s/%s", m.State, m.SuspendedFrom)
+	}
+	if m := memberState(t, srv, id, dave.ID); m.State != shared.StateInvited {
+		t.Fatalf("dave restored: %s/%s", m.State, m.SuspendedFrom)
+	}
+	assertAudited(t, srv, "shared.member_stale", "shared.member_suspended", "shared.member_restored")
+	entries, err := srv.audit.List(500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Action, "shared.member_s") || e.Action == "shared.member_restored" {
+			if !strings.Contains(e.Details, id) {
+				t.Fatalf("hook audit %s lacks the vault id: %q", e.Action, e.Details)
+			}
+		}
+	}
+}
+
+// SCIM and the signed webhook suspend and restore memberships when they change the flag.
+func TestSharedHooksFollowDirectory(t *testing.T) {
+	srv, client := scimTestClient(t)
+	ctx := context.Background()
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+
+	bobSCIM := func(active bool) scim.User {
+		return scim.User{Schemas: []string{scim.UserSchema}, ExternalID: bob.SSOSub, UserName: "bob", Active: active}
+	}
+	sync := func(event string, active bool) error {
+		rec := doSync(t, srv, signedSyncRequest(srv.pairingSecret, event, scimUserResource(bob.SSOSub, "bob", "bob@example.com", "user", active)))
+		if rec.Code != http.StatusOK {
+			return fmt.Errorf("%s = %d %s", event, rec.Code, rec.Body.String())
+		}
+		return nil
+	}
+	steps := []struct {
+		what string
+		want shared.State
+		act  func() error
+	}{
+		{"SCIM PATCH inactive", shared.StateSuspended, func() error {
+			_, err := client.PatchUser(ctx, bob.ID, scim.PatchOperation{Op: "replace", Path: "active", Value: false})
+			return err
+		}},
+		{"SCIM PATCH active", shared.StateActive, func() error {
+			_, err := client.PatchUser(ctx, bob.ID, scim.PatchOperation{Op: "replace", Path: "active", Value: true})
+			return err
+		}},
+		{"SCIM PUT inactive", shared.StateSuspended, func() error { _, err := client.ReplaceUser(ctx, bob.ID, bobSCIM(false)); return err }},
+		{"SCIM PUT active", shared.StateActive, func() error { _, err := client.ReplaceUser(ctx, bob.ID, bobSCIM(true)); return err }},
+		{"SCIM DELETE", shared.StateSuspended, func() error { return client.DeleteUser(ctx, bob.ID) }},
+		{"SCIM POST restore", shared.StateActive, func() error { _, err := client.CreateUser(ctx, bobSCIM(true)); return err }},
+		{"sync user.updated inactive", shared.StateSuspended, func() error { return sync("user.updated", false) }},
+		{"sync user.updated active", shared.StateActive, func() error { return sync("user.updated", true) }},
+		{"sync user.deleted", shared.StateSuspended, func() error { return sync("user.deleted", false) }},
+		{"sync user.created restore", shared.StateActive, func() error { return sync("user.created", true) }},
+	}
+	for _, s := range steps {
+		if err := s.act(); err != nil {
+			t.Fatalf("%s: %v", s.what, err)
+		}
+		if m := memberState(t, srv, id, bob.ID); m.State != s.want {
+			t.Fatalf("%s: bob = %s/%s, want %s", s.what, m.State, m.SuspendedFrom, s.want)
+		}
+	}
+	if got, err := srv.users.Get(bob.ID); err != nil || !got.Active {
+		t.Fatalf("bob after the directory round trip: %+v %v", got, err)
+	}
+}
+
+// A hook that cannot write the membership record does not fail the account change; it
+// leaves a shared.hook_failed row naming the user.
+func TestSharedHookFailureIsAudited(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	srv := newTestServer(t)
+	_, adminC := signedInUser(t, srv, "root", users.RoleAdmin)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, _ := signedInUser(t, srv, "bob", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	invite(t, srv, aliceC, id, bob.ID, "reader", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	dir := filepath.Join(srv.dataDir, "shared")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	expectCode(t, do(t, srv, http.MethodPost, "/api/admin/users/"+bob.ID+"/deactivate", adminC, nil), http.StatusOK, "deactivate")
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateInvited {
+		t.Fatalf("read-only store changed bob: %s", m.State)
+	}
+	entries, err := srv.audit.List(500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Action == "shared.hook_failed" && strings.Contains(e.Details, bob.ID) {
+			return
+		}
+	}
+	t.Fatal("no shared.hook_failed audit row")
 }

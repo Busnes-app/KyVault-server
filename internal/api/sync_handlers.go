@@ -92,7 +92,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 	case "user.created":
 		if existing, errGet := s.users.GetBySSOSub(u.ID); errGet == nil {
 			if isSCIMDeleted(existing) {
-				if err := s.applySCIMUpdate(existing, u); err != nil {
+				if err := s.applySCIMUpdate(r, existing, u); err != nil {
 					http.Error(w, "failed to restore directory account", http.StatusInternalServerError)
 					return
 				}
@@ -140,7 +140,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 			s.record(r, "sync.update_ignored_deleted", existing.ID, "", clientIP(r), "deleted account requires an explicit create to restore")
 			break
 		}
-		if err := s.applySCIMUpdate(existing, u); err != nil {
+		if err := s.applySCIMUpdate(r, existing, u); err != nil {
 			http.Error(w, "failed to apply update: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -162,6 +162,9 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.revokeDirectorySessions(existing.ID)
+		if existing.Active {
+			s.userActiveChanged(r, existing.ID, false)
+		}
 		s.record(r, "sync.user_deleted", existing.ID, "", clientIP(r), "deactivated "+existing.Username+" on KySignOn deletion; vault retained")
 	}
 
@@ -170,12 +173,15 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 
 // applySCIMUpdate brings a local account in line with the replicated resource. It matches
 // on the sub alone; username and email are attributes of the identity, never keys for it.
-func (s *Server) applySCIMUpdate(existing users.User, u kysync.SCIMUser) error {
+func (s *Server) applySCIMUpdate(r *http.Request, existing users.User, u kysync.SCIMUser) error {
 	if err := s.users.UpdateDirectory(existing.ID, scimRole(u.Role), u.Active, u.Username, u.Email, false); err != nil {
 		return err
 	}
 	if !u.Active {
 		s.revokeDirectorySessions(existing.ID)
+	}
+	if existing.Active != u.Active {
+		s.userActiveChanged(r, existing.ID, u.Active)
 	}
 	return nil
 }

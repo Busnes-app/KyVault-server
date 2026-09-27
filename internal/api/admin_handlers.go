@@ -55,6 +55,7 @@ func (s *Server) handleAdminUserDeactivate(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "you cannot deactivate your own account", http.StatusBadRequest)
 		return
 	}
+	prev, _ := s.users.Get(id) // an unknown id is refused by Deactivate below
 	if err := s.users.Deactivate(id); err != nil {
 		if errors.Is(err, users.ErrLastAdmin) {
 			http.Error(w, err.Error(), http.StatusConflict)
@@ -64,16 +65,23 @@ func (s *Server) handleAdminUserDeactivate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.record(r, "admin.user_deactivated", admin.ID, "", clientIP(r), "deactivated user "+id)
+	if prev.Active {
+		s.userActiveChanged(r, id, false)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAdminUserReactivate(w http.ResponseWriter, r *http.Request, admin users.User) {
 	id := r.PathValue("id")
+	prev, _ := s.users.Get(id) // an unknown id is refused by Reactivate below
 	if err := s.users.Reactivate(id); err != nil {
 		http.Error(w, "failed to reactivate user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.record(r, "admin.user_reactivated", admin.ID, "", clientIP(r), "reactivated user "+id)
+	if !prev.Active {
+		s.userActiveChanged(r, id, true)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
