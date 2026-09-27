@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -15,9 +16,9 @@ const (
 )
 
 // GET /api/users/lookup?username=. Resolves a username to the id and fingerprint the
-// invite flow needs. Unknown, inactive and key-less users all answer 404 so the route
-// only confirms "an active user with that name has a key"; misses are rate limited per
-// source like pairing codes.
+// invite flow needs. Unknown, inactive, key-less and malformed-key users all answer 404
+// so the route only confirms "an active user with that name has a usable key"; misses
+// are rate limited per source like pairing codes.
 func (s *Server) handleUserLookup(w http.ResponseWriter, r *http.Request, u users.User) {
 	src := s.sourceKey(r)
 	if !s.lookupLimit.allow(src) {
@@ -45,7 +46,12 @@ func (s *Server) handleUserLookup(w http.ResponseWriter, r *http.Request, u user
 	}
 	pub, err := meta.UserKey.Public(target.ID)
 	if err != nil {
-		http.Error(w, "stored key is malformed", http.StatusInternalServerError)
+		// A malformed stored key must answer exactly like "no key": otherwise it is
+		// distinguishable from every other 404 case and probeable without tripping
+		// the miss limiter.
+		log.Printf("user lookup: stored key for %s is malformed: %v", target.ID, err)
+		s.lookupLimit.fail(src)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"userId": target.ID, "username": target.Username, "fingerprint": pub.Fingerprint})

@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/Busnes-app/kyvault-server/internal/userkey"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 )
 
@@ -30,8 +31,7 @@ func TestUserLookup(t *testing.T) {
 	_, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
 	bob, _ := signedInUser(t, srv, "bob", users.RoleUser)
 	bobFP := publishKey(t, srv, bob, 2)
-	carol, _ := signedInUser(t, srv, "carol", users.RoleUser) // no key
-	_ = carol
+	_, _ = signedInUser(t, srv, "carol", users.RoleUser) // no key
 
 	rec := lookup(h, aliceC, "", "bob")
 	if rec.Code != http.StatusOK {
@@ -111,5 +111,55 @@ func TestUserLookupDeviceTokenAndLimit(t *testing.T) {
 	if limited != 1 {
 		t.Fatalf("limited rows = %d", limited)
 	}
-	_ = userkey.PublicKeyBytes
+}
+
+// corruptUserKeyPublicKey rewrites the user's published key on disk so
+// meta.UserKey.Public() fails, without going through SaveUserKey (which validates shape
+// and would refuse this record).
+func corruptUserKeyPublicKey(t *testing.T, dataDir, userID string) {
+	t.Helper()
+	path := filepath.Join(dataDir, "vaults", userID, "metadata.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	userKey, ok := meta["userKey"].(map[string]any)
+	if !ok {
+		t.Fatalf("no userKey in %s", path)
+	}
+	userKey["publicKey"] = "not valid base64!!"
+	out, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A malformed stored key must answer exactly like "no key": distinct treatment would
+// let a caller probe for it, and skipping the miss counter would exempt it from the limit.
+func TestUserLookupMalformedKeyCountsAsMiss(t *testing.T) {
+	srv, dataDir := newServerIn(t, t.TempDir())
+	h := srv.Routes()
+	_, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	dave, _ := signedInUser(t, srv, "dave", users.RoleUser)
+	publishKey(t, srv, dave, 3)
+	corruptUserKeyPublicKey(t, dataDir, dave.ID)
+
+	if rec := lookup(h, aliceC, "", "dave"); rec.Code != http.StatusNotFound {
+		t.Fatalf("malformed key = %d %s", rec.Code, rec.Body.String())
+	}
+	for i := 0; i < 19; i++ {
+		if rec := lookup(h, aliceC, "", "nobody"); rec.Code != http.StatusNotFound {
+			t.Fatalf("miss %d = %d", i, rec.Code)
+		}
+	}
+	if rec := lookup(h, aliceC, "", "dave"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("after 20th miss (malformed key) = %d", rec.Code)
+	}
 }
