@@ -391,8 +391,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `shared_test.go` covers the rotation (the members it leaves behind and the audit detail
   included), every refusal leaving record/ciphertext/history/conflicts untouched, oversized
   parts, a third part, parts out of order, a retired snapshot that survives a failed clear
-  staying unrestorable, and four simultaneous rotations leaving exactly one winner. The client
-  is Task 5 of 3c and is not wired yet.
+  staying unrestorable, and four simultaneous rotations leaving exactly one winner.
+  `sharedApi.rotate` is the client transport; the owner-facing flow is Task 7 of 3c.
 
 - `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
   History reads native KeePass history in the unlocked browser. Changed Apply Edits
@@ -505,7 +505,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   aborts transport and prevents later revisions uploading. An already accepted request cannot
   be undone. Logout clears the visible vault before network I/O; forgetting starts key removal
   independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.
-  `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
+  A shared upload (any `basePath` other than `PERSONAL_BASE`) carries `X-Shared-Key-Epoch`,
+  the epoch its ciphertext is sealed under; the personal vault has none and sends none. The
+  queue holds that epoch (fifth constructor argument, `keyEpoch` getter) and `setKeyEpoch`
+  moves it after a rotation this tab committed, so the next save claims the new key.
+  `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, retry,
+  and that epoch 0 is sent as `"0"` rather than treated as absent.
 
 - `frontend/src/lib/appSelection.ts`, `components/VaultSwitcher.tsx` and `App.tsx`: one selected
   vault at a time (`Selected`). `switchTo` confirms discard, closes the old queue, opens the next
@@ -571,7 +576,14 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   fresh-session 403 renders the "Sign in again" link through `components/ErrorLine.tsx`, which
   the members dialog uses too. `AdminShared.test.ts` pins those three.
   Invite lookup is `GET /api/users/lookup?username=` (exact username, 404 for a miss).
-  Not built: shared key rotation (3c), the extension and KyAuth (3d).
+  `rotationPending` rides on the list, detail and admin rows as the server sends it.
+  `sharedApi.rotate(id, kdbx, epoch, version, sealed)` posts the two parts as `FormData`,
+  `kdbx` then `keys`, and never sets `Content-Type` — only the browser knows the boundary it
+  wrote; `epoch` is the one being rotated from and `RotateResult.historyCleared` is `false`
+  when the snapshots under the retired key outlived the rotation. `openShared` returns the
+  vault's `keyEpoch` (`OpenedShared`), which is what the queue and `HistoryModal`'s restore
+  and conflict-discard writes claim; the empty-vault first upload claims it too.
+  Not built: the extension and KyAuth (3d).
 
 - `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
   appends the anchor and revokes the object URL a second later so Firefox and Safari do not

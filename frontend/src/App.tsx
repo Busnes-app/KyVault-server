@@ -1033,6 +1033,7 @@ export function App() {
             route={route}
             navigate={navigate}
             basePath={selectionBase(selected)}
+            keyEpoch={saveQueue.keyEpoch}
             readOnly={readOnly}
             header={<VaultSwitcher
               selected={selected}

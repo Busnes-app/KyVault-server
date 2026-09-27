@@ -8,11 +8,14 @@ export type SaveState =
 
 export const PERSONAL_BASE = "/api/vault";
 
-export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string, basePath = PERSONAL_BASE): Promise<number> {
+export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string, basePath = PERSONAL_BASE, keyEpoch?: number): Promise<number> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     "If-Match": `"${version}"`,
   };
+  // Every shared write proves which key epoch it sealed its ciphertext under; a personal
+  // vault has no epoch, and sending one there would be a header the server never reads.
+  if (basePath !== PERSONAL_BASE && keyEpoch !== undefined) headers["X-Shared-Key-Epoch"] = String(keyEpoch);
   if (keyRotated) headers["X-Vault-Key-Rotated"] = "1";
   if (passwordEnvelope) headers["X-Password-Envelope"] = passwordEnvelope;
   if (recoveryEnvelope) headers["X-Recovery-Envelope"] = recoveryEnvelope;
@@ -45,9 +48,14 @@ export class VaultSaveQueue {
 
   // passwordEnvelope is the one this vault was unlocked against: a different stored one
   // means another session rotated the key, and this copy must not overwrite the server's.
-  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string, private basePath = PERSONAL_BASE) {
+  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string, private basePath = PERSONAL_BASE, private epoch?: number) {
     this.state = { kind: "saved", version };
   }
+
+  // The epoch this queue's ciphertext is sealed under; undefined for the personal vault.
+  get keyEpoch(): number | undefined { return this.epoch; }
+  // A rotation this tab committed re-keyed the vault; later saves belong to the new epoch.
+  setKeyEpoch = (epoch: number): void => { this.epoch = epoch; };
 
   // Downloads, uploads and key rotation share the same mutable KDBX serializer.
   exclusive = <T>(run: (vault: KeePassVault) => Promise<T>): Promise<T> => {
@@ -116,7 +124,7 @@ export class VaultSaveQueue {
         const revision = this.revision;
         const binary = await this.exportBinary();
         if (this.controller.signal.aborted) return;
-        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal, false, undefined, this.basePath);
+        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal, false, undefined, this.basePath, this.epoch);
         if (this.controller.signal.aborted) return;
         this.savedRevision = revision;
         this.publish({ kind: this.savedRevision === this.revision ? "saved" : "saving", version });

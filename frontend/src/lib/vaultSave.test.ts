@@ -326,3 +326,56 @@ test("overwrite refuses when the key was rotated in another session", async (t) 
   assert.equal(state.kind === "error" && state.message, "The vault key was rotated in another session. Download this copy, then lock and unlock with your master password.");
   assert.equal(state.version, 2);
 });
+
+const SHARED_BASE = "/api/shared/sv_abcdefghijklmnopqrstuv";
+
+test("a shared upload carries the key epoch and a personal one does not", async (t) => {
+  browserCookie(t);
+  const seen: { url: string; epoch: string | null }[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options: RequestInit = {}) => {
+    seen.push({ url: String(url), epoch: new Headers(options.headers).get("X-Shared-Key-Epoch") });
+    return Response.json({ metadata: { version: 4 } });
+  });
+  await uploadVault(new ArrayBuffer(4), 3, undefined, undefined, undefined, false, undefined, SHARED_BASE, 2);
+  // A record written before rotation existed loads at epoch 0: the header still has to say so.
+  await uploadVault(new ArrayBuffer(4), 3, undefined, undefined, undefined, false, undefined, SHARED_BASE, 0);
+  await uploadVault(new ArrayBuffer(4), 3);
+  assert.deepEqual(seen.map((s) => s.epoch), ["2", "0", null]);
+  assert.deepEqual(seen.map((s) => s.url), [`${SHARED_BASE}/upload`, `${SHARED_BASE}/upload`, `${PERSONAL_BASE}/upload`]);
+});
+
+test("the queue sends the epoch it was built with, and the one a rotation moved it to", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(8));
+  const epochs: (string | null)[] = [];
+  let version = 8;
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, options: RequestInit = {}) => {
+    epochs.push(new Headers(options.headers).get("X-Shared-Key-Epoch"));
+    return Response.json({ metadata: { version: ++version } });
+  });
+  const queue = new VaultSaveQueue(vault, 8, undefined, SHARED_BASE, 1);
+  queue.changed();
+  await queue.save();
+  queue.setKeyEpoch(2);
+  assert.equal(queue.keyEpoch, 2);
+  queue.changed();
+  await queue.save();
+  assert.deepEqual(epochs, ["1", "2"]);
+  queue.discard();
+});
+
+test("a personal queue sends no epoch at all", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(6));
+  const epochs: (string | null)[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, options: RequestInit = {}) => {
+    epochs.push(new Headers(options.headers).get("X-Shared-Key-Epoch"));
+    return Response.json({ metadata: { version: 3 } });
+  });
+  const queue = new VaultSaveQueue(vault, 2);
+  queue.changed();
+  await queue.save();
+  assert.deepEqual(epochs, [null]);
+  assert.equal(queue.keyEpoch, undefined);
+  queue.discard();
+});

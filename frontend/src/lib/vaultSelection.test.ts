@@ -40,16 +40,18 @@ test("openShared opens an existing vault read-only for readers", async () => {
   assert.equal(opened.version, 3);
   assert.equal(opened.readOnly, true);
   assert.deepEqual(calls, [`/api/shared/${ID}`]);
+  assert.equal(opened.keyEpoch, 1);
 });
 
 test("openShared creates and uploads an empty vault at version 0", async () => {
-  let uploaded: [number, string] | null = null;
+  let uploaded: [number, string, number] | null = null;
   const opened = await openShared(row(), new Uint8Array(32), deps({
     fetchMetadata: async () => ({ version: 0 }),
     createVault: async () => ({ ...fakeVault, exportBinary: async () => new ArrayBuffer(4) }),
-    upload: async (_b, version, base) => { uploaded = [version, base]; return 1; },
+    upload: async (_b, version, base, keyEpoch) => { uploaded = [version, base, keyEpoch]; return 1; },
   }));
-  assert.deepEqual(uploaded, [0, `/api/shared/${ID}`]);
+  assert.deepEqual(uploaded, [0, `/api/shared/${ID}`, 1], "the first upload of an empty shared vault claims the vault's epoch too");
+  assert.equal(opened.keyEpoch, 1);
   assert.equal(opened.version, 1);
   assert.equal(opened.readOnly, false);
 });

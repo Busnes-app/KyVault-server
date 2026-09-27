@@ -1,7 +1,7 @@
 import { ConflictComparison } from "./ConflictComparison";
 import { KeePassVault, isWrongVaultKey } from "../lib/kdbx";
 import { useState, useEffect, useRef } from "react";
-import { HttpError, getBinary, getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
+import { HttpError, getBinary, getJSON, requestJSON, toErrorMessage } from "../lib/api";
 import { diffVaults, type DiffRow, type VaultDiff } from "../lib/vaultDiff";
 import { PERSONAL_BASE } from "../lib/vaultSave";
 import { RotateCcw, AlertTriangle, Trash2, CheckCircle2, Eye, EyeOff } from "lucide-react";
@@ -48,12 +48,17 @@ type Props = {
   onRestored: () => void;
   onNotice: (text: string) => void;
   basePath?: string;
+  // The shared vault's key epoch; every shared write has to claim it.
+  keyEpoch?: number;
   // Readers see history and conflicts but cannot roll back or discard.
   readOnly?: boolean;
 };
 
-export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback, basePath = PERSONAL_BASE, readOnly = false }: Props) {
+export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback, basePath = PERSONAL_BASE, keyEpoch, readOnly = false }: Props) {
   const dialogs = useDialogs();
+  // A personal write carries no epoch; a shared one always does.
+  const writeHeaders = (): Record<string, string> | undefined =>
+    basePath !== PERSONAL_BASE && keyEpoch !== undefined ? { "X-Shared-Key-Epoch": String(keyEpoch) } : undefined;
   const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -150,7 +155,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await postJSON(`${basePath}/history/${id}/restore`, {});
+      await requestJSON(`${basePath}/history/${id}/restore`, { method: "POST", headers: writeHeaders(), body: "{}" });
       onNotice("Vault restored to the selected version.");
       onRestored();
     } catch (err) {
@@ -177,7 +182,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await deleteJSON(`${basePath}/conflicts/${id}`);
+      await requestJSON(`${basePath}/conflicts/${id}`, { method: "DELETE", headers: writeHeaders() });
       setConflicts((prev) => prev.filter((c) => c.id !== id));
       setMessage("Conflict upload removed.");
     } catch (err) {

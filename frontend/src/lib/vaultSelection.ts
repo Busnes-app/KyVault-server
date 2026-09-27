@@ -28,7 +28,7 @@ export type OpenDeps = {
   fetchKdbx: (base: string, signal?: AbortSignal) => Promise<ArrayBuffer>;
   openVault: (bytes: ArrayBuffer, key: Uint8Array) => Promise<KeePassVault>;
   createVault: (key: Uint8Array, name: string) => Promise<KeePassVault>;
-  upload: (binary: ArrayBuffer, version: number, base: string) => Promise<number>;
+  upload: (binary: ArrayBuffer, version: number, base: string, keyEpoch: number) => Promise<number>;
 };
 
 export const defaultOpenDeps: OpenDeps = {
@@ -37,10 +37,11 @@ export const defaultOpenDeps: OpenDeps = {
   fetchKdbx: (base, signal) => getBinary(`${base}/kdbx`, signal ?? new AbortController().signal),
   openVault: (bytes, key) => KeePassVault.open(bytes, key),
   createVault: (key, name) => KeePassVault.createNew(key, name),
-  upload: (binary, version, base) => uploadVault(binary, version, undefined, undefined, undefined, false, undefined, base),
+  upload: (binary, version, base, keyEpoch) => uploadVault(binary, version, undefined, undefined, undefined, false, undefined, base, keyEpoch),
 };
 
-export type OpenedShared = { vault: KeePassVault; key: Uint8Array; version: number; readOnly: boolean };
+// keyEpoch is the vault's, not the row's: it is what every later write must claim.
+export type OpenedShared = { vault: KeePassVault; key: Uint8Array; version: number; readOnly: boolean; keyEpoch: number };
 
 export async function openShared(row: SharedVaultSummary, seed: Uint8Array, deps: OpenDeps = defaultOpenDeps): Promise<OpenedShared> {
   let key: Uint8Array;
@@ -55,9 +56,9 @@ export async function openShared(row: SharedVaultSummary, seed: Uint8Array, deps
   if (!meta.version) {
     if (readOnly) throw new Error("This vault is empty; an owner or editor must add the first entry.");
     const vault = await deps.createVault(key, row.name);
-    const version = await deps.upload(await vault.exportBinary(), 0, base);
-    return { vault, key, version, readOnly };
+    const version = await deps.upload(await vault.exportBinary(), 0, base, row.keyEpoch);
+    return { vault, key, version, readOnly, keyEpoch: row.keyEpoch };
   }
   const vault = await deps.openVault(await deps.fetchKdbx(base), key);
-  return { vault, key, version: meta.version, readOnly };
+  return { vault, key, version: meta.version, readOnly, keyEpoch: row.keyEpoch };
 }

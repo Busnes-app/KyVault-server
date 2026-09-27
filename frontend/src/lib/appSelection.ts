@@ -43,7 +43,7 @@ export async function switchTo(target: Selected, row: SharedVaultSummary | undef
       if (!row) throw new Error("That shared vault is no longer available.");
       const o = await deps.openShared(row);
       if (deps.generation() !== gen) { o.key.fill(0); return false; }
-      deps.apply({ selected: target, vault: o.vault, key: o.key, queue: new VaultSaveQueue(o.vault, o.version, undefined, selectionBase(target)), readOnly: o.readOnly });
+      deps.apply({ selected: target, vault: o.vault, key: o.key, queue: new VaultSaveQueue(o.vault, o.version, undefined, selectionBase(target), o.keyEpoch), readOnly: o.readOnly });
       return true;
     }
     const p = await deps.openPersonal();

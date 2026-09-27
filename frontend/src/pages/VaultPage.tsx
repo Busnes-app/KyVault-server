@@ -62,12 +62,13 @@ type Props = {
   route: Route;
   navigate: (next: Route) => void;
   basePath?: string;
+  keyEpoch?: number;
   // Readers: every mutating handler refuses, not only its button.
   readOnly?: boolean;
   header?: ReactNode;
 };
 
-export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate, basePath = PERSONAL_BASE, readOnly = false, header }: Props) {
+export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate, basePath = PERSONAL_BASE, keyEpoch, readOnly = false, header }: Props) {
   const dialogs = useDialogs();
   const narrow = useMediaQuery(NARROW);
   const [pane, setPane] = useState<"folders" | "list" | "detail">(initialDraft ? "detail" : "list");
@@ -1356,6 +1357,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           allowRollback={!readOnly && saveState.kind === "saved" && !draftDirty}
           readOnly={readOnly}
           basePath={basePath}
+          keyEpoch={keyEpoch}
           snapshot={{ vault, vaultKey }}
           recovery={readOnly ? undefined : { vault, vaultKey, onRecovered: (uuid) => {
             onChanged();

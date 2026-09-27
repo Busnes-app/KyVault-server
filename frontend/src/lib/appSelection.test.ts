@@ -13,7 +13,7 @@ function deps(over: Partial<SwitchDeps> = {}) {
   const d: SwitchDeps = {
     confirmDiscard: async () => true,
     closeQueue: () => { log.push("close"); },
-    openShared: async () => { log.push("openShared"); return { vault: vaultB, key: new Uint8Array(32), version: 3, readOnly: false }; },
+    openShared: async () => { log.push("openShared"); return { vault: vaultB, key: new Uint8Array(32), version: 3, readOnly: false, keyEpoch: 1 }; },
     openPersonal: async () => { log.push("openPersonal"); return { vault: vaultA, key: new Uint8Array(32), version: 9 }; },
     apply: (next) => { log.push(`apply:${next.selected.kind}:${(next.vault as any).name}:${next.queue.getSnapshot().version}`); },
     notify: (t) => { log.push(`notify:${t}`); },
@@ -38,7 +38,7 @@ test("declining the discard confirm aborts before anything closes", async () => 
 test("a lock during the open is not applied", async () => {
   const h = deps();
   const key = new Uint8Array(32).fill(7);
-  h.d.openShared = async () => { h.bump(); return { vault: vaultB, key, version: 3, readOnly: false }; };
+  h.d.openShared = async () => { h.bump(); return { vault: vaultB, key, version: 3, readOnly: false, keyEpoch: 1 }; };
   assert.equal(await switchTo({ kind: "shared", id: ID }, row, h.d), false);
   assert.ok(!h.log.some((l) => l.startsWith("apply")));
   assert.ok(key.every((b) => b === 0), "a shared key opened for a stale generation is zeroed");
