@@ -98,9 +98,13 @@ yourself adding one, the design has been misread.
 - Shared vaults (`/api/shared/*`, `withAuth`): any `{id}` route answers 404 unless the
   caller has a row, and `GET /api/shared/{id}` is 404 to an invited row too. Rename, delete,
   invite, member update and removing someone else need an active owner (403); anyone removes
-  their own row (leave). Accept and decline need an invited row (409 otherwise). Data reads
+  their own row (leave), and a `stale` member may re-seal their own row
+  (`PUT …/members/{self}`, `sealedKey` + their current `keyFingerprint`, no `role`, fresh
+  session via `requireFresh`). Accept and decline need an invited row (409 otherwise). Data reads
   (metadata, kdbx, history, conflicts) admit active and stale rows; writes (upload, history
-  restore, conflict discard) admit active owners and editors; other rows get 403. Every
+  restore, conflict discard) admit active owners and editors; other rows get 403. The route
+  checks early, and the store write runs inside `shared.Store.WithWriter`, which re-checks
+  under the membership lock (removed 404, demoted 403, vault unchanged). Every
   state-changing shared and admin-shared route checks `validCSRF` (bearer tokens pass).
   Owner delete (`requireFresh`) and admin delete, admin member removal and
   `PUT /api/admin/shared/settings` (`withFreshAdmin`) need a fresh session; every
@@ -312,14 +316,18 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `shared.rolled_back`, `shared.conflict_downloaded` renamed) and details lead with the
   vault key. Details carry ids, names and roles, never a sealed key. Create checks
   `CONFIG_DIR/shared.json` (`createRestrictedToAdmins`) and that the key fingerprint is the
-  caller's current one; invite and reseal check the target's. Hooks: `userActiveChanged`
-  (admin deactivate/reactivate, SCIM, sync webhook) and `userKeyReplaced`
+  caller's current one; invite and reseal check the target's and record the caller's as
+  `sealedByFingerprint`, which `GET /api/shared` returns as stored. A corrupt record
+  (`shared.ErrCorrupt`) is a bare `internal error` 500 with the detail logged, and is
+  skipped by the list. Hooks: `userActiveChanged` (admin deactivate/reactivate, SCIM, sync
+  webhook; called on every write of the active flag, changed or not) and `userKeyReplaced`
   (`handleUserKeyPut` on replace) audit one row per touched vault and `shared.hook_failed`
   on error; the offline `kyvault-server deactivate` does not run it. Admin list flags
   `ownerless`; an ownerless vault takes no invites or accepts and only an admin deletes it.
-  Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut`: lock order `shared.mu` then
-  `vault.mu`, never the reverse. `shared_test.go` covers routes, CSRF, roles, hooks and a
-  mid-request owner removal. Not built (3b/3c/3d): no UI, no shared key rotation, extension
+  Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut` (the mover `NewStore` gets):
+  lock order `shared.mu` then `vault.mu`, never the reverse; `writeTarget` keeps the same
+  order for shared data writes. `shared_test.go` covers routes, CSRF, roles, hooks,
+  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3b/3c/3d): no UI, no shared key rotation, extension
   and KyAuth unaware; a removed member's copy of the key is only invalidated by the 3c
   rotation.
 

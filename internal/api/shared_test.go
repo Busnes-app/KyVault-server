@@ -883,3 +883,206 @@ func TestSharedHookFailureIsAudited(t *testing.T) {
 	}
 	t.Fatal("no shared.hook_failed audit row")
 }
+
+// A sole owner who replaces their user key goes stale and would leave the vault with no
+// one able to re-seal it; they re-seal their own row from a fresh session and own it again.
+func TestSharedSoleOwnerSelfReseal(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	carol, _ := signedInUser(t, srv, "carol", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	carolFP := publishKey(t, srv, carol, 3)
+
+	meta, err := srv.vault.GetMetadata(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, putUserKey(srv.Routes(), aliceC, `"`+strconv.FormatInt(meta.Version, 10)+`"`, userKeyBody(t, 9)), http.StatusOK, "replace alice's key")
+	if m := memberState(t, srv, id, alice.ID); m.State != shared.StateStale {
+		t.Fatalf("alice after key replace: %s", m.State)
+	}
+	newFP := userkey.Fingerprint(bytes.Repeat([]byte{9}, userkey.PublicKeyBytes))
+	path := "/api/shared/" + id + "/members/" + alice.ID
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", aliceC, map[string]any{"userId": carol.ID, "role": "reader", "sealedKey": sealedKeyFor(0xC3), "keyFingerprint": carolFP}), http.StatusForbidden, "stale owner invites")
+	// Nobody else can re-seal her: bob is not an owner.
+	expectCode(t, do(t, srv, http.MethodPut, path, bobC, map[string]any{"sealedKey": sealedKeyFor(0xA2), "keyFingerprint": newFP}), http.StatusForbidden, "editor reseals the owner")
+	expectCode(t, do(t, srv, http.MethodPut, path, aliceC, map[string]any{"role": "owner", "sealedKey": sealedKeyFor(0xA2), "keyFingerprint": newFP}), http.StatusBadRequest, "self-reseal with a role")
+	expectCode(t, do(t, srv, http.MethodPut, path, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xA2), "keyFingerprint": aliceFP}), http.StatusBadRequest, "self-reseal to the retired key")
+	expectCode(t, do(t, srv, http.MethodPut, path, staleSession(t, srv, alice), map[string]any{"sealedKey": sealedKeyFor(0xA2), "keyFingerprint": newFP}), http.StatusForbidden, "self-reseal from a stale session")
+	if m := memberState(t, srv, id, alice.ID); m.State != shared.StateStale {
+		t.Fatalf("refused self-reseals changed alice: %s", m.State)
+	}
+	expectCode(t, do(t, srv, http.MethodPut, path, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xA2), "keyFingerprint": newFP}), http.StatusOK, "self-reseal")
+	m := memberState(t, srv, id, alice.ID)
+	if m.State != shared.StateActive || m.KeyFingerprint != newFP || m.SealedByFingerprint != newFP || m.SealedKey != sealedKeyFor(0xA2) {
+		t.Fatalf("alice after self-reseal: %+v", m)
+	}
+	invite(t, srv, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
+	assertAudited(t, srv, "shared.member_stale", "shared.member_resealed")
+}
+
+// sealedByFingerprint is what the sealer's key was when they sealed, not what it is now.
+func TestSharedSealedByFingerprintIsSealTime(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	publishKey(t, srv, alice, 7) // alice's current key changes after she sealed bob's copy
+	var rows []struct {
+		MyKey struct {
+			SealedByFingerprint string `json:"sealedByFingerprint"`
+		} `json:"myKey"`
+		InvitedBy struct {
+			Fingerprint string `json:"fingerprint"`
+		} `json:"invitedBy"`
+	}
+	rec := do(t, srv, http.MethodGet, "/api/shared", bobC, nil)
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil || len(rows) != 1 {
+		t.Fatalf("list %s: %v", rec.Body.String(), err)
+	}
+	if rows[0].MyKey.SealedByFingerprint != aliceFP || rows[0].InvitedBy.Fingerprint != aliceFP {
+		t.Fatalf("sealer fingerprint = %+v, want %s", rows[0], aliceFP)
+	}
+}
+
+// Write authority is re-checked under the membership lock at the write: an editor removed
+// or demoted after the route's early check is refused and the vault does not move.
+func TestSharedWriterRemovedMidRequestIsRefused(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	bobFP := publishKey(t, srv, bob, 2)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", nil), http.StatusOK, "upload v1")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "v2", nil), http.StatusOK, "upload v2")
+	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", bobC, nil))
+	if len(hist) == 0 {
+		t.Fatal("no history")
+	}
+	restore := "/api/shared/" + id + "/history/" + hist[0] + "/restore"
+	race := func(fn func() error) {
+		srv.sharedResolved = func() {
+			srv.sharedResolved = nil
+			if err := fn(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	rejoin := func() {
+		if err := srv.shared.Invite(id, bob.ID, shared.RoleEditor, sealedKeyFor(0xB2), bobFP, alice.ID, "", t0); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.shared.Accept(id, bob.ID, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	demote := func() error { return srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleReader) }
+	remove := func() error { return srv.shared.Remove(id, alice.ID, bob.ID) }
+
+	race(demote)
+	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", nil), http.StatusForbidden, "demoted upload")
+	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor); err != nil {
+		t.Fatal(err)
+	}
+	race(demote)
+	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil), http.StatusForbidden, "demoted restore")
+	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor); err != nil {
+		t.Fatal(err)
+	}
+	race(remove)
+	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", nil), http.StatusNotFound, "removed upload")
+	rejoin()
+	race(remove)
+	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil), http.StatusNotFound, "removed restore")
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
+		t.Fatalf("a refused write moved the vault to v%d", meta.Version)
+	}
+	rec := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil)
+	if rec.Body.String() != "v2" {
+		t.Fatalf("vault body = %q", rec.Body.String())
+	}
+}
+
+// A corrupt record neither leaks its ids nor blocks anyone else.
+func TestSharedCorruptRecordIsContained(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	carol, carolC := signedInUser(t, srv, "carol", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bad := createShared(t, srv, aliceC, "Broken", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, bad, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	carolFP := publishKey(t, srv, carol, 3)
+	good := createShared(t, srv, carolC, "Fine", sealedKeyFor(0xC3), carolFP)
+
+	path := filepath.Join(srv.dataDir, "shared", bad+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := strings.Replace(string(data), `"role": "editor"`, `"role": "janitor"`, 1)
+	if corrupt == string(data) {
+		t.Fatal("corruption did not match the record")
+	}
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(t, srv, http.MethodGet, "/api/shared", carolC, nil)
+	expectCode(t, rec, http.StatusOK, "unrelated list")
+	for _, leak := range []string{bad, alice.ID, bob.ID} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Fatalf("unrelated list leaks %s: %s", leak, rec.Body.String())
+		}
+	}
+	if ids := decodeIDs(t, rec); len(ids) != 1 || ids[0] != good {
+		t.Fatalf("carol's list = %v", ids)
+	}
+	rec = do(t, srv, http.MethodGet, "/api/shared/"+bad, aliceC, nil)
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != "internal error\n" {
+		t.Fatalf("member GET corrupt = %d %q", rec.Code, rec.Body.String())
+	}
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared", bobC, nil), http.StatusOK, "member list")
+	createShared(t, srv, bobC, "Bob's", sealedKeyFor(0xB3), publishKey(t, srv, bob, 2))
+}
+
+// The active-flag hook runs on every directory write but audits only what it changed.
+func TestSharedHookIsQuietWhenNothingChanges(t *testing.T) {
+	srv, client := scimTestClient(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	count := func() int {
+		entries, err := srv.audit.List(500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, e := range entries {
+			if strings.HasPrefix(e.Action, "shared.member_s") || e.Action == "shared.member_restored" || e.Action == "shared.hook_failed" {
+				n++
+			}
+		}
+		return n
+	}
+	before := count()
+	if _, err := client.ReplaceUser(context.Background(), bob.ID, scim.User{Schemas: []string{scim.UserSchema}, ExternalID: bob.SSOSub, UserName: "bob", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if after := count(); after != before {
+		t.Fatalf("active→active SCIM PUT wrote %d hook audit rows", after-before)
+	}
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive {
+		t.Fatalf("bob = %s", m.State)
+	}
+}

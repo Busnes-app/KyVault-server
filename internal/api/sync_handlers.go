@@ -162,9 +162,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.revokeDirectorySessions(existing.ID)
-		if existing.Active {
-			s.userActiveChanged(r, existing.ID, false)
-		}
+		s.userActiveChanged(r, existing.ID, false)
 		s.record(r, "sync.user_deleted", existing.ID, "", clientIP(r), "deactivated "+existing.Username+" on KySignOn deletion; vault retained")
 	}
 
@@ -180,8 +178,6 @@ func (s *Server) applySCIMUpdate(r *http.Request, existing users.User, u kysync.
 	if !u.Active {
 		s.revokeDirectorySessions(existing.ID)
 	}
-	if existing.Active != u.Active {
-		s.userActiveChanged(r, existing.ID, u.Active)
-	}
+	s.userActiveChanged(r, existing.ID, u.Active)
 	return nil
 }

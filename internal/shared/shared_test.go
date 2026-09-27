@@ -18,7 +18,7 @@ func fp(n byte) string { return string([]byte{'A' + n, 'B', 'C', 'D', ' ', '1', 
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := NewStore(filepath.Join(t.TempDir(), "shared"), 90)
+	s, err := NewStore(filepath.Join(t.TempDir(), "shared"), 90, func(string, string) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestValidation(t *testing.T) {
 	if !ValidID("sv_"+"abcdefghijklmnopqrstuv") || ValidID("sv_../x") || ValidID("u-1") || ValidID("") {
 		t.Fatal("ValidID")
 	}
-	if ValidName("") == nil || ValidName("a\x00b") == nil || ValidName(strings.Repeat("a", 65)) == nil || ValidName("Finance team") != nil {
+	if ValidName("") == nil || ValidName("a\x00b") == nil || ValidName("a\u202eb") == nil || ValidName("a\u200bb") == nil || ValidName(strings.Repeat("a", 65)) == nil || ValidName("Finance team") != nil {
 		t.Fatal("ValidName")
 	}
 	if ValidName(strings.Repeat("a", 64)) != nil {
@@ -96,13 +96,13 @@ func TestMembershipLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(2), "u-1", t0); err != nil {
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(2), "u-1", "SFP", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", t0); !errors.Is(err, ErrAlreadyMember) {
+	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", "SFP", t0); !errors.Is(err, ErrAlreadyMember) {
 		t.Fatalf("double invite: %v", err)
 	}
-	if err := s.Invite(v.ID, "u-3", Role("god"), sealed(), fp(3), "u-1", t0); !errors.Is(err, ErrShape) {
+	if err := s.Invite(v.ID, "u-3", Role("god"), sealed(), fp(3), "u-1", "SFP", t0); !errors.Is(err, ErrShape) {
 		t.Fatalf("bad role: %v", err)
 	}
 	got := mustGet(t, s, v.ID)
@@ -152,11 +152,11 @@ func TestMemberCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 1; i < MaxMembers; i++ {
-		if err := s.Invite(v.ID, "u-"+string(rune('a'+i%26))+string(rune('a'+i/26)), RoleReader, sealed(), fp(1), "u-0", t0); err != nil {
+		if err := s.Invite(v.ID, "u-"+string(rune('a'+i%26))+string(rune('a'+i/26)), RoleReader, sealed(), fp(1), "u-0", "SFP", t0); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.Invite(v.ID, "u-last", RoleReader, sealed(), fp(1), "u-0", t0); !errors.Is(err, ErrMemberCap) {
+	if err := s.Invite(v.ID, "u-last", RoleReader, sealed(), fp(1), "u-0", "SFP", t0); !errors.Is(err, ErrMemberCap) {
 		t.Fatalf("member cap: %v", err)
 	}
 }
@@ -175,7 +175,7 @@ func TestConcurrentInvitesYieldOneRow(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", t0)
+			err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", "SFP", t0)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -203,14 +203,14 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(2), "u-1", t0); err != nil {
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(2), "u-1", "SFP", t0); err != nil {
 		t.Fatal(err)
 	}
 	w, err := s.Create("b", "u-1", sealed(), fp(1), t0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Invite(w.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", t0); err != nil {
+	if err := s.Invite(w.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", "SFP", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Accept(w.ID, "u-2", t0); err != nil {
@@ -248,7 +248,7 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 	if gw.Members["u-2"].State != StateStale {
 		t.Fatalf("stale row: %+v", gw.Members["u-2"])
 	}
-	if err := s.Reseal(w.ID, "u-2", sealed(), fp(9), "u-1"); err != nil {
+	if err := s.Reseal(w.ID, "u-2", sealed(), fp(9), "u-1", "SFP"); err != nil {
 		t.Fatal(err)
 	}
 	gw = mustGet(t, s, w.ID)
@@ -256,7 +256,7 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 		t.Fatalf("resealed row: %+v", gw.Members["u-2"])
 	}
 	// Reseal of an invited row keeps it invited.
-	if err := s.Reseal(v.ID, "u-2", sealed(), fp(9), "u-1"); err != nil {
+	if err := s.Reseal(v.ID, "u-2", sealed(), fp(9), "u-1", "SFP"); err != nil {
 		t.Fatal(err)
 	}
 	gv = mustGet(t, s, v.ID)
@@ -281,13 +281,13 @@ func TestResealWhileSuspended(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(2), "u-1", t0); err != nil {
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(2), "u-1", "SFP", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Accept(v.ID, "u-2", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Invite(v.ID, "u-3", RoleReader, sealed(), fp(3), "u-1", t0); err != nil {
+	if err := s.Invite(v.ID, "u-3", RoleReader, sealed(), fp(3), "u-1", "SFP", t0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SetSuspended("u-2", true); err != nil {
@@ -297,10 +297,10 @@ func TestResealWhileSuspended(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Reseal(v.ID, "u-2", sealed(), fp(9), "u-1"); err != nil {
+	if err := s.Reseal(v.ID, "u-2", sealed(), fp(9), "u-1", "SFP"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Reseal(v.ID, "u-3", sealed(), fp(9), "u-1"); err != nil {
+	if err := s.Reseal(v.ID, "u-3", sealed(), fp(9), "u-1", "SFP"); err != nil {
 		t.Fatal(err)
 	}
 	got := mustGet(t, s, v.ID)
@@ -329,7 +329,9 @@ func TestResealWhileSuspended(t *testing.T) {
 
 func TestDeleteMovesAndPrunes(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "shared")
-	s, err := NewStore(dir, 1)
+	vaults := t.TempDir()
+	moved := ""
+	s, err := NewStore(dir, 1, func(id, dst string) error { moved = dst; return os.Rename(filepath.Join(vaults, id), dst) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,16 +339,14 @@ func TestDeleteMovesAndPrunes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vaultDir := filepath.Join(t.TempDir(), "vaults", "shared", v.ID)
+	vaultDir := filepath.Join(vaults, v.ID)
 	if err := os.MkdirAll(vaultDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(vaultDir, "vault.kdbx"), []byte("ct"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	moved := ""
-	err = s.Delete(v.ID, "", func(dst string) error { moved = dst; return os.Rename(vaultDir, dst) }, t0)
-	if err != nil {
+	if err := s.Delete(v.ID, "", t0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(v.ID); !errors.Is(err, ErrNotFound) {
@@ -423,7 +423,7 @@ func TestUnknownEnumOnDiskIsRejected(t *testing.T) {
 	if err := os.WriteFile(s.path(v.ID), []byte(badRole), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("unknown role: %v", err)
 	}
 
@@ -434,7 +434,7 @@ func TestUnknownEnumOnDiskIsRejected(t *testing.T) {
 	if err := os.WriteFile(s.path(v.ID), []byte(badState), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("unknown state: %v", err)
 	}
 }
@@ -462,7 +462,7 @@ func TestSuspendedFromOnDiskIsValidated(t *testing.T) {
 	if err := os.WriteFile(s.path(v.ID), []byte(emptyFrom), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("empty suspendedFrom: %v", err)
 	}
 
@@ -473,7 +473,7 @@ func TestSuspendedFromOnDiskIsValidated(t *testing.T) {
 	if err := os.WriteFile(s.path(v.ID), []byte(badFrom), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("bad suspendedFrom: %v", err)
 	}
 }
@@ -499,14 +499,13 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"u-2", "u-3", "u-4"} {
-		if err := s.Invite(v.ID, id, RoleOwner, sealed(), fp(2), "u-1", t0); err != nil {
+		if err := s.Invite(v.ID, id, RoleOwner, sealed(), fp(2), "u-1", "SFP", t0); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.Accept(v.ID, id, t0); err != nil {
 			t.Fatal(err)
 		}
 	}
-	noop := func(string) error { return nil }
 
 	// Removed actor: every owner-only write is ErrNotMember.
 	if err := s.Remove(v.ID, "u-1", "u-2"); err != nil {
@@ -514,11 +513,11 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 	}
 	for name, err := range map[string]error{
 		"rename": s.Rename(v.ID, "u-2", "mine"),
-		"invite": s.Invite(v.ID, "u-2", RoleOwner, sealed(), fp(2), "u-2", t0),
-		"reseal": s.Reseal(v.ID, "u-3", sealed(), fp(3), "u-2"),
+		"invite": s.Invite(v.ID, "u-2", RoleOwner, sealed(), fp(2), "u-2", "SFP", t0),
+		"reseal": s.Reseal(v.ID, "u-3", sealed(), fp(3), "u-2", "SFP"),
 		"role":   s.SetRole(v.ID, "u-2", "u-3", RoleReader),
 		"remove": s.Remove(v.ID, "u-2", "u-3"),
-		"delete": s.Delete(v.ID, "u-2", noop, t0),
+		"delete": s.Delete(v.ID, "u-2", t0),
 	} {
 		if !errors.Is(err, ErrNotMember) {
 			t.Fatalf("removed actor %s: %v", name, err)
@@ -531,11 +530,11 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 	}
 	for name, err := range map[string]error{
 		"rename": s.Rename(v.ID, "u-3", "mine"),
-		"invite": s.Invite(v.ID, "u-9", RoleReader, sealed(), fp(9), "u-3", t0),
-		"reseal": s.Reseal(v.ID, "u-4", sealed(), fp(4), "u-3"),
+		"invite": s.Invite(v.ID, "u-9", RoleReader, sealed(), fp(9), "u-3", "SFP", t0),
+		"reseal": s.Reseal(v.ID, "u-4", sealed(), fp(4), "u-3", "SFP"),
 		"role":   s.SetRole(v.ID, "u-3", "u-3", RoleOwner),
 		"remove": s.Remove(v.ID, "u-3", "u-4"),
-		"delete": s.Delete(v.ID, "u-3", noop, t0),
+		"delete": s.Delete(v.ID, "u-3", t0),
 	} {
 		if !errors.Is(err, ErrForbidden) {
 			t.Fatalf("demoted actor %s: %v", name, err)
@@ -559,7 +558,7 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 	if err := s.Rename(v.ID, "", "renamed"); err != nil {
 		t.Fatalf("admin rename: %v", err)
 	}
-	if err := s.Delete(v.ID, "", noop, t0); err != nil {
+	if err := s.Delete(v.ID, "", t0); err != nil {
 		t.Fatalf("admin delete: %v", err)
 	}
 }
@@ -570,7 +569,7 @@ func TestAcceptRefusesOwnerlessVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", t0); err != nil {
+	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", "SFP", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Remove(v.ID, "", "u-1"); err != nil {
@@ -578,5 +577,168 @@ func TestAcceptRefusesOwnerlessVault(t *testing.T) {
 	}
 	if err := s.Accept(v.ID, "u-2", t0); !errors.Is(err, ErrState) {
 		t.Fatalf("accept ownerless: %v", err)
+	}
+}
+
+// A sole owner who replaced their user key is stale; they may re-seal their own row, which
+// brings the vault back to an active owner. Anyone else still needs an active owner.
+func TestStaleSelfReseal(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("solo", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(2), "u-1", fp(1), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkStale("u-1", fp(8)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-3", RoleReader, sealed(), fp(3), "u-1", fp(8), t0); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("stale owner invites: %v", err)
+	}
+	// Another member re-sealing the stale owner is not an owner action they may take.
+	if err := s.Reseal(v.ID, "u-1", sealed(), fp(8), "u-2", fp(2)); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("editor reseals the stale owner: %v", err)
+	}
+	// A non-stale member cannot re-seal their own row without being an active owner.
+	if err := s.Reseal(v.ID, "u-2", sealed(), fp(2), "u-2", fp(2)); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("active editor self-reseal: %v", err)
+	}
+	if err := s.Reseal(v.ID, "u-1", sealed(), fp(8), "u-1", fp(8)); err != nil {
+		t.Fatalf("stale self-reseal: %v", err)
+	}
+	m := mustGet(t, s, v.ID).Members["u-1"]
+	if m.State != StateActive || m.KeyFingerprint != fp(8) || m.SealedBy != "u-1" || m.SealedByFingerprint != fp(8) {
+		t.Fatalf("after self-reseal: %+v", m)
+	}
+	if err := s.Invite(v.ID, "u-3", RoleReader, sealed(), fp(3), "u-1", fp(8), t0); err != nil {
+		t.Fatalf("invite after self-reseal: %v", err)
+	}
+	if got := mustGet(t, s, v.ID).Members["u-3"].SealedByFingerprint; got != fp(8) {
+		t.Fatalf("invite sealedByFingerprint = %q", got)
+	}
+}
+
+// WithWriter re-checks the row under the lock and does not run fn for anyone but an
+// active owner or editor.
+func TestWithWriter(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("w", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", fp(1), t0); err != nil {
+		t.Fatal(err)
+	}
+	ran := 0
+	fn := func() error { ran++; return nil }
+	if err := s.WithWriter(v.ID, "u-1", fn); err != nil || ran != 1 {
+		t.Fatalf("owner: %v ran=%d", err, ran)
+	}
+	if err := s.WithWriter(v.ID, "u-2", fn); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("invited reader: %v", err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithWriter(v.ID, "u-2", fn); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("active reader: %v", err)
+	}
+	if err := s.WithWriter(v.ID, "u-9", fn); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("stranger: %v", err)
+	}
+	if ran != 1 {
+		t.Fatalf("fn ran for a refused caller: %d", ran)
+	}
+	sentinel := errors.New("vault write failed")
+	if err := s.WithWriter(v.ID, "u-1", func() error { return sentinel }); !errors.Is(err, sentinel) {
+		t.Fatalf("fn error not returned: %v", err)
+	}
+}
+
+// A corrupt record is ErrCorrupt to Get and skipped by every bulk path.
+func TestCorruptRecordIsSkipped(t *testing.T) {
+	s := newStore(t)
+	bad, err := s.Create("bad", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good, err := s.Create("good", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path(bad.ID), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(bad.ID); !errors.Is(err, ErrCorrupt) || errors.Is(err, ErrShape) {
+		t.Fatalf("get corrupt: %v", err)
+	}
+	all, err := s.List()
+	if err != nil || len(all) != 1 || all[0].ID != good.ID {
+		t.Fatalf("list: %+v %v", all, err)
+	}
+	if n, err := s.CountOwned("u-1"); err != nil || n != 1 {
+		t.Fatalf("count owned: %d %v", n, err)
+	}
+	if ids, err := s.SetSuspended("u-1", true); err != nil || len(ids) != 1 || ids[0] != good.ID {
+		t.Fatalf("suspend: %v %v", ids, err)
+	}
+	if _, err := s.Create("another", "u-2", sealed(), fp(2), t0); err != nil {
+		t.Fatalf("create beside a corrupt record: %v", err)
+	}
+}
+
+// Delete interrupted after the live record is gone: NewStore finishes the move.
+func TestNewStoreFinishesInterruptedDelete(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shared")
+	vaults := t.TempDir()
+	mover := func(id, dst string) error {
+		src := filepath.Join(vaults, id)
+		if _, err := os.Lstat(src); os.IsNotExist(err) {
+			return nil
+		}
+		return os.Rename(src, dst)
+	}
+	failing := func(string, string) error { return errors.New("crash") }
+	s, err := NewStore(dir, 90, failing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Create("half", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(vaults, v.ID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vaults, v.ID, "vault.kdbx"), []byte("ct"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The move fails after the live record is removed: data left behind, record gone.
+	if err := s.Delete(v.ID, "u-1", t0); err == nil {
+		t.Fatal("delete with a failing mover succeeded")
+	}
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("live record after interrupted delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(vaults, v.ID)); err != nil {
+		t.Fatalf("vault dir should still be live: %v", err)
+	}
+	if _, err := NewStore(dir, 90, mover); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(vaults, v.ID)); !os.IsNotExist(err) {
+		t.Fatalf("live vault dir survives reconcile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "deleted", v.ID, "vault", "vault.kdbx")); err != nil {
+		t.Fatalf("moved vault: %v", err)
+	}
+	// Idempotent: a second start with nothing left to move is fine.
+	if _, err := NewStore(dir, 90, mover); err != nil {
+		t.Fatal(err)
 	}
 }

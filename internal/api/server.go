@@ -142,7 +142,9 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("init vault store: %w", err)
 	}
 
-	shStore, err := shared.NewStore(cfg.DataDir+"/shared", cfg.RetentionDays)
+	shStore, err := shared.NewStore(cfg.DataDir+"/shared", cfg.RetentionDays, func(id, dst string) error {
+		return vStore.MoveOut(shared.StoreKey(id), dst)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("init shared store: %w", err)
 	}

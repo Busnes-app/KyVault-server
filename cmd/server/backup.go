@@ -71,7 +71,7 @@ func openOfflineBackup() (*offlineBackup, error) {
 	if err != nil {
 		return fail(err)
 	}
-	sh, err := shared.NewStore(filepath.Join(dataDir, "shared"), retention)
+	sh, err := shared.NewStore(filepath.Join(dataDir, "shared"), retention, nil)
 	if err != nil {
 		return fail(err)
 	}

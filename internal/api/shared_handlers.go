@@ -60,7 +60,7 @@ func sharedTarget(r *http.Request, c sharedCtx) vaultTarget {
 	if r.PathValue("hid") != "" {
 		param = "hid"
 	}
-	return vaultTarget{key: shared.StoreKey(c.vault.ID), user: c.user, deviceID: c.session.DeviceID, shared: true,
+	return vaultTarget{key: shared.StoreKey(c.vault.ID), user: c.user, deviceID: c.session.DeviceID, shared: true, sharedID: c.vault.ID,
 		filename: backup.FilenameSafe(c.vault.Name) + ".kdbx", fileParam: param}
 }
 
@@ -81,6 +81,7 @@ func (s *Server) withSharedRead(next func(http.ResponseWriter, *http.Request, va
 }
 
 // withSharedWrite admits active owners and editors, with the CSRF token on a cookie session.
+// This is the cheap rejection before a body is read; sharedWrite re-checks at the write.
 func (s *Server) withSharedWrite(next func(http.ResponseWriter, *http.Request, vaultTarget)) func(http.ResponseWriter, *http.Request, users.User) {
 	return func(w http.ResponseWriter, r *http.Request, u users.User) {
 		c, ok := s.sharedMember(w, r, u)
@@ -102,8 +103,31 @@ func (s *Server) withSharedWrite(next func(http.ResponseWriter, *http.Request, v
 	}
 }
 
-// userActiveChanged mirrors a change of an account's active flag onto its memberships.
-// Best effort: the account change already happened, so a failure is audited, not returned.
+// writeTarget runs a vault store write; for a shared target, only while the caller's row
+// still permits writing, checked under the membership lock (shared.Store.WithWriter).
+func (s *Server) writeTarget(t vaultTarget, fn func() error) error {
+	if !t.shared {
+		return fn()
+	}
+	return s.shared.WithWriter(t.sharedID, t.user.ID, fn)
+}
+
+// sharedRefused answers a WithWriter refusal and reports whether it did.
+func sharedRefused(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, shared.ErrForbidden):
+		http.Error(w, "this shared vault is read-only for you", http.StatusForbidden)
+	case errors.Is(err, shared.ErrNotFound), errors.Is(err, shared.ErrNotMember), errors.Is(err, shared.ErrCorrupt):
+		sharedErr(w, err)
+	default:
+		return false
+	}
+	return true
+}
+
+// userActiveChanged mirrors an account's active flag onto its memberships. Callers run it
+// on every write of the flag, changed or not: SetSuspended is idempotent and reports only
+// the vaults it touched. Best effort: a failure is audited, not returned.
 func (s *Server) userActiveChanged(r *http.Request, userID string, active bool) {
 	ids, err := s.shared.SetSuspended(userID, !active)
 	action := "shared.member_suspended"
@@ -178,6 +202,9 @@ func sharedErr(w http.ResponseWriter, err error) {
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, shared.ErrForbidden):
 		http.Error(w, err.Error(), http.StatusForbidden)
+	case errors.Is(err, shared.ErrCorrupt):
+		log.Printf("shared vault record: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 	case errors.Is(err, shared.ErrShape):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, shared.ErrAlreadyMember), errors.Is(err, shared.ErrLastOwner), errors.Is(err, shared.ErrMemberCap), errors.Is(err, shared.ErrOwnedCap), errors.Is(err, shared.ErrState):
@@ -310,11 +337,10 @@ func (s *Server) handleSharedList(w http.ResponseWriter, r *http.Request, u user
 	out := make([]row, 0, len(vaults))
 	for _, v := range vaults {
 		m := v.Members[u.ID]
-		sealerFP, _ := s.currentFingerprint(m.SealedBy)
 		rw := row{ID: v.ID, Name: v.Name, Role: m.Role, State: m.State, KeyEpoch: v.KeyEpoch,
-			MyKey: myKeyView{SealedKey: m.SealedKey, KeyFingerprint: m.KeyFingerprint, KeyEpoch: m.KeyEpoch, SealedBy: m.SealedBy, SealedByFingerprint: sealerFP}}
+			MyKey: myKeyView{SealedKey: m.SealedKey, KeyFingerprint: m.KeyFingerprint, KeyEpoch: m.KeyEpoch, SealedBy: m.SealedBy, SealedByFingerprint: m.SealedByFingerprint}}
 		if m.State == shared.StateInvited {
-			rw.InvitedBy = &inviterView{UserID: m.SealedBy, Username: s.username(m.SealedBy), Fingerprint: sealerFP}
+			rw.InvitedBy = &inviterView{UserID: m.SealedBy, Username: s.username(m.SealedBy), Fingerprint: m.SealedByFingerprint}
 		}
 		out = append(out, rw)
 	}
@@ -367,9 +393,7 @@ func (s *Server) handleSharedRename(w http.ResponseWriter, r *http.Request, u us
 // deleteShared moves the record and, under the vault store lock, the vault data to the
 // deleted area. actorID "" is an admin.
 func (s *Server) deleteShared(id, actorID string) error {
-	return s.shared.Delete(id, actorID, func(dst string) error {
-		return s.vault.MoveOut(shared.StoreKey(id), dst)
-	}, time.Now())
+	return s.shared.Delete(id, actorID, time.Now())
 }
 
 // DELETE /api/shared/{id}
@@ -433,7 +457,12 @@ func (s *Server) handleSharedInvite(w http.ResponseWriter, r *http.Request, u us
 		http.Error(w, "keyFingerprint does not match that user's current key", http.StatusBadRequest)
 		return
 	}
-	if err := s.shared.Invite(c.vault.ID, target.ID, req.Role, req.SealedKey, fp, u.ID, time.Now()); err != nil {
+	sealerFP, found := s.currentFingerprint(u.ID)
+	if !found {
+		http.Error(w, "publish a user key before sealing for others", http.StatusNotFound)
+		return
+	}
+	if err := s.shared.Invite(c.vault.ID, target.ID, req.Role, req.SealedKey, fp, u.ID, sealerFP, time.Now()); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -442,7 +471,9 @@ func (s *Server) handleSharedInvite(w http.ResponseWriter, r *http.Request, u us
 }
 
 // PUT /api/shared/{id}/members/{userId}: validate everything, then role (the only write
-// that can refuse, ErrLastOwner), then seal, so a refusal writes nothing.
+// that can refuse, ErrLastOwner), then seal, so a refusal writes nothing. A stale member may
+// re-seal their own row (no role change, fresh session): a sole owner who replaced their
+// user key would otherwise leave the vault with no one able to re-seal it.
 func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request, u users.User) {
 	if !s.sharedCSRF(w, r) {
 		return
@@ -451,7 +482,8 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 	if !found {
 		return
 	}
-	if !c.activeOwner() {
+	selfReseal := r.PathValue("userId") == u.ID && c.me.State == shared.StateStale
+	if !c.activeOwner() && !selfReseal {
 		http.Error(w, "only an owner can change members", http.StatusForbidden)
 		return
 	}
@@ -467,6 +499,10 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 	if !decodeShared(w, r, &req) {
 		return
 	}
+	if selfReseal && (req.Role != nil || req.SealedKey == "") {
+		http.Error(w, "a stale member may only re-seal their own key", http.StatusBadRequest)
+		return
+	}
 	if req.Role != nil && *req.Role != shared.RoleOwner && *req.Role != shared.RoleEditor && *req.Role != shared.RoleReader {
 		http.Error(w, "unknown role", http.StatusBadRequest)
 		return
@@ -475,6 +511,7 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 		http.Error(w, "sealedKey and keyFingerprint come together", http.StatusBadRequest)
 		return
 	}
+	var sealerFP string
 	if req.SealedKey != "" {
 		if err := shared.ValidSealedKey(req.SealedKey); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -484,6 +521,16 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 			http.Error(w, "keyFingerprint does not match that user's current key", http.StatusBadRequest)
 			return
 		}
+		fp, has := s.currentFingerprint(u.ID)
+		if !has {
+			http.Error(w, "publish a user key before sealing for others", http.StatusNotFound)
+			return
+		}
+		sealerFP = fp
+	}
+	// Same trust level as the user-key replace that made the row stale.
+	if selfReseal && !s.requireFresh(w, c.session) {
+		return
 	}
 	if req.Role != nil {
 		if err := s.shared.SetRole(c.vault.ID, u.ID, target, *req.Role); err != nil {
@@ -493,7 +540,7 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 		s.record(r, "shared.member_role_changed", u.ID, "", clientIP(r), c.vault.ID+" "+target+" "+string(*req.Role))
 	}
 	if req.SealedKey != "" {
-		if err := s.shared.Reseal(c.vault.ID, target, req.SealedKey, req.KeyFingerprint, u.ID); err != nil {
+		if err := s.shared.Reseal(c.vault.ID, target, req.SealedKey, req.KeyFingerprint, u.ID, sealerFP); err != nil {
 			sharedErr(w, err)
 			return
 		}

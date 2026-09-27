@@ -45,6 +45,7 @@ atomically (tmp + rename) under a per-store mutex.
   "createdBy": "u-1", "createdAt": "2026-09-27T…", "keyEpoch": 1,
   "members": {
     "u-1": { "role": "owner",  "state": "active",  "sealedKey": "<base64>", "sealedBy": "u-1",
+             "sealedByFingerprint": "A1B2 C3D4 E5F6 0718 293A",
              "keyFingerprint": "A1B2 C3D4 E5F6 0718 293A", "keyEpoch": 1,
              "addedAt": "…", "acceptedAt": "…" },
     "u-2": { "role": "editor", "state": "invited", "sealedKey": "<base64>", "sealedBy": "u-1",
@@ -58,12 +59,14 @@ atomically (tmp + rename) under a per-store mutex.
   `info = "kyvault/shared-vault-key/1"`. Shape-checked (base64, 1168 bytes), never opened.
 - `keyFingerprint`: fingerprint of the member's user key the blob was sealed to. Must equal
   the member's current published fingerprint at write time (400 otherwise).
+- `sealedByFingerprint`: the sealer's own fingerprint when they sealed the row, recorded
+  at create, invite and re-seal, returned by `GET /api/shared` as stored.
 - `keyEpoch` (vault): increments on shared-key rotation (3c). In 3a it is 1 forever. A
   member row with an older epoch is `stale`.
 - States: `invited` (sealed, not yet accepted), `active`, `stale` (the member's user key
-  changed since sealing, or the vault epoch moved; needs an owner re-seal), `suspended`
+  changed since sealing, or the vault epoch moved; needs a re-seal), `suspended`
   (member's account inactive; restored on reactivation to the prior state).
-- Name: 1–64 characters, no control runes (same rule as device names).
+- Name: 1–64 characters, no control (`Cc`) or format (`Cf`) runes.
 - Caps (constants): 100 members per vault, 20 vaults owned per user.
 
 ### Invariants (enforced in `internal/shared`)
@@ -75,7 +78,9 @@ atomically (tmp + rename) under a per-store mutex.
   an admin; removing one's own row skips the owner check). `Remove` has no
   `allowLastOwner` flag: only the admin actor may remove the last owner.
 - A member row exists only with a `sealedKey` and `keyFingerprint`.
-- Roles and states are closed enums; unknown values are rejected on read and write.
+- Roles and states are closed enums; unknown values are rejected on read and write. A
+  record that fails to load is `ErrCorrupt`: `GET` of it answers a bare 500
+  (`internal error`, detail logged), and every bulk read (lists, owned cap, hooks) skips it.
 
 ### Admin setting
 
@@ -84,8 +89,10 @@ atomically (tmp + rename) under a per-store mutex.
 
 ### Deleted vaults
 
-Delete moves `data/vaults/shared/<vaultId>/` and `data/shared/<vaultId>.json` to
-`data/shared/deleted/<vaultId>/` with a `deletedAt` stamp. The retention pass removes
+Delete writes the record with a `deletedAt` stamp to `data/shared/deleted/<vaultId>/`,
+removes `data/shared/<vaultId>.json`, then moves `data/vaults/shared/<vaultId>/` there. A
+crash after the live record is gone leaves data nothing admits; the store's start-up
+reconcile moves the vault directory of every deleted record that has no live one. The retention pass removes
 entries older than the store's retention window (default 90 days). Nothing serves a
 deleted vault; recovery is a server-host operation (documented in `docs/RESTORE.md`).
 
@@ -120,6 +127,8 @@ not leaked. Bodies are JSON, ≤ 64 KiB.
 - `PUT /api/shared/{id}/members/{userId}` `{role?, sealedKey?, keyFingerprint?}`: active
   owners. Role change (last-owner rule); re-seal (`stale` → `active`, or `invited` stays
   `invited`) with the fingerprint check; `sealedKey` and `keyFingerprint` come together.
+  A `stale` member may also re-seal their own row (no `role`, their own current
+  fingerprint, fresh session), so a sole owner who replaced their user key keeps the vault.
 - `DELETE /api/shared/{id}/members/{userId}`: active owners remove anyone; any member
   removes themselves (leave). Last-owner rule. 3a deletes the row only; 3c adds the
   rotation that must follow a removal.
@@ -138,8 +147,10 @@ the personal routes call them with the user's ID, the shared routes with `shared
   `/api/shared/{id}/…` (only `GET /api/shared` shows the invitation). `suspended` is moot
   because an inactive account cannot authenticate; the check exists for the record.
 - Write routes (`upload`, `restore`, conflict `DELETE`): `active` owners and editors only.
-  Readers, `stale`, `invited`, `suspended` → 403.
-- `X-Vault-Key-Rotated` on a shared upload → 400 in 3a.
+  Readers, `stale`, `invited`, `suspended` → 403. The route checks before reading the body;
+  the store write then runs inside `shared.Store.WithWriter`, which re-checks the row under
+  the membership lock (removed → 404, demoted → 403, nothing written).
+- `X-Vault-Key-Rotated` on a shared upload → 400 in 3a, before the body is read.
 - Envelope headers and JSON envelope fields are ignored on shared uploads.
 - The upload response, audit row and conflict filename record the session's `DeviceID`
   exactly as personal saves do.
@@ -162,7 +173,9 @@ the personal routes call them with the user's ID, the shared routes with `shared
 - User key replacement (`user_key.replaced`) → every membership whose `keyFingerprint`
   differs from the new fingerprint becomes `stale`.
 - Both hooks run inside the handlers that perform the change, after the users write
-  succeeds, and are best-effort with an audit row on failure (`shared.hook_failed`).
+  succeeds, and are best-effort with an audit row on failure (`shared.hook_failed`). The
+  active-flag hook runs on every write of the flag, changed or not; it audits only the
+  vaults it changed.
 
 ### Audit
 

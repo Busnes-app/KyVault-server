@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -48,20 +49,23 @@ var (
 	ErrMemberCap     = errors.New("shared vault member limit reached")
 	ErrOwnedCap      = errors.New("owned shared vault limit reached")
 	ErrShape         = errors.New("invalid shared vault input")
-	ErrState         = errors.New("member is not in the required state")
-	ErrForbidden     = errors.New("only an active owner may do that")
+	// ErrCorrupt is a record on disk that fails to parse or validate; never shown to callers.
+	ErrCorrupt   = errors.New("shared vault record is corrupt")
+	ErrState     = errors.New("member is not in the required state")
+	ErrForbidden = errors.New("only an active owner may do that")
 )
 
 type Member struct {
-	Role           Role       `json:"role"`
-	State          State      `json:"state"`
-	SuspendedFrom  State      `json:"suspendedFrom,omitempty"`
-	SealedKey      string     `json:"sealedKey"`
-	SealedBy       string     `json:"sealedBy"`
-	KeyFingerprint string     `json:"keyFingerprint"`
-	KeyEpoch       int        `json:"keyEpoch"`
-	AddedAt        time.Time  `json:"addedAt"`
-	AcceptedAt     *time.Time `json:"acceptedAt,omitempty"`
+	Role                Role       `json:"role"`
+	State               State      `json:"state"`
+	SuspendedFrom       State      `json:"suspendedFrom,omitempty"`
+	SealedKey           string     `json:"sealedKey"`
+	SealedBy            string     `json:"sealedBy"`
+	SealedByFingerprint string     `json:"sealedByFingerprint"` // sealer's fingerprint at seal time
+	KeyFingerprint      string     `json:"keyFingerprint"`
+	KeyEpoch            int        `json:"keyEpoch"`
+	AddedAt             time.Time  `json:"addedAt"`
+	AcceptedAt          *time.Time `json:"acceptedAt,omitempty"`
 }
 
 type Vault struct {
@@ -87,7 +91,7 @@ func ValidID(id string) bool { return idPattern.MatchString(id) }
 func ValidName(name string) error {
 	n := 0
 	for _, r := range name {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return fmt.Errorf("%w: name has a control character", ErrShape)
 		}
 		n++
@@ -146,20 +150,60 @@ func newID() (string, error) {
 	return "sv_" + base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
+// VaultMover renames the live vault directory of shared vault id to dst. A missing
+// directory is not an error. The API passes vault.Store.MoveOut.
+type VaultMover func(id, dst string) error
+
 type Store struct {
 	dir           string
 	retentionDays int
+	moveVault     VaultMover
 	mu            sync.Mutex
 }
 
-func NewStore(dir string, retentionDays int) (*Store, error) {
+// NewStore opens the store and finishes any Delete a crash interrupted. moveVault may be
+// nil for read-only use (offline backup); Delete then fails and nothing is reconciled.
+func NewStore(dir string, retentionDays int, moveVault VaultMover) (*Store, error) {
 	if retentionDays <= 0 {
 		retentionDays = 90
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "deleted"), 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{dir: dir, retentionDays: retentionDays}, nil
+	s := &Store{dir: dir, retentionDays: retentionDays, moveVault: moveVault}
+	if moveVault != nil {
+		if err := s.reconcileDeleted(); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+// reconcileDeleted moves the vault data of every deleted record whose live record is gone:
+// Delete removes the live record before moving the data, so a crash between the two leaves
+// the data behind with nothing to admit a member.
+func (s *Store) reconcileDeleted() error {
+	entries, err := os.ReadDir(filepath.Join(s.dir, "deleted"))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		id := e.Name()
+		dir := filepath.Join(s.dir, "deleted", id)
+		if !e.IsDir() || !ValidID(id) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, "record.json")); err != nil {
+			continue
+		}
+		if _, err := os.Stat(s.path(id)); !os.IsNotExist(err) {
+			continue // still live: Delete stopped before removing it and can simply run again
+		}
+		if err := s.moveVault(id, filepath.Join(dir, "vault")); err != nil {
+			log.Printf("shared vault %s: finishing an interrupted delete: %v", id, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) path(id string) string { return filepath.Join(s.dir, id+".json") }
@@ -177,14 +221,14 @@ func (s *Store) loadLocked(id string) (Vault, error) {
 	}
 	var v Vault
 	if err := json.Unmarshal(data, &v); err != nil {
-		return Vault{}, fmt.Errorf("%w: shared record %s: %v", ErrShape, id, err)
+		return Vault{}, fmt.Errorf("%w: %s: %v", ErrCorrupt, id, err)
 	}
 	if v.ID != id || v.Members == nil {
-		return Vault{}, fmt.Errorf("%w: shared record %s is inconsistent", ErrShape, id)
+		return Vault{}, fmt.Errorf("%w: %s is inconsistent", ErrCorrupt, id)
 	}
 	for uid, m := range v.Members {
 		if !validRole(m.Role) || !validState(m.State) || !validSuspendedFrom(m) {
-			return Vault{}, fmt.Errorf("%w: shared record %s member %s has an unknown role or state", ErrShape, id, uid)
+			return Vault{}, fmt.Errorf("%w: %s member %s has an unknown role or state", ErrCorrupt, id, uid)
 		}
 	}
 	return v, nil
@@ -218,6 +262,11 @@ func (s *Store) listLocked() ([]Vault, error) {
 		id := strings.TrimSuffix(name, ".json")
 		v, err := s.loadLocked(id)
 		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if errors.Is(err, ErrCorrupt) {
+			// One bad record must not block every member of every other vault.
+			log.Printf("shared vault list skips a record: %v", err)
 			continue
 		}
 		if err != nil {
@@ -261,7 +310,7 @@ func (s *Store) Create(name, ownerID, sealedKey, fingerprint string, now time.Ti
 	}
 	at := now.UTC()
 	v := Vault{ID: id, Name: name, CreatedBy: ownerID, CreatedAt: at, KeyEpoch: 1, Members: map[string]Member{
-		ownerID: {Role: RoleOwner, State: StateActive, SealedKey: sealedKey, SealedBy: ownerID, KeyFingerprint: fingerprint, KeyEpoch: 1, AddedAt: at, AcceptedAt: &at},
+		ownerID: {Role: RoleOwner, State: StateActive, SealedKey: sealedKey, SealedBy: ownerID, SealedByFingerprint: fingerprint, KeyFingerprint: fingerprint, KeyEpoch: 1, AddedAt: at, AcceptedAt: &at},
 	}}
 	return v, s.saveLocked(v)
 }
@@ -353,8 +402,9 @@ func (s *Store) Rename(id, actorID, name string) error {
 	return s.update(id, actorID, func(v *Vault) error { v.Name = name; return nil })
 }
 
-// Invite adds an invited row sealed by sealedBy, who must be an active owner.
-func (s *Store) Invite(id, userID string, role Role, sealedKey, fingerprint, sealedBy string, now time.Time) error {
+// Invite adds an invited row sealed by sealedBy, who must be an active owner and whose
+// current fingerprint is sealerFP.
+func (s *Store) Invite(id, userID string, role Role, sealedKey, fingerprint, sealedBy, sealerFP string, now time.Time) error {
 	if !validRole(role) {
 		return fmt.Errorf("%w: unknown role", ErrShape)
 	}
@@ -368,7 +418,7 @@ func (s *Store) Invite(id, userID string, role Role, sealedKey, fingerprint, sea
 		if len(v.Members) >= MaxMembers {
 			return ErrMemberCap
 		}
-		v.Members[userID] = Member{Role: role, State: StateInvited, SealedKey: sealedKey, SealedBy: sealedBy, KeyFingerprint: fingerprint, KeyEpoch: v.KeyEpoch, AddedAt: now.UTC()}
+		v.Members[userID] = Member{Role: role, State: StateInvited, SealedKey: sealedKey, SealedBy: sealedBy, SealedByFingerprint: sealerFP, KeyFingerprint: fingerprint, KeyEpoch: v.KeyEpoch, AddedAt: now.UTC()}
 		return nil
 	})
 }
@@ -377,17 +427,29 @@ func (s *Store) Invite(id, userID string, role Role, sealedKey, fingerprint, sea
 // (sealed to a retired user key) returns to active if it had been accepted, else invited.
 // A suspended row stays suspended, but SuspendedFrom is refreshed to the state the fresh
 // seal would land on, so unsuspending later resumes from the new seal rather than from
-// whatever the row was suspended from before the reseal. sealedBy must be an active owner.
-func (s *Store) Reseal(id, userID, sealedKey, fingerprint, sealedBy string) error {
+// whatever the row was suspended from before the reseal. sealedBy must be an active owner,
+// or the member themselves on their own stale row, so a sole owner who replaced their user
+// key can recover the vault. sealerFP is sealedBy's current fingerprint.
+func (s *Store) Reseal(id, userID, sealedKey, fingerprint, sealedBy, sealerFP string) error {
 	if err := ValidSealedKey(sealedKey); err != nil {
 		return err
 	}
-	return s.update(id, sealedBy, func(v *Vault) error {
+	self := sealedBy != "" && sealedBy == userID
+	actor := sealedBy
+	if self {
+		actor = "" // checked below, once the row's state is known
+	}
+	return s.update(id, actor, func(v *Vault) error {
 		m, ok := v.Members[userID]
 		if !ok {
 			return ErrNotMember
 		}
-		m.SealedKey, m.KeyFingerprint, m.SealedBy, m.KeyEpoch = sealedKey, fingerprint, sealedBy, v.KeyEpoch
+		if self && m.State != StateStale {
+			if err := authorize(*v, sealedBy); err != nil {
+				return err
+			}
+		}
+		m.SealedKey, m.KeyFingerprint, m.SealedBy, m.SealedByFingerprint, m.KeyEpoch = sealedKey, fingerprint, sealedBy, sealerFP, v.KeyEpoch
 		switch m.State {
 		case StateStale:
 			m.State = freshState(m)
@@ -458,11 +520,34 @@ func (s *Store) Remove(id, actorID, userID string) error {
 	})
 }
 
-// Delete moves the record and, through moveVaultDir, the vault directory into the deleted
-// area. moveVaultDir receives the destination and must rename the vault directory there;
-// a missing vault directory (never uploaded) is not an error for the caller to raise.
-// actorID "" is an admin; anyone else must be an active owner.
-func (s *Store) Delete(id, actorID string, moveVaultDir func(dst string) error, now time.Time) error {
+// WithWriter runs fn, the vault write, under the store lock once userID's row is an
+// active owner or editor, so a removal or demotion cannot land between the check and the
+// write. fn takes vault.mu: lock order shared.mu then vault.mu.
+func (s *Store) WithWriter(id, userID string, fn func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, err := s.loadLocked(id)
+	if err != nil {
+		return err
+	}
+	m, ok := v.Members[userID]
+	if !ok {
+		return ErrNotMember
+	}
+	if m.State != StateActive || (m.Role != RoleOwner && m.Role != RoleEditor) {
+		return ErrForbidden
+	}
+	return fn()
+}
+
+// Delete writes deleted/<id>/record.json, removes the live record, then moves the vault
+// directory there. A crash after the live record is gone leaves data nobody can reach;
+// NewStore's reconcileDeleted finishes the move. actorID "" is an admin; anyone else must
+// be an active owner.
+func (s *Store) Delete(id, actorID string, now time.Time) error {
+	if s.moveVault == nil {
+		return errors.New("shared store opened without a vault mover")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, err := s.loadLocked(id)
@@ -481,10 +566,10 @@ func (s *Store) Delete(id, actorID string, moveVaultDir func(dst string) error, 
 	if err := writeAtomic(filepath.Join(dst, "record.json"), v); err != nil {
 		return err
 	}
-	if err := moveVaultDir(filepath.Join(dst, "vault")); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(s.path(id)); err != nil {
 		return err
 	}
-	return os.Remove(s.path(id))
+	return s.moveVault(id, filepath.Join(dst, "vault"))
 }
 
 func (s *Store) PruneDeleted(now time.Time) (int, error) {

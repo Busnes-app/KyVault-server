@@ -123,7 +123,9 @@ func testCollector(t *testing.T) Collector {
 	if err := ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: "https://signon.example", ClientID: "kyvault", ClientSecret: "sealed-inside-capsule"}); err != nil {
 		t.Fatal(err)
 	}
-	sh, err := shared.NewStore(filepath.Join(dataDir, "shared"), 90)
+	sh, err := shared.NewStore(filepath.Join(dataDir, "shared"), 90, func(id, dst string) error {
+		return v.MoveOut(shared.StoreKey(id), dst)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,10 +360,7 @@ func TestDrillChecksDeletedSharedVaultRecords(t *testing.T) {
 	if _, err := c.Vault.SaveVault(shared.StoreKey(sv.ID), 0, []byte("shared-ct"), "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	err = c.Shared.Delete(sv.ID, "u-1", func(dst string) error {
-		return c.Vault.MoveOut(shared.StoreKey(sv.ID), dst)
-	}, time.Now())
-	if err != nil {
+	if err := c.Shared.Delete(sv.ID, "u-1", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(c.DataDir, "shared", "deleted", sv.ID, "record.json")); err != nil {

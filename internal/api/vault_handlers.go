@@ -21,6 +21,7 @@ type vaultTarget struct {
 	user      users.User // acting user, for audit
 	deviceID  string     // session DeviceID, for audit and conflict filenames
 	shared    bool       // true → envelopes/rotation headers refused/ignored, audit prefix "shared."
+	sharedID  string     // shared vault id; writes go through writeTarget
 	filename  string     // Content-Disposition base name
 	fileParam string     // PathValue name of a history/conflict id: "id" personal, "hid"/"cid" shared
 }
@@ -112,6 +113,10 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 }
 
 func (s *Server) vaultUpload(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	if t.shared && r.Header.Get("X-Vault-Key-Rotated") == "1" {
+		http.Error(w, "shared vaults do not rotate through this route", http.StatusBadRequest)
+		return
+	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 50<<20))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -120,10 +125,6 @@ func (s *Server) vaultUpload(w http.ResponseWriter, r *http.Request, t vaultTarg
 		} else {
 			http.Error(w, "failed to read upload body", http.StatusBadRequest)
 		}
-		return
-	}
-	if t.shared && r.Header.Get("X-Vault-Key-Rotated") == "1" {
-		http.Error(w, "shared vaults do not rotate through this route", http.StatusBadRequest)
 		return
 	}
 	// Support both the existing JSON payload and raw binary with headers.
@@ -182,7 +183,13 @@ func (s *Server) vaultUpload(w http.ResponseWriter, r *http.Request, t vaultTarg
 		}
 		meta, err = s.vault.RotateVault(t.key, expectedVersion, kdbxData, pwEnv, recEnv, devID, userKey)
 	} else {
-		meta, err = s.vault.SaveVault(t.key, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+		err = s.writeTarget(t, func() (saveErr error) {
+			meta, saveErr = s.vault.SaveVault(t.key, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+			return saveErr
+		})
+	}
+	if sharedRefused(w, err) {
+		return
 	}
 	if errors.Is(err, vault.ErrRotationEnvelopes) || errors.Is(err, vault.ErrRotationUserKey) || errors.Is(err, userkey.ErrShape) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -273,7 +280,14 @@ func (s *Server) vaultHistoryRestore(w http.ResponseWriter, r *http.Request, t v
 		return
 	}
 
-	meta, err := s.vault.RestoreHistory(t.key, id)
+	var meta vault.Metadata
+	err := s.writeTarget(t, func() (restoreErr error) {
+		meta, restoreErr = s.vault.RestoreHistory(t.key, id)
+		return restoreErr
+	})
+	if sharedRefused(w, err) {
+		return
+	}
 	if errors.Is(err, vault.ErrStaleKey) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "This snapshot was saved under a previous vault key. The current key cannot open it, so it cannot be rolled back to."})
 		return
@@ -340,10 +354,15 @@ func (s *Server) vaultConflictDiscard(w http.ResponseWriter, r *http.Request, t 
 		return
 	}
 
-	if err := s.vault.DiscardConflict(t.key, id); errors.Is(err, vault.ErrNotFound) {
+	err := s.writeTarget(t, func() error { return s.vault.DiscardConflict(t.key, id) })
+	if sharedRefused(w, err) {
+		return
+	}
+	if errors.Is(err, vault.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
-	} else if err != nil {
+	}
+	if err != nil {
 		http.Error(w, "failed to discard conflict: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
