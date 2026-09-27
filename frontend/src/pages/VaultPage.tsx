@@ -190,6 +190,11 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault" }); return; }
     (async () => {
       if (await canChangeEntry()) {
+        if (route.entry && !filteredEntries.some((e) => e.uuid === route.entry)) {
+          setSelectedGroupUuid("all");
+          clearSmartViews();
+          setSearchQuery("");
+        }
         setIsEditing(false);
         setSelectedEntryUuid(route.entry ?? null);
         setPane(route.entry ? "detail" : "list");

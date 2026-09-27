@@ -689,3 +689,19 @@ dialog.dialog-lg { max-width: 760px; }
   .settings-page { padding: 1rem 0.75rem; }
   .vault-detail-pane .font-mono { overflow-wrap: anywhere; }
 }
+
+/* Watchtower */
+.watchtower-header { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.watchtower-score { font-size: 3rem; line-height: 1; color: var(--ink-strong); }
+.watchtower-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+.watchtower-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.9rem 1rem; color: var(--ink-strong); font: inherit; cursor: pointer; text-align: left;
+}
+.watchtower-card:hover { background: var(--panel-hover); }
+.watchtower-card.active { border-color: var(--accent); }
+.watchtower-count { font-size: 1.75rem; line-height: 1; }
+.watchtower-row { padding: 0.15rem 0; }
+@media (max-width: 900px) { .watchtower-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 600px) { .watchtower-grid { grid-template-columns: 1fr; } }
