@@ -472,8 +472,8 @@ func TestSaveUserKeyCreateOnlyRefusesExisting(t *testing.T) {
 	}
 }
 
-// MoveOut takes a vault directory away under the store lock; a later save naming the old
-// key must not bring the moved data back.
+// MoveOut takes a vault directory away under the store lock and retires the key: no
+// later write, at any version, recreates the directory.
 func TestMoveOutMovesDirectoryAndSaveDoesNotResurrect(t *testing.T) {
 	store, err := NewStore(t.TempDir(), 90)
 	if err != nil {
@@ -483,36 +483,51 @@ func TestMoveOutMovesDirectoryAndSaveDoesNotResurrect(t *testing.T) {
 	if _, err := store.SaveVault(key, 0, []byte("v1"), "", "", ""); err != nil {
 		t.Fatal(err)
 	}
+	// A failed move (missing destination parent) is an error and retires nothing.
+	if err := store.MoveOut(key, filepath.Join(t.TempDir(), "absent", "vault")); err == nil {
+		t.Fatal("MoveOut into a missing parent succeeded")
+	}
+	if _, err := store.SaveVault(key, 1, []byte("v2"), "", "", ""); err != nil {
+		t.Fatalf("save after failed MoveOut: %v", err)
+	}
 	dst := filepath.Join(t.TempDir(), "vault")
 	if err := store.MoveOut(key, dst); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(dst, "vault.kdbx")); err != nil || string(got) != "v1" {
+	if got, err := os.ReadFile(filepath.Join(dst, "vault.kdbx")); err != nil || string(got) != "v2" {
 		t.Fatalf("moved kdbx = %q, %v", got, err)
 	}
-	if _, err := os.Stat(store.userVaultDir(key)); !os.IsNotExist(err) {
-		t.Fatalf("source dir still present: %v", err)
+	gone := func(what string) {
+		t.Helper()
+		if _, err := os.Stat(store.userVaultDir(key)); !os.IsNotExist(err) {
+			t.Fatalf("%s: vault directory exists: %v", what, err)
+		}
 	}
-	var ce *ConflictError
-	if _, err := store.SaveVault(key, 1, []byte("v2"), "", "", ""); !errors.As(err, &ce) || ce.CurrentVersion != 0 {
-		t.Fatalf("save after MoveOut = %v", err)
+	gone("after MoveOut")
+	if _, err := store.SaveVault(key, 2, []byte("stale"), "", "", ""); !errors.Is(err, ErrRetired) || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale save after MoveOut = %v", err)
 	}
-	meta, err := store.GetMetadata(key)
-	if err != nil || meta.Version != 0 {
-		t.Fatalf("metadata after MoveOut = %+v, %v", meta, err)
+	gone("after stale save")
+	if _, err := store.SaveVault(key, 0, []byte("fresh"), "", "", ""); !errors.Is(err, ErrRetired) {
+		t.Fatalf("version-0 save after MoveOut = %v", err)
 	}
-	if _, err := os.Stat(store.kdbxPath(key)); !os.IsNotExist(err) {
-		t.Fatalf("kdbx resurrected: %v", err)
+	gone("after version-0 save")
+	if _, err := store.RestoreHistory(key, "1_v1"); !errors.Is(err, ErrRetired) {
+		t.Fatalf("restore after MoveOut = %v", err)
 	}
-	// A missing destination parent is an error, not a silent no-op.
-	if _, err := store.SaveVault(key, 0, []byte("v3"), "", "", ""); err != nil {
-		t.Fatal(err)
+	if err := store.DiscardConflict(key, "1_web_exp0"); !errors.Is(err, ErrRetired) {
+		t.Fatalf("discard after MoveOut = %v", err)
 	}
-	if err := store.MoveOut(key, filepath.Join(t.TempDir(), "absent", "vault")); err == nil {
-		t.Fatal("MoveOut into a missing parent succeeded")
+	if err := store.SaveEnvelopes(key, 0, "pw", "rec", nil); !errors.Is(err, ErrRetired) {
+		t.Fatalf("envelopes after MoveOut = %v", err)
 	}
-	// A missing directory is not an error.
-	if err := store.MoveOut("shared/sv_bbbbbbbbbbbbbbbbbbbbbb", filepath.Join(t.TempDir(), "x")); err != nil {
+	gone("after every write")
+	// A missing directory is not an error, and the key is retired all the same.
+	other := "shared/sv_bbbbbbbbbbbbbbbbbbbbbb"
+	if err := store.MoveOut(other, filepath.Join(t.TempDir(), "x")); err != nil {
 		t.Fatalf("MoveOut missing = %v", err)
+	}
+	if _, err := store.SaveVault(other, 0, []byte("v"), "", "", ""); !errors.Is(err, ErrRetired) {
+		t.Fatalf("save to a retired never-written key = %v", err)
 	}
 }

@@ -60,6 +60,8 @@ type Server struct {
 	// shared is shared-vault membership; sharedSettings is CONFIG_DIR/shared.json.
 	shared         *shared.Store
 	sharedSettings *sharedSettings
+	// sharedResolved runs after sharedMember reads the record; tests race writes through it.
+	sharedResolved func()
 
 	// trustedProxies are the peers whose X-Forwarded-For sourceKey may believe.
 	trustedProxies []netip.Prefix

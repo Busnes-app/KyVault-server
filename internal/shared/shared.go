@@ -49,6 +49,7 @@ var (
 	ErrOwnedCap      = errors.New("owned shared vault limit reached")
 	ErrShape         = errors.New("invalid shared vault input")
 	ErrState         = errors.New("member is not in the required state")
+	ErrForbidden     = errors.New("only an active owner may do that")
 )
 
 type Member struct {
@@ -311,12 +312,32 @@ func (s *Store) ListFor(userID string) ([]Vault, error) {
 	return out, nil
 }
 
-// update loads, applies fn under the lock and saves. fn returns the error to surface.
-func (s *Store) update(id string, fn func(v *Vault) error) error {
+// authorize checks, on the record read under the lock, that actorID may manage the
+// vault: "" is an admin; anyone else must hold an active owner row.
+func authorize(v Vault, actorID string) error {
+	if actorID == "" {
+		return nil
+	}
+	m, ok := v.Members[actorID]
+	if !ok {
+		return ErrNotMember
+	}
+	if m.Role != RoleOwner || m.State != StateActive {
+		return ErrForbidden
+	}
+	return nil
+}
+
+// update loads, authorizes actorID, applies fn under the lock and saves. fn returns the
+// error to surface.
+func (s *Store) update(id, actorID string, fn func(v *Vault) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, err := s.loadLocked(id)
 	if err != nil {
+		return err
+	}
+	if err := authorize(v, actorID); err != nil {
 		return err
 	}
 	if err := fn(&v); err != nil {
@@ -325,13 +346,14 @@ func (s *Store) update(id string, fn func(v *Vault) error) error {
 	return s.saveLocked(v)
 }
 
-func (s *Store) Rename(id, name string) error {
+func (s *Store) Rename(id, actorID, name string) error {
 	if err := ValidName(name); err != nil {
 		return err
 	}
-	return s.update(id, func(v *Vault) error { v.Name = name; return nil })
+	return s.update(id, actorID, func(v *Vault) error { v.Name = name; return nil })
 }
 
+// Invite adds an invited row sealed by sealedBy, who must be an active owner.
 func (s *Store) Invite(id, userID string, role Role, sealedKey, fingerprint, sealedBy string, now time.Time) error {
 	if !validRole(role) {
 		return fmt.Errorf("%w: unknown role", ErrShape)
@@ -339,7 +361,7 @@ func (s *Store) Invite(id, userID string, role Role, sealedKey, fingerprint, sea
 	if err := ValidSealedKey(sealedKey); err != nil {
 		return err
 	}
-	return s.update(id, func(v *Vault) error {
+	return s.update(id, sealedBy, func(v *Vault) error {
 		if _, ok := v.Members[userID]; ok {
 			return ErrAlreadyMember
 		}
@@ -355,12 +377,12 @@ func (s *Store) Invite(id, userID string, role Role, sealedKey, fingerprint, sea
 // (sealed to a retired user key) returns to active if it had been accepted, else invited.
 // A suspended row stays suspended, but SuspendedFrom is refreshed to the state the fresh
 // seal would land on, so unsuspending later resumes from the new seal rather than from
-// whatever the row was suspended from before the reseal.
+// whatever the row was suspended from before the reseal. sealedBy must be an active owner.
 func (s *Store) Reseal(id, userID, sealedKey, fingerprint, sealedBy string) error {
 	if err := ValidSealedKey(sealedKey); err != nil {
 		return err
 	}
-	return s.update(id, func(v *Vault) error {
+	return s.update(id, sealedBy, func(v *Vault) error {
 		m, ok := v.Members[userID]
 		if !ok {
 			return ErrNotMember
@@ -377,11 +399,11 @@ func (s *Store) Reseal(id, userID, sealedKey, fingerprint, sealedBy string) erro
 	})
 }
 
-func (s *Store) SetRole(id, userID string, role Role) error {
+func (s *Store) SetRole(id, actorID, userID string, role Role) error {
 	if !validRole(role) {
 		return fmt.Errorf("%w: unknown role", ErrShape)
 	}
-	return s.update(id, func(v *Vault) error {
+	return s.update(id, actorID, func(v *Vault) error {
 		m, ok := v.Members[userID]
 		if !ok {
 			return ErrNotMember
@@ -395,14 +417,18 @@ func (s *Store) SetRole(id, userID string, role Role) error {
 	})
 }
 
+// Accept turns userID's invitation active. An ownerless vault cannot be joined.
 func (s *Store) Accept(id, userID string, now time.Time) error {
-	return s.update(id, func(v *Vault) error {
+	return s.update(id, "", func(v *Vault) error {
 		m, ok := v.Members[userID]
 		if !ok {
 			return ErrNotMember
 		}
 		if m.State != StateInvited {
 			return ErrState
+		}
+		if activeOwners(*v) == 0 {
+			return fmt.Errorf("%w: the vault has no owner", ErrState)
 		}
 		at := now.UTC()
 		m.State, m.AcceptedAt = StateActive, &at
@@ -411,13 +437,20 @@ func (s *Store) Accept(id, userID string, now time.Time) error {
 	})
 }
 
-func (s *Store) Remove(id, userID string, allowLastOwner bool) error {
-	return s.update(id, func(v *Vault) error {
+// Remove deletes userID's row. actorID "" is an admin, who may remove the last owner;
+// a member may always remove their own row (leave, decline), under the last-owner rule;
+// anyone else must be an active owner.
+func (s *Store) Remove(id, actorID, userID string) error {
+	authActor := actorID
+	if actorID == userID {
+		authActor = ""
+	}
+	return s.update(id, authActor, func(v *Vault) error {
 		m, ok := v.Members[userID]
 		if !ok {
 			return ErrNotMember
 		}
-		if !allowLastOwner && m.Role == RoleOwner && m.State == StateActive && activeOwners(*v) == 1 {
+		if actorID != "" && m.Role == RoleOwner && m.State == StateActive && activeOwners(*v) == 1 {
 			return ErrLastOwner
 		}
 		delete(v.Members, userID)
@@ -428,11 +461,15 @@ func (s *Store) Remove(id, userID string, allowLastOwner bool) error {
 // Delete moves the record and, through moveVaultDir, the vault directory into the deleted
 // area. moveVaultDir receives the destination and must rename the vault directory there;
 // a missing vault directory (never uploaded) is not an error for the caller to raise.
-func (s *Store) Delete(id string, moveVaultDir func(dst string) error, now time.Time) error {
+// actorID "" is an admin; anyone else must be an active owner.
+func (s *Store) Delete(id, actorID string, moveVaultDir func(dst string) error, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, err := s.loadLocked(id)
 	if err != nil {
+		return err
+	}
+	if err := authorize(v, actorID); err != nil {
 		return err
 	}
 	dst := filepath.Join(s.dir, "deleted", id)

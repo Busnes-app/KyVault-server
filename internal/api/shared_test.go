@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/userkey"
 	"github.com/Busnes-app/kyvault-server/internal/users"
+	"github.com/Busnes-app/kyvault-server/internal/vault"
 )
 
 var t0 = time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
@@ -49,7 +51,8 @@ func publishKey(t *testing.T, srv *Server, u users.User, pk byte) string {
 	return fp
 }
 
-func do(t *testing.T, handler http.Handler, method, path string, cookie *http.Cookie, body any) *httptest.ResponseRecorder {
+// do sends a request as a browser would: a cookie session also carries its CSRF token.
+func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var rd *bytes.Reader
 	if body == nil {
@@ -65,15 +68,20 @@ func do(t *testing.T, handler http.Handler, method, path string, cookie *http.Co
 	req.Header.Set("Content-Type", "application/json")
 	if cookie != nil {
 		req.AddCookie(cookie)
+		srv.sessMu.RLock()
+		token := srv.sessions[sessionKey(cookie.Value)].CSRFToken
+		srv.sessMu.RUnlock()
+		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: token})
+		req.Header.Set("X-CSRF-Token", token)
 	}
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	srv.Routes().ServeHTTP(rec, req)
 	return rec
 }
 
-func createShared(t *testing.T, handler http.Handler, cookie *http.Cookie, name, sealedKey, fp string) string {
+func createShared(t *testing.T, srv *Server, cookie *http.Cookie, name, sealedKey, fp string) string {
 	t.Helper()
-	rec := do(t, handler, http.MethodPost, "/api/shared", cookie, map[string]any{"name": name, "sealedKey": sealedKey, "keyFingerprint": fp})
+	rec := do(t, srv, http.MethodPost, "/api/shared", cookie, map[string]any{"name": name, "sealedKey": sealedKey, "keyFingerprint": fp})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
 	}
@@ -86,9 +94,9 @@ func createShared(t *testing.T, handler http.Handler, cookie *http.Cookie, name,
 	return out.ID
 }
 
-func invite(t *testing.T, h http.Handler, cookie *http.Cookie, id, userID, role, sealedKey, fp string) {
+func invite(t *testing.T, srv *Server, cookie *http.Cookie, id, userID, role, sealedKey, fp string) {
 	t.Helper()
-	rec := do(t, h, http.MethodPost, "/api/shared/"+id+"/members", cookie, map[string]any{"userId": userID, "role": role, "sealedKey": sealedKey, "keyFingerprint": fp})
+	rec := do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", cookie, map[string]any{"userId": userID, "role": role, "sealedKey": sealedKey, "keyFingerprint": fp})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("invite %s = %d %s", userID, rec.Code, rec.Body.String())
 	}
@@ -125,8 +133,10 @@ func assertAudited(t *testing.T, srv *Server, actions ...string) {
 		if _, ok := want[e.Action]; ok {
 			want[e.Action] = true
 		}
-		if strings.Contains(e.Details, strings.Repeat("A", 40)) || strings.Contains(e.Details, sealedKeyFor(0xA1)[:40]) || strings.Contains(e.Details, sealedKeyFor(0xB2)[:40]) {
-			t.Fatalf("audit detail carries a sealed key: %s %s", e.Action, e.Details)
+		for b := 0; b < 256; b++ {
+			if strings.Contains(e.Details, sealedKeyFor(byte(b))[:40]) {
+				t.Fatalf("audit detail carries a sealed key: %s %s", e.Action, e.Details)
+			}
 		}
 	}
 	for a, seen := range want {
@@ -138,7 +148,6 @@ func assertAudited(t *testing.T, srv *Server, actions ...string) {
 
 func TestSharedCreateInviteAcceptAndVisibility(t *testing.T) {
 	srv := newTestServer(t)
-	h := srv.Routes()
 	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
 	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
 	_, carolC := signedInUser(t, srv, "carol", users.RoleUser)
@@ -147,13 +156,13 @@ func TestSharedCreateInviteAcceptAndVisibility(t *testing.T) {
 	aliceKey, bobKey := sealedKeyFor(0xA1), sealedKeyFor(0xB2)
 
 	// No published key → 404 on create; fingerprint mismatch → 400.
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared", carolC, map[string]any{"name": "x", "sealedKey": aliceKey, "keyFingerprint": "nope"}), http.StatusNotFound, "create without key")
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared", aliceC, map[string]any{"name": "x", "sealedKey": aliceKey, "keyFingerprint": bobFP}), http.StatusBadRequest, "create fp mismatch")
-	id := createShared(t, h, aliceC, "Finance", aliceKey, aliceFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared", carolC, map[string]any{"name": "x", "sealedKey": aliceKey, "keyFingerprint": "nope"}), http.StatusNotFound, "create without key")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared", aliceC, map[string]any{"name": "x", "sealedKey": aliceKey, "keyFingerprint": bobFP}), http.StatusBadRequest, "create fp mismatch")
+	id := createShared(t, srv, aliceC, "Finance", aliceKey, aliceFP)
 
 	// Path-shaped or unknown vault ids are 404.
 	for _, p := range []string{"/api/shared/shared%2F..%2F" + alice.ID, "/api/shared/u-1", "/api/shared/sv_zzzzzzzzzzzzzzzzzzzzzz"} {
-		expectCode(t, do(t, h, http.MethodGet, p, aliceC, nil), http.StatusNotFound, "GET "+p)
+		expectCode(t, do(t, srv, http.MethodGet, p, aliceC, nil), http.StatusNotFound, "GET "+p)
 	}
 	// A non-member sees 404 everywhere, indistinguishable from an unknown id.
 	for _, m := range []struct{ method, path string }{
@@ -162,66 +171,65 @@ func TestSharedCreateInviteAcceptAndVisibility(t *testing.T) {
 		{"DELETE", "/api/shared/" + id + "/members/" + alice.ID}, {"POST", "/api/shared/" + id + "/accept"},
 		{"POST", "/api/shared/" + id + "/decline"},
 	} {
-		expectCode(t, do(t, h, m.method, m.path, carolC, map[string]any{"name": "y"}), http.StatusNotFound, "non-member "+m.method+" "+m.path)
+		expectCode(t, do(t, srv, m.method, m.path, carolC, map[string]any{"name": "y"}), http.StatusNotFound, "non-member "+m.method+" "+m.path)
 	}
 
 	// Invite bob: wrong fp → 400, bad role → 400, right → 200, twice → 409.
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/members", aliceC, map[string]any{"userId": bob.ID, "role": "editor", "sealedKey": bobKey, "keyFingerprint": aliceFP}), http.StatusBadRequest, "invite fp mismatch")
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/members", aliceC, map[string]any{"userId": bob.ID, "role": "admin", "sealedKey": bobKey, "keyFingerprint": bobFP}), http.StatusBadRequest, "invite bad role")
-	invite(t, h, aliceC, id, bob.ID, "editor", bobKey, bobFP)
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/members", aliceC, map[string]any{"userId": bob.ID, "role": "reader", "sealedKey": bobKey, "keyFingerprint": bobFP}), http.StatusConflict, "double invite")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", aliceC, map[string]any{"userId": bob.ID, "role": "editor", "sealedKey": bobKey, "keyFingerprint": aliceFP}), http.StatusBadRequest, "invite fp mismatch")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", aliceC, map[string]any{"userId": bob.ID, "role": "admin", "sealedKey": bobKey, "keyFingerprint": bobFP}), http.StatusBadRequest, "invite bad role")
+	invite(t, srv, aliceC, id, bob.ID, "editor", bobKey, bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", aliceC, map[string]any{"userId": bob.ID, "role": "reader", "sealedKey": bobKey, "keyFingerprint": bobFP}), http.StatusConflict, "double invite")
 
 	// Bob's list shows the invitation with alice's fingerprint and only his own key; the vault stays closed.
-	rec := do(t, h, http.MethodGet, "/api/shared", bobC, nil)
+	rec := do(t, srv, http.MethodGet, "/api/shared", bobC, nil)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"state":"invited"`) || !strings.Contains(rec.Body.String(), aliceFP) || !strings.Contains(rec.Body.String(), bobKey) {
 		t.Fatalf("bob list = %d %s", rec.Code, rec.Body.String())
 	}
 	assertNoForeignKeys(t, "bob list", rec.Body.String(), aliceKey)
-	expectCode(t, do(t, h, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusNotFound, "invited GET vault")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusNotFound, "invited GET vault")
 
-	rec = do(t, h, http.MethodGet, "/api/shared", aliceC, nil)
+	rec = do(t, srv, http.MethodGet, "/api/shared", aliceC, nil)
 	assertNoForeignKeys(t, "alice list", rec.Body.String(), bobKey)
-	rec = do(t, h, http.MethodGet, "/api/shared/"+id, aliceC, nil)
+	rec = do(t, srv, http.MethodGet, "/api/shared/"+id, aliceC, nil)
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "sealedKey") {
 		t.Fatalf("owner GET = %d %s", rec.Code, rec.Body.String())
 	}
 	assertNoForeignKeys(t, "owner GET", rec.Body.String(), aliceKey, bobKey)
 
 	// Only an invited row accepts.
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/accept", aliceC, nil), http.StatusConflict, "owner accept")
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
-	rec = do(t, h, http.MethodGet, "/api/shared", bobC, nil)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", aliceC, nil), http.StatusConflict, "owner accept")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	rec = do(t, srv, http.MethodGet, "/api/shared", bobC, nil)
 	if !strings.Contains(rec.Body.String(), `"state":"active"`) || strings.Count(rec.Body.String(), "sealedKey") != 1 {
 		t.Fatalf("bob list after accept: %s", rec.Body.String())
 	}
 	assertNoForeignKeys(t, "bob list after accept", rec.Body.String(), aliceKey)
-	rec = do(t, h, http.MethodGet, "/api/shared/"+id, bobC, nil)
+	rec = do(t, srv, http.MethodGet, "/api/shared/"+id, bobC, nil)
 	expectCode(t, rec, http.StatusOK, "bob GET")
 	assertNoForeignKeys(t, "bob GET", rec.Body.String(), aliceKey, bobKey)
 
 	// Rename: editors cannot, owners can, validation applies.
-	expectCode(t, do(t, h, http.MethodPatch, "/api/shared/"+id, bobC, map[string]any{"name": "Ops"}), http.StatusForbidden, "editor rename")
-	expectCode(t, do(t, h, http.MethodPatch, "/api/shared/"+id, aliceC, map[string]any{"name": ""}), http.StatusBadRequest, "empty rename")
-	expectCode(t, do(t, h, http.MethodPatch, "/api/shared/"+id, aliceC, map[string]any{"name": "Ops"}), http.StatusOK, "rename")
+	expectCode(t, do(t, srv, http.MethodPatch, "/api/shared/"+id, bobC, map[string]any{"name": "Ops"}), http.StatusForbidden, "editor rename")
+	expectCode(t, do(t, srv, http.MethodPatch, "/api/shared/"+id, aliceC, map[string]any{"name": ""}), http.StatusBadRequest, "empty rename")
+	expectCode(t, do(t, srv, http.MethodPatch, "/api/shared/"+id, aliceC, map[string]any{"name": "Ops"}), http.StatusOK, "rename")
 
 	// Last-owner rule via the API, then leave.
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+alice.ID, aliceC, map[string]any{"role": "reader"}), http.StatusConflict, "demote last owner")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id+"/members/"+alice.ID, aliceC, nil), http.StatusConflict, "last owner leaves")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id+"/members/"+bob.ID, bobC, nil), http.StatusOK, "bob leaves")
-	expectCode(t, do(t, h, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusNotFound, "after leave")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+alice.ID, aliceC, map[string]any{"role": "reader"}), http.StatusConflict, "demote last owner")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+alice.ID, aliceC, nil), http.StatusConflict, "last owner leaves")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+bob.ID, bobC, nil), http.StatusOK, "bob leaves")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusNotFound, "after leave")
 
 	// Owner delete needs a fresh session; then the vault is gone for everyone.
 	stale := staleSession(t, srv, alice)
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id, stale, nil), http.StatusForbidden, "stale delete")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id, aliceC, nil), http.StatusOK, "delete")
-	expectCode(t, do(t, h, http.MethodGet, "/api/shared/"+id, aliceC, nil), http.StatusNotFound, "after delete")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id, stale, nil), http.StatusForbidden, "stale delete")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id, aliceC, nil), http.StatusOK, "delete")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id, aliceC, nil), http.StatusNotFound, "after delete")
 
 	assertAudited(t, srv, "shared.created", "shared.member_invited", "shared.member_accepted", "shared.renamed", "shared.member_left", "shared.deleted")
 }
 
 func TestSharedMemberUpdateRemoveAndDecline(t *testing.T) {
 	srv := newTestServer(t)
-	h := srv.Routes()
 	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
 	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
 	carol, carolC := signedInUser(t, srv, "carol", users.RoleUser)
@@ -231,9 +239,9 @@ func TestSharedMemberUpdateRemoveAndDecline(t *testing.T) {
 	carolFP := publishKey(t, srv, carol, 3)
 	publishKey(t, srv, dave, 4)
 	aliceKey := sealedKeyFor(0xA1)
-	id := createShared(t, h, aliceC, "Finance", aliceKey, aliceFP)
-	invite(t, h, aliceC, id, bob.ID, "reader", sealedKeyFor(0xB2), bobFP)
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	id := createShared(t, srv, aliceC, "Finance", aliceKey, aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "reader", sealedKeyFor(0xB2), bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
 
 	member := func(uid string) shared.Member {
 		t.Helper()
@@ -245,41 +253,45 @@ func TestSharedMemberUpdateRemoveAndDecline(t *testing.T) {
 	}
 
 	// A path user with no row is 404, before any key or user lookup.
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+dave.ID, aliceC, map[string]any{"role": "reader"}), http.StatusNotFound, "PUT non-member target")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id+"/members/"+dave.ID, aliceC, nil), http.StatusNotFound, "DELETE non-member target")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+dave.ID, aliceC, map[string]any{"role": "reader"}), http.StatusNotFound, "PUT non-member target")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+dave.ID, aliceC, nil), http.StatusNotFound, "DELETE non-member target")
 
 	// Validation happens before any write.
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, bobC, map[string]any{"role": "owner"}), http.StatusForbidden, "reader changes role")
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"role": "boss"}), http.StatusBadRequest, "bad role")
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xB3)}), http.StatusBadRequest, "sealedKey without fp")
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": "short", "keyFingerprint": bobFP}), http.StatusBadRequest, "bad sealedKey")
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"role": "editor", "sealedKey": sealedKeyFor(0xB3), "keyFingerprint": aliceFP}), http.StatusBadRequest, "reseal fp mismatch")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, bobC, map[string]any{"role": "owner"}), http.StatusForbidden, "reader changes role")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"role": "boss"}), http.StatusBadRequest, "bad role")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xB3)}), http.StatusBadRequest, "sealedKey without fp")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": "short", "keyFingerprint": bobFP}), http.StatusBadRequest, "bad sealedKey")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"role": "editor", "sealedKey": sealedKeyFor(0xB3), "keyFingerprint": aliceFP}), http.StatusBadRequest, "reseal fp mismatch")
 	if m := member(bob.ID); m.Role != shared.RoleReader || m.SealedKey != sealedKeyFor(0xB2) {
 		t.Fatalf("refused update changed bob: %+v", m)
 	}
 	// Role is applied first: a last-owner refusal leaves the seal untouched.
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+alice.ID, aliceC, map[string]any{"role": "reader", "sealedKey": sealedKeyFor(0xA9), "keyFingerprint": aliceFP}), http.StatusConflict, "demote last owner with reseal")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+alice.ID, aliceC, map[string]any{"role": "reader", "sealedKey": sealedKeyFor(0xA9), "keyFingerprint": aliceFP}), http.StatusConflict, "demote last owner with reseal")
 	if m := member(alice.ID); m.Role != shared.RoleOwner || m.SealedKey != aliceKey {
 		t.Fatalf("refused demote resealed alice: %+v", m)
 	}
 
 	// Bob replaces his user key; alice re-seals to it and promotes him in one call.
 	bobFP2 := publishKey(t, srv, bob, 5)
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xB3), "keyFingerprint": bobFP}), http.StatusBadRequest, "reseal to retired key")
-	expectCode(t, do(t, h, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"role": "editor", "sealedKey": sealedKeyFor(0xB3), "keyFingerprint": bobFP2}), http.StatusOK, "reseal and promote")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xB3), "keyFingerprint": bobFP}), http.StatusBadRequest, "reseal to retired key")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"role": "editor", "sealedKey": sealedKeyFor(0xB3), "keyFingerprint": bobFP2}), http.StatusOK, "reseal and promote")
 	if m := member(bob.ID); m.Role != shared.RoleEditor || m.SealedKey != sealedKeyFor(0xB3) || m.KeyFingerprint != bobFP2 || m.SealedBy != alice.ID {
 		t.Fatalf("bob after update: %+v", m)
 	}
 
-	// Invited carol deletes her own row: that is a decline, not a leave.
-	invite(t, h, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id+"/members/"+carol.ID, carolC, nil), http.StatusOK, "carol declines by delete")
+	// Invited carol deletes her own row: that is a decline, not a leave. Before that, an
+	// invited row cannot probe who else is a member.
+	invite(t, srv, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+dave.ID, carolC, map[string]any{"role": "reader"}), http.StatusForbidden, "invited PUT probe")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+dave.ID, carolC, nil), http.StatusForbidden, "invited DELETE probe")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+bob.ID, carolC, nil), http.StatusForbidden, "invited removes bob")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+carol.ID, carolC, nil), http.StatusOK, "carol declines by delete")
 	// Decline route, and an owner removing an editor.
-	invite(t, h, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/decline", carolC, nil), http.StatusOK, "carol declines")
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/decline", bobC, nil), http.StatusConflict, "active member declines")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id+"/members/"+alice.ID, bobC, nil), http.StatusForbidden, "editor removes owner")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id+"/members/"+bob.ID, aliceC, nil), http.StatusOK, "owner removes bob")
+	invite(t, srv, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/decline", carolC, nil), http.StatusOK, "carol declines")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/decline", bobC, nil), http.StatusConflict, "active member declines")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+alice.ID, bobC, nil), http.StatusForbidden, "editor removes owner")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+bob.ID, aliceC, nil), http.StatusOK, "owner removes bob")
 	if v, err := srv.shared.Get(id); err != nil || len(v.Members) != 1 {
 		t.Fatalf("members after removals: %+v %v", v.Members, err)
 	}
@@ -289,16 +301,22 @@ func TestSharedMemberUpdateRemoveAndDecline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	declined := 0
 	for _, e := range entries {
-		if e.Action == "shared.member_left" {
+		switch e.Action {
+		case "shared.member_left":
 			t.Fatalf("an invited self-removal was audited as a leave: %s", e.Details)
+		case "shared.member_declined":
+			declined++
 		}
+	}
+	if declined != 2 {
+		t.Fatalf("shared.member_declined rows = %d, want 2 (self-DELETE and /decline)", declined)
 	}
 }
 
 func TestSharedAdminAndSettings(t *testing.T) {
 	srv := newTestServer(t)
-	h := srv.Routes()
 	admin, adminC := signedInUser(t, srv, "root", users.RoleAdmin)
 	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
 	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
@@ -309,50 +327,54 @@ func TestSharedAdminAndSettings(t *testing.T) {
 	carolFP := publishKey(t, srv, carol, 3)
 	daveFP := publishKey(t, srv, dave, 4)
 	aliceKey, bobKey := sealedKeyFor(0xA1), sealedKeyFor(0xB2)
-	id := createShared(t, h, aliceC, "Finance", aliceKey, aliceFP)
-	invite(t, h, aliceC, id, bob.ID, "editor", bobKey, bobFP)
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
-	invite(t, h, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
+	id := createShared(t, srv, aliceC, "Finance", aliceKey, aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", bobKey, bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	invite(t, srv, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
 
 	// Admin sees it with no sealed keys, is not a member, cannot read it through member routes.
-	rec := do(t, h, http.MethodGet, "/api/admin/shared", adminC, nil)
+	rec := do(t, srv, http.MethodGet, "/api/admin/shared", adminC, nil)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), id) || strings.Contains(rec.Body.String(), "sealedKey") {
 		t.Fatalf("admin list = %d %s", rec.Code, rec.Body.String())
 	}
 	assertNoForeignKeys(t, "admin list", rec.Body.String(), aliceKey, bobKey, sealedKeyFor(0xC3))
-	expectCode(t, do(t, h, http.MethodGet, "/api/shared/"+id, adminC, nil), http.StatusNotFound, "admin member GET")
-	expectCode(t, do(t, h, http.MethodGet, "/api/admin/shared", aliceC, nil), http.StatusForbidden, "user admin list")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id, adminC, nil), http.StatusNotFound, "admin member GET")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/admin/shared", aliceC, nil), http.StatusForbidden, "user admin list")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id, aliceC, nil), http.StatusForbidden, "user admin delete")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+bob.ID, aliceC, nil), http.StatusForbidden, "user admin member remove")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/admin/shared/settings", aliceC, map[string]any{"createRestrictedToAdmins": true}), http.StatusForbidden, "user settings put")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/admin/shared/settings", aliceC, nil), http.StatusForbidden, "user settings get")
 
 	// Settings: a stale admin cannot change them; a fresh one restricts creation to admins.
 	stale := staleSession(t, srv, admin)
-	expectCode(t, do(t, h, http.MethodPut, "/api/admin/shared/settings", stale, map[string]any{"createRestrictedToAdmins": true}), http.StatusForbidden, "stale settings put")
-	expectCode(t, do(t, h, http.MethodPut, "/api/admin/shared/settings", adminC, map[string]any{"createRestrictedToAdmins": true}), http.StatusOK, "settings put")
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared", aliceC, map[string]any{"name": "x", "sealedKey": aliceKey, "keyFingerprint": aliceFP}), http.StatusForbidden, "restricted create")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/admin/shared/settings", stale, map[string]any{"createRestrictedToAdmins": true}), http.StatusForbidden, "stale settings put")
+	expectCode(t, do(t, srv, http.MethodPut, "/api/admin/shared/settings", adminC, map[string]any{"createRestrictedToAdmins": true}), http.StatusOK, "settings put")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared", aliceC, map[string]any{"name": "x", "sealedKey": aliceKey, "keyFingerprint": aliceFP}), http.StatusForbidden, "restricted create")
 	adminFP := publishKey(t, srv, admin, 9)
-	createShared(t, h, adminC, "Admin vault", sealedKeyFor(0xD4), adminFP)
-	rec = do(t, h, http.MethodGet, "/api/admin/shared/settings", adminC, nil)
+	createShared(t, srv, adminC, "Admin vault", sealedKeyFor(0xD4), adminFP)
+	rec = do(t, srv, http.MethodGet, "/api/admin/shared/settings", adminC, nil)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"createRestrictedToAdmins":true`) {
 		t.Fatalf("settings get = %d %s", rec.Code, rec.Body.String())
 	}
 
 	// Admin member removal needs a fresh session; a fresh admin may remove the last owner.
-	expectCode(t, do(t, h, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+alice.ID, stale, nil), http.StatusForbidden, "stale admin remove")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+dave.ID, adminC, nil), http.StatusNotFound, "admin remove non-member")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+alice.ID, adminC, nil), http.StatusOK, "admin remove owner")
-	rec = do(t, h, http.MethodGet, "/api/admin/shared", adminC, nil)
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+alice.ID, stale, nil), http.StatusForbidden, "stale admin remove")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+dave.ID, adminC, nil), http.StatusNotFound, "admin remove non-member")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id+"/members/"+alice.ID, adminC, nil), http.StatusOK, "admin remove owner")
+	rec = do(t, srv, http.MethodGet, "/api/admin/shared", adminC, nil)
 	if !strings.Contains(rec.Body.String(), `"ownerless":true`) {
 		t.Fatalf("ownerless flag missing: %s", rec.Body.String())
 	}
 
 	// Ownerless: existing members keep reading, nobody joins, members cannot delete.
-	expectCode(t, do(t, h, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusOK, "editor reads ownerless")
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/members", bobC, map[string]any{"userId": dave.ID, "role": "reader", "sealedKey": sealedKeyFor(0xE5), "keyFingerprint": daveFP}), http.StatusForbidden, "editor invites into ownerless")
-	expectCode(t, do(t, h, http.MethodPost, "/api/shared/"+id+"/accept", carolC, nil), http.StatusConflict, "accept into ownerless")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id, bobC, nil), http.StatusForbidden, "editor deletes ownerless")
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id, bobC, nil), http.StatusOK, "editor reads ownerless")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", bobC, map[string]any{"userId": dave.ID, "role": "reader", "sealedKey": sealedKeyFor(0xE5), "keyFingerprint": daveFP}), http.StatusForbidden, "editor invites into ownerless")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", carolC, nil), http.StatusConflict, "accept into ownerless")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id, bobC, nil), http.StatusForbidden, "editor deletes ownerless")
 
-	expectCode(t, do(t, h, http.MethodDelete, "/api/admin/shared/"+id, stale, nil), http.StatusForbidden, "stale admin delete")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/admin/shared/sv_zzzzzzzzzzzzzzzzzzzzzz", adminC, nil), http.StatusNotFound, "admin delete unknown")
-	expectCode(t, do(t, h, http.MethodDelete, "/api/admin/shared/"+id, adminC, nil), http.StatusOK, "admin delete")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id, stale, nil), http.StatusForbidden, "stale admin delete")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/sv_zzzzzzzzzzzzzzzzzzzzzz", adminC, nil), http.StatusNotFound, "admin delete unknown")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/admin/shared/"+id, adminC, nil), http.StatusOK, "admin delete")
 	if _, err := srv.shared.Get(id); err == nil {
 		t.Fatal("vault still exists after admin delete")
 	}
@@ -364,13 +386,12 @@ func TestSharedAdminAndSettings(t *testing.T) {
 // bring it back into the live store.
 func TestSharedDeleteMovesVaultData(t *testing.T) {
 	srv := newTestServer(t)
-	h := srv.Routes()
 	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
-	id := createShared(t, h, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
 	if _, err := srv.vault.SaveVault(shared.StoreKey(id), 0, []byte("kdbx"), "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, do(t, h, http.MethodDelete, "/api/shared/"+id, aliceC, nil), http.StatusOK, "delete")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id, aliceC, nil), http.StatusOK, "delete")
 	if got, err := os.ReadFile(filepath.Join(srv.dataDir, "shared", "deleted", id, "vault", "vault.kdbx")); err != nil || string(got) != "kdbx" {
 		t.Fatalf("deleted area kdbx = %q, %v", got, err)
 	}
@@ -378,7 +399,104 @@ func TestSharedDeleteMovesVaultData(t *testing.T) {
 	if err != nil || meta.Version != 0 {
 		t.Fatalf("live metadata after delete = %+v, %v", meta, err)
 	}
-	if _, err := srv.vault.SaveVault(shared.StoreKey(id), 1, []byte("late"), "", "", ""); err == nil {
-		t.Fatal("late save at the old version was accepted")
+	liveDir := filepath.Join(srv.dataDir, "vaults", "shared", id)
+	for _, version := range []int64{1, 0} {
+		if _, err := srv.vault.SaveVault(shared.StoreKey(id), version, []byte("late"), "", "", ""); !errors.Is(err, vault.ErrRetired) {
+			t.Fatalf("late save at version %d = %v", version, err)
+		}
+		if _, err := os.Stat(liveDir); !os.IsNotExist(err) {
+			t.Fatalf("late save at version %d recreated %s: %v", version, liveDir, err)
+		}
+	}
+}
+
+// Accept and decline are body-less POSTs a sibling origin could forge: a cookie session
+// needs the CSRF token on every state-changing shared route; a device bearer does not.
+func TestSharedRoutesRequireCSRF(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Routes()
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	admin, adminC := signedInUser(t, srv, "root", users.RoleAdmin)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	invite(t, srv, aliceC, id, bob.ID, "reader", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	publishKey(t, srv, admin, 3)
+
+	noCSRF := func(method, path string, cookie *http.Cookie) int {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, m := range []struct {
+		method, path string
+		cookie       *http.Cookie
+	}{
+		{"POST", "/api/shared", aliceC}, {"PATCH", "/api/shared/" + id, aliceC}, {"DELETE", "/api/shared/" + id, aliceC},
+		{"POST", "/api/shared/" + id + "/members", aliceC}, {"PUT", "/api/shared/" + id + "/members/" + bob.ID, aliceC},
+		{"DELETE", "/api/shared/" + id + "/members/" + bob.ID, aliceC}, {"POST", "/api/shared/" + id + "/accept", bobC},
+		{"POST", "/api/shared/" + id + "/decline", bobC}, {"DELETE", "/api/admin/shared/" + id, adminC},
+		{"DELETE", "/api/admin/shared/" + id + "/members/" + bob.ID, adminC}, {"PUT", "/api/admin/shared/settings", adminC},
+	} {
+		if got := noCSRF(m.method, m.path, m.cookie); got != http.StatusForbidden {
+			t.Fatalf("%s %s without CSRF = %d, want 403", m.method, m.path, got)
+		}
+	}
+	if v, err := srv.shared.Get(id); err != nil || v.Members[bob.ID].State != shared.StateInvited || v.Name != "Finance" {
+		t.Fatalf("a request without CSRF changed the vault: %+v %v", v, err)
+	}
+
+	// A device bearer token needs no CSRF header.
+	_, token := pairDeviceForTest(t, h, bobC)
+	req := httptest.NewRequest(http.MethodPost, "/api/shared/"+id+"/accept", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	expectCode(t, rec, http.StatusOK, "bearer accept")
+}
+
+// Authority is re-checked at the write: an owner removed or demoted after the handler
+// resolved their row is refused and nothing changes.
+func TestSharedOwnerRemovedMidRequestIsRefused(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	dave, _ := signedInUser(t, srv, "dave", users.RoleUser)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
+	invite(t, srv, aliceC, id, bob.ID, "owner", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	daveFP := publishKey(t, srv, dave, 4)
+
+	race := func(fn func() error) {
+		srv.sharedResolved = func() {
+			srv.sharedResolved = nil
+			if err := fn(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Demoted between resolve and write: 403.
+	race(func() error { return srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor) })
+	expectCode(t, do(t, srv, http.MethodPatch, "/api/shared/"+id, bobC, map[string]any{"name": "Bob's"}), http.StatusForbidden, "demoted rename")
+	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleOwner); err != nil {
+		t.Fatal(err)
+	}
+	race(func() error { return srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor) })
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id, bobC, nil), http.StatusForbidden, "demoted delete")
+	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleOwner); err != nil {
+		t.Fatal(err)
+	}
+	// Removed between resolve and write: 404, and he cannot re-add anyone, himself included.
+	race(func() error { return srv.shared.Remove(id, alice.ID, bob.ID) })
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", bobC, map[string]any{"userId": dave.ID, "role": "owner", "sealedKey": sealedKeyFor(0xE5), "keyFingerprint": daveFP}), http.StatusNotFound, "removed invite")
+
+	v, err := srv.shared.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, in := v.Members[bob.ID]; in || len(v.Members) != 1 || v.Name != "Finance" {
+		t.Fatalf("refused writes changed the vault: %+v", v)
 	}
 }

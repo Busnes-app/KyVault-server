@@ -32,6 +32,8 @@ var (
 	// or that tries to publish one where none exists: rotation re-wraps, it never publishes.
 	ErrRotationUserKey = errors.New("a key rotation must carry the re-wrapped user key, unchanged public key; X-User-Key is accepted only for an existing key")
 	ErrConflict        = errors.New("vault version conflict: a newer version exists on the server")
+	// ErrRetired refuses writes to a key MoveOut took away; it is an ErrNotFound.
+	ErrRetired = fmt.Errorf("%w: vault was deleted", ErrNotFound)
 )
 
 // ConflictError conveys details about a rejected upload.
@@ -97,6 +99,9 @@ type Store struct {
 	mu            sync.RWMutex
 	baseDir       string
 	retentionDays int
+	// retired holds keys MoveOut took away; writes to them are refused so no directory
+	// is recreated. In memory only: shared ids are random and never reused.
+	retired map[string]bool
 }
 
 // SnapshotFile is one immutable vault-store member captured for a recovery capsule.
@@ -186,6 +191,7 @@ func NewStore(baseDir string, retentionDays int) (*Store, error) {
 	return &Store{
 		baseDir:       baseDir,
 		retentionDays: retentionDays,
+		retired:       make(map[string]bool),
 	}, nil
 }
 
@@ -279,6 +285,9 @@ func (s *Store) OpenVault(userID string) (io.ReadCloser, Metadata, error) {
 func (s *Store) SaveEnvelopes(userID string, expectedVersion int64, passwordEnvelope, recoveryEnvelope string, deviceEnvelopes map[string]DeviceEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired[userID] {
+		return ErrRetired
+	}
 
 	vDir := s.userVaultDir(userID)
 	if err := os.MkdirAll(vDir, 0700); err != nil {
@@ -307,6 +316,9 @@ func (s *Store) SaveEnvelopes(userID string, expectedVersion int64, passwordEnve
 func (s *Store) SetDeviceEnvelope(userID string, env DeviceEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired[userID] {
+		return ErrRetired
+	}
 
 	vDir := s.userVaultDir(userID)
 	if err := os.MkdirAll(vDir, 0700); err != nil {
@@ -397,6 +409,9 @@ func (s *Store) RotateVault(userID string, expectedVersion int64, kdbxData []byt
 func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated bool, userKey *userkey.Record) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired[userID] {
+		return Metadata{}, ErrRetired
+	}
 
 	vDir := s.userVaultDir(userID)
 	if err := os.MkdirAll(vDir, 0700); err != nil {
@@ -514,6 +529,9 @@ func (s *Store) SaveUserKey(userID string, expectedVersion int64, rec userkey.Re
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired[userID] {
+		return false, ErrRetired
+	}
 	if err := os.MkdirAll(s.userVaultDir(userID), 0700); err != nil {
 		return false, err
 	}
@@ -587,6 +605,9 @@ func (s *Store) ListHistory(userID string) ([]HistoryEntry, error) {
 func (s *Store) RestoreHistory(userID, historyID string) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired[userID] {
+		return Metadata{}, ErrRetired
+	}
 
 	current, _ := s.getMetadataLocked(userID)
 	if historyVersion(historyID) < current.KeyEpochSince {
@@ -743,6 +764,9 @@ func (s *Store) DiscardConflict(userID, conflictID string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.retired[userID] {
+		return ErrRetired
+	}
 
 	conflictFile := filepath.Join(s.conflictsDir(userID), conflictID+".kdbx")
 	return os.Remove(conflictFile)
@@ -791,14 +815,17 @@ func (s *Store) pruneOldHistoryLocked(userID string) {
 	}
 }
 
-// MoveOut renames the vault directory for key to dst under the store lock, so no save
-// can land in it mid-move. A missing directory is not an error.
+// MoveOut renames the vault directory for key to dst under the store lock and retires
+// key, so no later write recreates it. A missing directory is not an error.
 func (s *Store) MoveOut(key, dst string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	src := s.userVaultDir(key)
-	if _, err := os.Lstat(src); os.IsNotExist(err) {
-		return nil
+	if _, err := os.Lstat(src); !os.IsNotExist(err) {
+		if err := os.Rename(src, dst); err != nil {
+			return err
+		}
 	}
-	return os.Rename(src, dst)
+	s.retired[key] = true
+	return nil
 }

@@ -188,6 +188,10 @@ func (s *Server) vaultUpload(w http.ResponseWriter, r *http.Request, t vaultTarg
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if errors.Is(err, vault.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		var confErr *vault.ConflictError
 		if errors.As(err, &confErr) {
@@ -336,7 +340,10 @@ func (s *Server) vaultConflictDiscard(w http.ResponseWriter, r *http.Request, t 
 		return
 	}
 
-	if err := s.vault.DiscardConflict(t.key, id); err != nil {
+	if err := s.vault.DiscardConflict(t.key, id); errors.Is(err, vault.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	} else if err != nil {
 		http.Error(w, "failed to discard conflict: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

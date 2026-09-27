@@ -35,6 +35,9 @@ func (s *Server) sharedMember(w http.ResponseWriter, r *http.Request, u users.Us
 		http.Error(w, "not found", http.StatusNotFound)
 		return sharedCtx{}, false
 	}
+	if s.sharedResolved != nil {
+		s.sharedResolved()
+	}
 	sess, _ := s.currentSession(r)
 	return sharedCtx{vault: v, me: m, user: u, session: sess}, true
 }
@@ -96,6 +99,8 @@ func sharedErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, shared.ErrNotFound), errors.Is(err, shared.ErrNotMember):
 		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, shared.ErrForbidden):
+		http.Error(w, err.Error(), http.StatusForbidden)
 	case errors.Is(err, shared.ErrShape):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, shared.ErrAlreadyMember), errors.Is(err, shared.ErrLastOwner), errors.Is(err, shared.ErrMemberCap), errors.Is(err, shared.ErrOwnedCap), errors.Is(err, shared.ErrState):
@@ -144,8 +149,22 @@ func (s *Server) memberViews(v shared.Vault) []memberView {
 
 func writeOK(w http.ResponseWriter) { writeJSON(w, http.StatusOK, map[string]any{"ok": true}) }
 
+// sharedCSRF guards every state-changing shared route. Accept and decline are body-less
+// simple POSTs, and SameSite=Lax does not stop a sibling origin on the same site.
+// Bearer callers pass (validCSRF).
+func (s *Server) sharedCSRF(w http.ResponseWriter, r *http.Request) bool {
+	if s.validCSRF(r) {
+		return true
+	}
+	http.Error(w, "invalid CSRF token", http.StatusForbidden)
+	return false
+}
+
 // POST /api/shared. The owned-vault cap is checked here only (Store.Create).
 func (s *Server) handleSharedCreate(w http.ResponseWriter, r *http.Request, u users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	var req struct {
 		Name           string `json:"name"`
 		SealedKey      string `json:"sealedKey"`
@@ -243,6 +262,9 @@ func (s *Server) handleSharedGet(w http.ResponseWriter, r *http.Request, u users
 
 // PATCH /api/shared/{id}
 func (s *Server) handleSharedRename(w http.ResponseWriter, r *http.Request, u users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	c, found := s.sharedMember(w, r, u)
 	if !found {
 		return
@@ -257,7 +279,7 @@ func (s *Server) handleSharedRename(w http.ResponseWriter, r *http.Request, u us
 	if !decodeShared(w, r, &req) {
 		return
 	}
-	if err := s.shared.Rename(c.vault.ID, req.Name); err != nil {
+	if err := s.shared.Rename(c.vault.ID, u.ID, req.Name); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -266,15 +288,18 @@ func (s *Server) handleSharedRename(w http.ResponseWriter, r *http.Request, u us
 }
 
 // deleteShared moves the record and, under the vault store lock, the vault data to the
-// deleted area.
-func (s *Server) deleteShared(id string) error {
-	return s.shared.Delete(id, func(dst string) error {
+// deleted area. actorID "" is an admin.
+func (s *Server) deleteShared(id, actorID string) error {
+	return s.shared.Delete(id, actorID, func(dst string) error {
 		return s.vault.MoveOut(shared.StoreKey(id), dst)
 	}, time.Now())
 }
 
 // DELETE /api/shared/{id}
 func (s *Server) handleSharedDelete(w http.ResponseWriter, r *http.Request, u users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	c, found := s.sharedMember(w, r, u)
 	if !found {
 		return
@@ -286,7 +311,7 @@ func (s *Server) handleSharedDelete(w http.ResponseWriter, r *http.Request, u us
 	if !s.requireFresh(w, c.session) {
 		return
 	}
-	if err := s.deleteShared(c.vault.ID); err != nil {
+	if err := s.deleteShared(c.vault.ID, u.ID); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -297,6 +322,9 @@ func (s *Server) handleSharedDelete(w http.ResponseWriter, r *http.Request, u us
 // POST /api/shared/{id}/members. Only an active owner invites, so an ownerless vault
 // (after an admin removed its last owner) can gain no one: the caller gets 403.
 func (s *Server) handleSharedInvite(w http.ResponseWriter, r *http.Request, u users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	c, found := s.sharedMember(w, r, u)
 	if !found {
 		return
@@ -339,16 +367,19 @@ func (s *Server) handleSharedInvite(w http.ResponseWriter, r *http.Request, u us
 // PUT /api/shared/{id}/members/{userId}: validate everything, then role (the only write
 // that can refuse, ErrLastOwner), then seal, so a refusal writes nothing.
 func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request, u users.User) {
-	c, found := s.sharedMember(w, r, u)
-	if !found {
+	if !s.sharedCSRF(w, r) {
 		return
 	}
-	target, _, found := targetRow(w, r, c)
+	c, found := s.sharedMember(w, r, u)
 	if !found {
 		return
 	}
 	if !c.activeOwner() {
 		http.Error(w, "only an owner can change members", http.StatusForbidden)
+		return
+	}
+	target, _, found := targetRow(w, r, c)
+	if !found {
 		return
 	}
 	var req struct {
@@ -378,7 +409,7 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if req.Role != nil {
-		if err := s.shared.SetRole(c.vault.ID, target, *req.Role); err != nil {
+		if err := s.shared.SetRole(c.vault.ID, u.ID, target, *req.Role); err != nil {
 			sharedErr(w, err)
 			return
 		}
@@ -397,20 +428,23 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 // DELETE /api/shared/{id}/members/{userId}: owners remove anyone; anyone removes
 // themselves (an invited row doing so is a decline).
 func (s *Server) handleSharedMemberRemove(w http.ResponseWriter, r *http.Request, u users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	c, found := s.sharedMember(w, r, u)
 	if !found {
+		return
+	}
+	self := r.PathValue("userId") == u.ID
+	if !self && !c.activeOwner() {
+		http.Error(w, "only an owner can remove members", http.StatusForbidden)
 		return
 	}
 	target, row, found := targetRow(w, r, c)
 	if !found {
 		return
 	}
-	self := target == u.ID
-	if !self && !c.activeOwner() {
-		http.Error(w, "only an owner can remove members", http.StatusForbidden)
-		return
-	}
-	if err := s.shared.Remove(c.vault.ID, target, false); err != nil {
+	if err := s.shared.Remove(c.vault.ID, u.ID, target); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -425,14 +459,14 @@ func (s *Server) handleSharedMemberRemove(w http.ResponseWriter, r *http.Request
 	writeOK(w)
 }
 
-// POST /api/shared/{id}/accept. An ownerless vault cannot be joined: 409.
+// POST /api/shared/{id}/accept. An ownerless vault cannot be joined: the store answers
+// ErrState, 409.
 func (s *Server) handleSharedAccept(w http.ResponseWriter, r *http.Request, u users.User) {
-	c, found := s.sharedMember(w, r, u)
-	if !found {
+	if !s.sharedCSRF(w, r) {
 		return
 	}
-	if ownerless(c.vault) {
-		http.Error(w, "this shared vault has no owner and cannot be joined", http.StatusConflict)
+	c, found := s.sharedMember(w, r, u)
+	if !found {
 		return
 	}
 	if err := s.shared.Accept(c.vault.ID, u.ID, time.Now()); err != nil {
@@ -445,6 +479,9 @@ func (s *Server) handleSharedAccept(w http.ResponseWriter, r *http.Request, u us
 
 // POST /api/shared/{id}/decline
 func (s *Server) handleSharedDecline(w http.ResponseWriter, r *http.Request, u users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	c, found := s.sharedMember(w, r, u)
 	if !found {
 		return
@@ -453,7 +490,7 @@ func (s *Server) handleSharedDecline(w http.ResponseWriter, r *http.Request, u u
 		http.Error(w, "only an invitation can be declined", http.StatusConflict)
 		return
 	}
-	if err := s.shared.Remove(c.vault.ID, u.ID, false); err != nil {
+	if err := s.shared.Remove(c.vault.ID, u.ID, u.ID); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -486,13 +523,16 @@ func (s *Server) handleAdminSharedList(w http.ResponseWriter, r *http.Request, _
 
 // DELETE /api/admin/shared/{id}
 func (s *Server) handleAdminSharedDelete(w http.ResponseWriter, r *http.Request, admin users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	v, err := s.shared.Get(id)
 	if err != nil {
 		sharedErr(w, err)
 		return
 	}
-	if err := s.deleteShared(id); err != nil {
+	if err := s.deleteShared(id, ""); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -502,8 +542,11 @@ func (s *Server) handleAdminSharedDelete(w http.ResponseWriter, r *http.Request,
 
 // DELETE /api/admin/shared/{id}/members/{userId}: the last owner included.
 func (s *Server) handleAdminSharedMemberRemove(w http.ResponseWriter, r *http.Request, admin users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	id, target := r.PathValue("id"), r.PathValue("userId")
-	if err := s.shared.Remove(id, target, true); err != nil {
+	if err := s.shared.Remove(id, "", target); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -523,6 +566,9 @@ func (s *Server) handleAdminSharedSettingsGet(w http.ResponseWriter, r *http.Req
 
 // PUT /api/admin/shared/settings
 func (s *Server) handleAdminSharedSettingsPut(w http.ResponseWriter, r *http.Request, admin users.User) {
+	if !s.sharedCSRF(w, r) {
+		return
+	}
 	var v SharedSettings
 	if !decodeShared(w, r, &v) {
 		return

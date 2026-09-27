@@ -121,26 +121,26 @@ func TestMembershipLifecycle(t *testing.T) {
 		t.Fatalf("accepted row: %+v", got.Members["u-2"])
 	}
 	// Role changes and the last-owner rule.
-	if err := s.SetRole(v.ID, "u-1", RoleReader); !errors.Is(err, ErrLastOwner) {
+	if err := s.SetRole(v.ID, "u-1", "u-1", RoleReader); !errors.Is(err, ErrLastOwner) {
 		t.Fatalf("demote last owner: %v", err)
 	}
-	if err := s.SetRole(v.ID, "u-2", RoleOwner); err != nil {
+	if err := s.SetRole(v.ID, "u-1", "u-2", RoleOwner); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetRole(v.ID, "u-1", RoleReader); err != nil {
+	if err := s.SetRole(v.ID, "u-1", "u-1", RoleReader); err != nil {
 		t.Fatalf("demote with another owner: %v", err)
 	}
-	if err := s.Remove(v.ID, "u-2", false); !errors.Is(err, ErrLastOwner) {
+	if err := s.Remove(v.ID, "u-2", "u-2"); !errors.Is(err, ErrLastOwner) {
 		t.Fatalf("remove last owner: %v", err)
 	}
-	if err := s.Remove(v.ID, "u-2", true); err != nil {
+	if err := s.Remove(v.ID, "", "u-2"); err != nil {
 		t.Fatalf("admin removes last owner: %v", err)
 	}
 	got = mustGet(t, s, v.ID)
 	if _, ok := got.Members["u-2"]; ok {
 		t.Fatal("u-2 still present")
 	}
-	if err := s.Remove(v.ID, "u-9", false); !errors.Is(err, ErrNotMember) {
+	if err := s.Remove(v.ID, "", "u-9"); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("remove non-member: %v", err)
 	}
 }
@@ -345,7 +345,7 @@ func TestDeleteMovesAndPrunes(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved := ""
-	err = s.Delete(v.ID, func(dst string) error { moved = dst; return os.Rename(vaultDir, dst) }, t0)
+	err = s.Delete(v.ID, "", func(dst string) error { moved = dst; return os.Rename(vaultDir, dst) }, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,5 +487,96 @@ func TestFreshStateFollowsAcceptedAt(t *testing.T) {
 	}
 	if got := freshState(Member{}); got != StateInvited {
 		t.Fatalf("unaccepted: %v", got)
+	}
+}
+
+// Authority is checked on the record read under the store lock, so a request that
+// resolved its caller as an owner before a removal or demotion cannot write after it.
+func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("team", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"u-2", "u-3", "u-4"} {
+		if err := s.Invite(v.ID, id, RoleOwner, sealed(), fp(2), "u-1", t0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Accept(v.ID, id, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	noop := func(string) error { return nil }
+
+	// Removed actor: every owner-only write is ErrNotMember.
+	if err := s.Remove(v.ID, "u-1", "u-2"); err != nil {
+		t.Fatal(err)
+	}
+	for name, err := range map[string]error{
+		"rename": s.Rename(v.ID, "u-2", "mine"),
+		"invite": s.Invite(v.ID, "u-2", RoleOwner, sealed(), fp(2), "u-2", t0),
+		"reseal": s.Reseal(v.ID, "u-3", sealed(), fp(3), "u-2"),
+		"role":   s.SetRole(v.ID, "u-2", "u-3", RoleReader),
+		"remove": s.Remove(v.ID, "u-2", "u-3"),
+		"delete": s.Delete(v.ID, "u-2", noop, t0),
+	} {
+		if !errors.Is(err, ErrNotMember) {
+			t.Fatalf("removed actor %s: %v", name, err)
+		}
+	}
+
+	// Demoted actor: ErrForbidden.
+	if err := s.SetRole(v.ID, "u-1", "u-3", RoleReader); err != nil {
+		t.Fatal(err)
+	}
+	for name, err := range map[string]error{
+		"rename": s.Rename(v.ID, "u-3", "mine"),
+		"invite": s.Invite(v.ID, "u-9", RoleReader, sealed(), fp(9), "u-3", t0),
+		"reseal": s.Reseal(v.ID, "u-4", sealed(), fp(4), "u-3"),
+		"role":   s.SetRole(v.ID, "u-3", "u-3", RoleOwner),
+		"remove": s.Remove(v.ID, "u-3", "u-4"),
+		"delete": s.Delete(v.ID, "u-3", noop, t0),
+	} {
+		if !errors.Is(err, ErrForbidden) {
+			t.Fatalf("demoted actor %s: %v", name, err)
+		}
+	}
+	if got := mustGet(t, s, v.ID); got.Name != "team" || len(got.Members) != 3 || got.Members["u-3"].Role != RoleReader {
+		t.Fatalf("refused writes changed the record: %+v", got)
+	}
+
+	// Self-remove needs no ownership.
+	if err := s.Remove(v.ID, "u-3", "u-3"); err != nil {
+		t.Fatalf("reader leaves: %v", err)
+	}
+	// Admin "" bypasses: removes the last owners and deletes.
+	if err := s.Remove(v.ID, "", "u-4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(v.ID, "", "u-1"); err != nil {
+		t.Fatalf("admin removes last owner: %v", err)
+	}
+	if err := s.Rename(v.ID, "", "renamed"); err != nil {
+		t.Fatalf("admin rename: %v", err)
+	}
+	if err := s.Delete(v.ID, "", noop, t0); err != nil {
+		t.Fatalf("admin delete: %v", err)
+	}
+}
+
+func TestAcceptRefusesOwnerlessVault(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("team", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(v.ID, "", "u-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); !errors.Is(err, ErrState) {
+		t.Fatalf("accept ownerless: %v", err)
 	}
 }
