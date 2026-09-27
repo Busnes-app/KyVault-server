@@ -696,13 +696,13 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <Download size={14} /> Download vault first
           </button>
           <button type="button" className="btn btn-danger" onClick={handleRotateKey}
-            disabled={busy || !currentPassword || !canRotate || userKey?.kind === "mismatch"}
-            title={userKey?.kind === "mismatch" ? "Replace your key first: the stored private key cannot be re-wrapped." : canRotate ? undefined : "Save or discard your unsaved edits first."}>
+            disabled={busy || !currentPassword || !canRotate || userKey === null || userKey.kind === "mismatch"}
+            title={userKey === null || userKey.kind === "mismatch" ? "Replace your key first: the stored private key cannot be re-wrapped." : canRotate ? undefined : "Save or discard your unsaved edits first."}>
             Rotate key
           </button>
         </div>
         {!canRotate ? <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.5rem" }}>Save or discard your unsaved edits first.</p> : null}
-        {userKey?.kind === "mismatch" ? <p style={{ fontSize: "0.8rem", color: "var(--danger)", marginTop: "0.5rem" }}>Replace your key first: the stored private key cannot be re-wrapped.</p> : null}
+        {userKey === null || userKey.kind === "mismatch" ? <p style={{ fontSize: "0.8rem", color: "var(--danger)", marginTop: "0.5rem" }}>Replace your key first: the stored private key cannot be re-wrapped.</p> : null}
       </section>
 
       {/* Offline recovery: the key that opens a downloaded vault in any KeePass client */}
