@@ -66,7 +66,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := clientIP(r)
-	src := sourceKey(r)
+	src := s.sourceKey(r)
 	if !s.pairings.allow(src) {
 		s.recordAnonymousRejection(r, "device.pairing_failed", ip, "pairing redeem refused: too many wrong codes from this source")
 		http.Error(w, "too many wrong pairing codes; try again later", http.StatusTooManyRequests)
@@ -160,7 +160,7 @@ func (s *Server) startSessionWithToken(userID, deviceID, issuerDeviceID string, 
 		SSO:       id,
 		DeviceID:  deviceID,
 	}
-	s.saveSessionsLocked()
+	_ = s.saveSessionsLocked() // see startSession
 	return tokBytes, nil
 }
 
@@ -193,19 +193,25 @@ func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request, u us
 		return
 	}
 
-	s.revokeDevice(r, dev, "revoked device "+dev.Name)
+	if err := s.revokeDevice(r, dev, "revoked device "+dev.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// revokeDevice deletes the device, its vault envelope and every session it holds.
-func (s *Server) revokeDevice(r *http.Request, dev devices.Device, details string) {
+// revokeDevice deletes the device, its vault envelope and every session it holds. The
+// error is the session file not being durable; the revocation itself has happened.
+func (s *Server) revokeDevice(r *http.Request, dev devices.Device, details string) error {
 	s.sessMu.Lock()
 	s.revokeDeviceLocked(dev)
+	err := s.saveSessionsLocked()
 	s.sessMu.Unlock()
 	s.record(r, "device.revoked", dev.UserID, dev.ID, clientIP(r), details)
+	return err
 }
 
-// revokeDeviceLocked needs sessMu held.
+// revokeDeviceLocked needs sessMu held; the caller saves the session file.
 func (s *Server) revokeDeviceLocked(dev devices.Device) {
 	_ = s.devices.Revoke(dev.ID)
 	_ = s.vault.RemoveDeviceEnvelope(dev.UserID, dev.ID)
@@ -214,7 +220,6 @@ func (s *Server) revokeDeviceLocked(dev devices.Device) {
 			delete(s.sessions, tok)
 		}
 	}
-	s.saveSessionsLocked()
 }
 
 // revokeAllDevices ends every device of the user in one critical section: pending
@@ -227,6 +232,9 @@ func (s *Server) revokeAllDevices(r *http.Request, userID, reason string) {
 	for _, dev := range revoked {
 		s.revokeDeviceLocked(dev)
 	}
+	// The rotation is already committed; a failed write here is retried by the flush,
+	// and loadSessions drops sessions of devices that no longer exist regardless.
+	_ = s.saveSessionsLocked()
 	s.sessMu.Unlock()
 	for _, dev := range revoked {
 		s.record(r, "device.revoked", dev.UserID, dev.ID, clientIP(r), "revoked device "+dev.Name+": "+reason)

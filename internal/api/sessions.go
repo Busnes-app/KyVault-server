@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -42,31 +43,59 @@ func (s *Server) loadSessions() error {
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return err
 	}
+	// The file may predate a revocation whose write failed (saveSessionsLocked). The
+	// two revocations that matter most are reconciled here against records that are
+	// durable on their own: a device session whose device is gone, and a session a
+	// retained logout fences. Directory deactivation needs nothing: currentUser
+	// refuses an inactive account whatever the file says.
 	now := time.Now().UTC()
 	for key, sess := range stored {
-		if now.Before(sess.ExpiresAt) {
-			s.sessions[key] = sess
+		if !now.Before(sess.ExpiresAt) || s.logouts.Fenced(sess.SSO, now) {
+			continue
 		}
+		if sess.DeviceID != "" {
+			if _, err := s.devices.Get(sess.DeviceID); err != nil {
+				continue
+			}
+		}
+		s.sessions[key] = sess
 	}
 	return nil
 }
 
-// saveSessionsLocked needs sessMu held. A failed write is logged, not returned: the
-// session already exists in memory and the request that made it has succeeded.
-func (s *Server) saveSessionsLocked() {
+// errSessionsNotDurable is what a revocation returns when it holds in memory but not on
+// disk: the caller withholds its acknowledgement, and the periodic flush retries.
+var errSessionsNotDurable = errors.New("session record could not be written; the server will retry")
+
+// saveSessionsLocked needs sessMu held. On failure the map stays as it is (the running
+// process already honours it), sessionsDirty is set so the flush and Close retry, and
+// the error goes back so a revocation is not acknowledged as durable.
+func (s *Server) saveSessionsLocked() error {
 	data, err := json.Marshal(s.sessions)
-	if err != nil {
-		log.Printf("SESSION WRITE FAILED: %v", err)
-		return
-	}
-	path := filepath.Join(s.dataDir, sessionsFile)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err == nil {
-		err = os.Rename(tmp, path)
+	if err == nil {
+		path := filepath.Join(s.dataDir, sessionsFile)
+		tmp := path + ".tmp"
+		if err = os.WriteFile(tmp, data, 0600); err == nil {
+			err = os.Rename(tmp, path)
+		}
 	}
 	if err != nil {
-		log.Printf("SESSION WRITE FAILED: %v", err)
+		log.Printf("SESSION WRITE FAILED (will retry): %v", err)
+		s.sessionsDirty = true
+		return errSessionsNotDurable
 	}
+	s.sessionsDirty = false
+	return nil
+}
+
+// retrySessionSave writes the file again if a previous write failed.
+func (s *Server) retrySessionSave() error {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
+	if !s.sessionsDirty {
+		return nil
+	}
+	return s.saveSessionsLocked()
 }
 
 // pruneSessionsLocked needs sessMu held and reports whether anything was removed.
@@ -86,8 +115,8 @@ func (s *Server) pruneSessionsLocked(now time.Time) bool {
 func (s *Server) pruneSessions() {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
-	if s.pruneSessionsLocked(time.Now().UTC()) {
-		s.saveSessionsLocked()
+	if s.pruneSessionsLocked(time.Now().UTC()) || s.sessionsDirty {
+		_ = s.saveSessionsLocked()
 	}
 }
 
@@ -160,14 +189,20 @@ func (s *Server) handleSessionEnd(w http.ResponseWriter, r *http.Request, u user
 		}
 		break
 	}
+	var saveErr error
 	if dev.ID != "" {
 		s.revokeDeviceLocked(dev)
-	} else if found {
-		s.saveSessionsLocked()
+	}
+	if found {
+		saveErr = s.saveSessionsLocked()
 	}
 	s.sessMu.Unlock()
 	if !found {
 		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if saveErr != nil {
+		http.Error(w, saveErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	if dev.ID != "" {

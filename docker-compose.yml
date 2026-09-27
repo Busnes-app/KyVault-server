@@ -50,7 +50,10 @@ services:
       KYVAULT_SCIM_TOKEN: ${KYVAULT_SCIM_TOKEN:-}
       KYPASSWORD_SCIM_TOKEN: ${KYPASSWORD_SCIM_TOKEN:-}
       RETENTION_DAYS: ${RETENTION_DAYS:-90}
-      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-127.0.0.1/32,10.89.0.0/24,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      # Reverse proxies whose X-Forwarded-For names the client for per-source limits
+      # (pairing redeem lockout, audit budget). Empty trusts nobody: every caller behind
+      # one proxy then shares one bucket. List your proxy's address, never a whole LAN.
+      KYVAULT_TRUSTED_PROXIES: ${KYVAULT_TRUSTED_PROXIES:-}
       KYVAULT_BACKUP_DIR: ${KYVAULT_BACKUP_DIR:-}
       KYPASSWORD_BACKUP_DIR: ${KYPASSWORD_BACKUP_DIR:-}
       KYVAULT_BACKUP_KEEP: ${KYVAULT_BACKUP_KEEP:-7}

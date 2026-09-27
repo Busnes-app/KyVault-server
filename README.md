@@ -103,6 +103,7 @@ over anything saved in `config/sso.json`. The admin UI will refuse to overwrite 
 | `DATA_DIR` | no | defaults to `./data` — vaults, history, audit log, `sessions.json` (token hashes only, so sessions survive a restart) |
 | `CONFIG_DIR` | no | defaults to `./config` — `users.json`, `sso.json`, pairing secret, audit key and chain state |
 | `RETENTION_DAYS` | no | defaults to `90` |
+| `KYVAULT_TRUSTED_PROXIES` | no | comma-separated IPs or CIDRs of reverse proxies whose `X-Forwarded-For` names the client for per-source limits (pairing lockout, audit budget). Empty trusts nobody, so every caller behind one proxy shares one bucket. List the proxy, not a LAN |
 | `KYVAULT_SCIM_TOKEN` | no | Dedicated random provisioning token, 32–512 characters; unset disables SCIM unless a restored `CONFIG_DIR/scim.token` exists |
 | `PAIRING_SECRET` | no | generated into `CONFIG_DIR/pairing.secret` if unset |
 | `AUDIT_KEY` | no | exactly 32 bytes, as 64 hex characters or standard base64; generated into `CONFIG_DIR/audit.key` if unset |
@@ -353,7 +354,11 @@ Sessions themselves survive a restart: `DATA_DIR/sessions.json` holds each sessi
 hash, never the token, so a deploy signs nobody out and does not unpair extensions. Security →
 Signed-in Sessions lists every browser and device session with its address and lets the
 person end any other one; ending a device session unpairs that device. Pairing redeem is
-closed to a peer address for 15 minutes after three wrong codes.
+closed to a source address for 15 minutes after three wrong codes; behind a reverse proxy,
+set `KYVAULT_TRUSTED_PROXIES` so the source is the client the proxy forwarded rather than
+the proxy itself. A revocation, logout or device revoke whose session file write fails
+answers 500: it holds in the running process and is retried every minute, but the server
+will not claim it survives a restart until the write lands.
 
 Local backup directories must not overlap `CONFIG_DIR` or `DATA_DIR/vaults`,
 `DATA_DIR/audit`, or `DATA_DIR/drill` (including symlink aliases). Startup rejects overlaps.

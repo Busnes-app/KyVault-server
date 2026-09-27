@@ -442,3 +442,38 @@ func TestFreshAdminGateIsSatisfiableByReauthentication(t *testing.T) {
 		t.Fatalf("fresh auth_time still gated: %d", rec.Code)
 	}
 }
+
+// A delivery whose session write failed answers 500; KySignOn's retry of the same token
+// completes the write and is answered 200, after which it is a replay again.
+func TestBackchannelLogoutRetryCompletesAFailedSessionWrite(t *testing.T) {
+	f := newLogoutFixture(t, map[string]any{"sub": "alice-sub", "preferred_username": "alice", "sid": "sid-1"})
+	cookie := f.login(t)
+	token := f.idp.logoutToken(map[string]any{"sub": "alice-sub", "sid": "sid-1"})
+	restore := breakSessionWrites(t, f.srv)
+	if rec := f.logout(t, token); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("delivery with a failed write = %d, want 500", rec.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	f.srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("session still live in the process after logout: %d", rec.Code)
+	}
+	restore()
+	if rec := f.logout(t, token); rec.Code != http.StatusOK {
+		t.Fatalf("retry after the disk is back = %d, want 200", rec.Code)
+	}
+	if rec := f.logout(t, token); rec.Code != http.StatusBadRequest {
+		t.Fatalf("replay after the completed retry = %d, want 400", rec.Code)
+	}
+	f.srv.Close()
+	restarted, _ := newServerIn(t, f.dir)
+	req = httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	restarted.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("logged-out session came back after restart: %d", rec.Code)
+	}
+}

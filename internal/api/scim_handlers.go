@@ -237,7 +237,8 @@ func (s *Server) revokeDirectorySessions(id string) {
 			delete(s.sessions, token)
 		}
 	}
-	s.saveSessionsLocked()
+	// A failed write is harmless here: currentUser refuses an inactive account.
+	_ = s.saveSessionsLocked()
 }
 
 // Equality lookups are deliberately limited to the shared client's supported attributes.

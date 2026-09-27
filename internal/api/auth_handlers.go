@@ -311,10 +311,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, u users.User) 
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.User) {
+	var saveErr error
 	if cookie, err := r.Cookie("kypass_session"); err == nil && cookie.Value != "" {
 		s.sessMu.Lock()
 		delete(s.sessions, sessionKey(cookie.Value))
-		s.saveSessionsLocked()
+		saveErr = s.saveSessionsLocked()
 		s.sessMu.Unlock()
 	}
 
@@ -329,6 +330,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 	})
 
 	s.record(r, "auth.logout", u.ID, "", clientIP(r), "logged out")
+	if saveErr != nil {
+		// The session is gone from this process and the cookie is cleared; what is
+		// withheld is the claim that a restart cannot bring it back.
+		http.Error(w, saveErr.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

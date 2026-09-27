@@ -5,13 +5,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,17 +83,23 @@ func main() {
 		}
 	}
 
+	trustedProxies, err := parseTrustedProxies(os.Getenv("KYVAULT_TRUSTED_PROXIES"))
+	if err != nil {
+		log.Fatalf("KYVAULT_TRUSTED_PROXIES: %v", err)
+	}
+
 	if backupConfig.AllowPrivate {
 		log.Print("[BACKUP] private KyRecovery destinations explicitly enabled")
 	}
 	srv, err := api.NewServer(api.Config{
-		DataDir:       dataDir,
-		ConfigDir:     configDir,
-		PairingSecret: pairingSecret,
-		SCIMToken:     os.Getenv("KYVAULT_SCIM_TOKEN"),
-		RetentionDays: retentionDays,
-		AppVersion:    buildVersion(),
-		Backup:        backupConfig,
+		DataDir:        dataDir,
+		ConfigDir:      configDir,
+		PairingSecret:  pairingSecret,
+		SCIMToken:      os.Getenv("KYVAULT_SCIM_TOKEN"),
+		RetentionDays:  retentionDays,
+		AppVersion:     buildVersion(),
+		Backup:         backupConfig,
+		TrustedProxies: trustedProxies,
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize server: %v", err)
@@ -233,4 +242,26 @@ func requireIdentityProvider(configDir string) {
 	log.Printf("Optional: %s, %s (defaults to true).", sso.EnvRedirectURI, sso.EnvAutoProvision)
 	log.Printf("These take precedence over %s/sso.json and cannot be changed from the admin UI.", configDir)
 	os.Exit(1)
+}
+
+// parseTrustedProxies reads KYVAULT_TRUSTED_PROXIES: comma-separated IPs or CIDRs of the
+// reverse proxies whose X-Forwarded-For names the client for per-source limits.
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(part); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		ip, err := netip.ParseAddr(part)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not an IP address or CIDR", part)
+		}
+		out = append(out, netip.PrefixFrom(ip, ip.BitLen()))
+	}
+	return out, nil
 }

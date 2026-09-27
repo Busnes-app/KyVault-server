@@ -61,10 +61,21 @@ func (s *Server) handleBackchannelLogout(w http.ResponseWriter, r *http.Request)
 	n, err := s.applySSOLogout(claims, settings.ClientID)
 	switch {
 	case errors.Is(err, sso.ErrLogoutReplayed):
-		reject(http.StatusBadRequest, "logout token already applied")
-		return
+		// A retry of a delivery whose session write failed completes that write and
+		// is answered 200. Any other replay is refused as before.
+		if retry := s.retrySessionSave(); retry != nil {
+			http.Error(w, retry.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !s.logoutSessionsPending(claims) {
+			reject(http.StatusBadRequest, "logout token already applied")
+			return
+		}
 	case errors.Is(err, sso.ErrLogoutCapacity):
 		http.Error(w, "logout receipt capacity reached; retry later", http.StatusServiceUnavailable)
+		return
+	case errors.Is(err, errSessionsNotDurable):
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	case err != nil:
 		http.Error(w, "logout was not recorded", http.StatusInternalServerError)
@@ -130,7 +141,23 @@ func (s *Server) applySSOLogout(c oidcverify.LogoutClaims, clientID string) (int
 		}
 	}
 	if n > 0 {
-		s.saveSessionsLocked()
+		if err := s.saveSessionsLocked(); err != nil {
+			s.logoutPending[c.JWTID] = struct{}{}
+			return n, err
+		}
 	}
 	return n, nil
+}
+
+// logoutSessionsPending reports, and clears, whether this token's first delivery ended
+// sessions in memory but could not write the file. Called after that write succeeded,
+// so the retry that observes it is answered 200.
+func (s *Server) logoutSessionsPending(c oidcverify.LogoutClaims) bool {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
+	if _, ok := s.logoutPending[c.JWTID]; !ok {
+		return false
+	}
+	delete(s.logoutPending, c.JWTID)
+	return true
 }
