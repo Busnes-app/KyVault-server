@@ -10,7 +10,8 @@
     "test": "tsx --test \"src/**/*.test.ts\"",
     "preview": "vite preview",
     "prebuild": "node src/ky-ui/check-vendor.mjs",
-    "pretest": "node src/ky-ui/check-vendor.mjs"
+    "pretest": "node src/ky-ui/check-vendor.mjs",
+    "update-2fa-list": "tsx scripts/update-2fa-list.ts"
   },
   "dependencies": {
     "@zxcvbn-ts/core": "4.2.0",
