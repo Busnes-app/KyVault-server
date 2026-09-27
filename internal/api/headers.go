@@ -6,7 +6,7 @@ import "net/http"
 // 'wasm-unsafe-eval' is for hash-wasm (Argon2). data: and blob: images are the pairing
 // QR code. Inline React style props go through CSSOM and are not governed by style-src.
 // connect-src allows api.pwnedpasswords.com, the sole non-self destination: the opt-in
-// HIBP range check (frontend/src/lib/health.ts) sends only a 5-character hash prefix.
+// HIBP range check (frontend/src/lib/hibp.ts) sends only a 5-character hash prefix.
 const contentSecurityPolicy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; " +
 	"style-src 'self'; img-src 'self' data: blob:; font-src 'self'; " +
 	"connect-src 'self' https://api.pwnedpasswords.com; " +

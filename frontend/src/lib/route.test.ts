@@ -11,6 +11,8 @@ test("routes round-trip and unknown input falls back to the vault", () => {
   assert.deepEqual(parseRoute("#/admin"), { tab: "admin", admin: "sso" });
   assert.deepEqual(parseRoute("#/admin/nope"), { tab: "admin", admin: "sso" });
   assert.deepEqual(parseRoute("#/bogus"), { tab: "vault" });
+  assert.deepEqual(parseRoute("#/watchtower"), { tab: "watchtower" });
+  assert.equal(formatRoute({ tab: "watchtower" }), "#/watchtower");
   assert.equal(formatRoute({ tab: "vault" }), "#/vault");
   assert.equal(formatRoute({ tab: "vault", entry: "abc" }), "#/vault/abc");
   assert.equal(formatRoute({ tab: "admin", admin: "users" }), "#/admin/users");

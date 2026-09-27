@@ -502,8 +502,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/lib/clipboard.ts`: every copy goes through `copyText`; passwords, TOTP codes and generated passwords are cleared after 30 seconds if the clipboard still holds them (or, where reading is refused, if nothing newer was copied through the helper). The timed clear is best effort: browsers may refuse clipboard access from a timer, and the UI says so. `clipboard.test.ts` covers both.
 
-- `frontend/src/lib/route.ts`: hash routes `#/vault[/entryUuid]`, `#/security`, `#/admin/{sso|users|audit|backup}` drive the top tabs, admin tabs and the selected entry; unknown routes fall back to the vault; a non-admin on an admin route is redirected. `route.test.ts` covers parsing and formatting.
-  `App.tsx` remembers the last vault route (`lastVault` ref) so the Vault nav button restores the selected entry instead of deselecting it. `VaultPage`'s route-follow effect syncs the mobile pane (`list` when the hash drops the entry, `detail` when it names one) and treats a recycled entry's uuid as unknown, correcting the hash back to `#/vault` rather than reopening it.
+- `frontend/src/lib/route.ts`: hash routes `#/vault[/entryUuid]`, `#/watchtower`, `#/security`, `#/admin/{sso|users|audit|backup}` drive the top tabs, admin tabs and the selected entry; unknown routes fall back to the vault; a non-admin on an admin route is redirected. `route.test.ts` covers parsing and formatting.
+  `App.tsx` remembers the last vault route (`lastVault` ref) so the Vault nav button restores the selected entry instead of deselecting it. `VaultPage`'s route-follow effect syncs the mobile pane (`list` when the hash drops the entry, `detail` when it names one), resets folder, smart view and search when the routed entry would be filtered out (Watchtower's "open entry" can point at an entry hidden by the current folder or filter), and treats a recycled entry's uuid as unknown, correcting the hash back to `#/vault` rather than reopening it. Watchtower's auto-check runs once per unlock session (`autoRan` ref, re-armed on unmount), not once per tab visit.
 
 - `frontend/src/lib/useMediaQuery.ts` and `VaultPage` panes: under 900px the vault is one pane at a time (folders, list, detail) with Folders and Back controls; under 600px nav labels collapse to icons with aria-labels. Desktop keeps the three-column grid.
 
@@ -511,4 +511,18 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/lib/passphrase.ts` and `effWordlist.ts`: passphrases draw uniformly from the bundled EFF long list (7776 words, generated module, never fetched); `passphraseEntropyBits` and `passwordEntropyBits` are log2 of the search space and the meter says "about". `passphrase.test.ts` pins the list size, charset and a zero-randomness phrase.
 
-- `frontend/src/lib/health.ts` and `components/HealthReport.tsx`: the report is computed from live entries in memory (weak heuristic, reuse, expiry) and names entries by uuid and title only. The HIBP check is opt-in per click behind a confirm that states what leaves the browser; it sends the 5-character SHA-1 prefix with `Add-Padding` and no credentials, keeps results in memory, and is the only allowed non-self `connect-src` in `internal/api/headers.go`. `health.test.ts` pins the heuristic, the parser and the request shape.
+- `frontend/src/lib/watchtower.ts`, `lib/passwordStrength.ts`, `lib/hibp.ts` and `pages/WatchtowerPage.tsx`:
+  the `#/watchtower` tab scores live entries in memory: breached, reused, weak (zxcvbn-ts score ≤ 2,
+  `l33tMaxSubstitutions: 10`), insecure URL (`http:` to a non-local host — local also covers
+  single-label hosts, `.lan`, `.home.arpa`, `.internal` and CGNAT/Tailscale `100.64.0.0/10`, so
+  homelab devices like `http://nas` or `http://router.lan` are not flagged), missing 2FA (no TOTP and
+  the host matches the bundled 2fa.directory list), expired and expiring. The report holds uuids,
+  titles and reasons only; `watchtower.test.ts` asserts no secret serialises. zxcvbn and
+  `twoFactorDomains.ts` are lazy chunks and `scripts/check-bundle.mjs` (postbuild) fails the build
+  if either loads eagerly. Refresh the list with `npm run update-2fa-list` before a release.
+  The HIBP check is opt-in per click or per browser and account (`kyvault.watchtower.autoBreach:<userId>`, off by
+  default, same disclosure); it sends the 5-character SHA-1 prefix with `Add-Padding` and no
+  credentials, and is the only allowed non-self `connect-src` in `internal/api/headers.go`.
+  Breach results and the strength cache are stamped with each entry's `updatedAt` and live in the
+  mounted page until lock. No password-age check (NIST SP 800-63B: rotate on evidence of compromise)
+  and no duplicate-login check, by decision.

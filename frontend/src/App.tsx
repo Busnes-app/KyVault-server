@@ -21,12 +21,13 @@ import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
+import { WatchtowerPage } from "./pages/WatchtowerPage";
 import { SecuritySettings } from "./pages/SecuritySettings";
 import { AdminPanel } from "./pages/AdminPanel";
 import { HistoryModal } from "./components/HistoryModal";
 import { Dialog } from "./components/Dialog";
 import { useDialogs } from "./components/DialogHost";
-import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
+import { Shield, ShieldCheck, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
 import "./styles/styles.css";
 import "./ky-ui/tokens.css";
 import "./ky-ui/navigation.css";
@@ -558,6 +559,14 @@ export function App() {
             <Shield size={16} /> <span>Vault</span>
           </button>
           <button
+            className={`ky-nav-item nav-link-btn ${navTab === "watchtower" ? "active" : ""}`}
+            aria-current={navTab === "watchtower" ? "page" : undefined}
+            aria-label="Watchtower"
+            onClick={() => navigate({ tab: "watchtower" })}
+          >
+            <ShieldCheck size={16} /> <span>Watchtower</span>
+          </button>
+          <button
             className={`ky-nav-item nav-link-btn ${navTab === "security" ? "active" : ""}`}
             aria-current={navTab === "security" ? "page" : undefined}
             aria-label="Security"
@@ -601,21 +610,24 @@ export function App() {
 
       {/* Keep the editor mounted across tabs so drafts and save status survive navigation. */}
       {vault && vaultKey && saveQueue ? (
-        <VaultPage
-          vault={vault}
-          vaultKey={vaultKey}
-          vaultVersion={saveState.version}
-          saveState={saveState}
-          onChanged={saveQueue.changed}
-          onSave={saveQueue.save}
-          onDraftChange={onDraftChange}
-          initialDraft={initialDraft}
-          hidden={navTab !== "vault"}
-          onExport={handleExportKdbx}
-          onReload={() => initVault(user)}
-          route={route}
-          navigate={navigate}
-        />
+        <>
+          <VaultPage
+            vault={vault}
+            vaultKey={vaultKey}
+            vaultVersion={saveState.version}
+            saveState={saveState}
+            onChanged={saveQueue.changed}
+            onSave={saveQueue.save}
+            onDraftChange={onDraftChange}
+            initialDraft={initialDraft}
+            hidden={navTab !== "vault"}
+            onExport={handleExportKdbx}
+            onReload={() => initVault(user)}
+            route={route}
+            navigate={navigate}
+          />
+          <WatchtowerPage vault={vault} hidden={navTab !== "watchtower"} userId={user.id} onOpenEntry={(uuid) => navigate({ tab: "vault", entry: uuid })} />
+        </>
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (
         <AdminPanel currentUserId={user.id} route={route} navigate={navigate} />
