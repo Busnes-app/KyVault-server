@@ -64,6 +64,7 @@ func (s *Server) handleAdminUserDeactivate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.record(r, "admin.user_deactivated", admin.ID, "", clientIP(r), "deactivated user "+id)
+	s.userActiveChanged(r, id, false)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -74,6 +75,7 @@ func (s *Server) handleAdminUserReactivate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.record(r, "admin.user_reactivated", admin.ID, "", clientIP(r), "reactivated user "+id)
+	s.userActiveChanged(r, id, true)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

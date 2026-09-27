@@ -127,6 +127,7 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.revokeDirectorySessions(id)
+		s.userActiveChanged(r, id, false)
 		s.record(r, "scim.user_deleted", id, "", clientIP(r), "directory account removed; encrypted vault retained")
 		writeSCIM(w, 204, nil)
 		return
@@ -205,6 +206,7 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 	if !attrs.Active {
 		s.revokeDirectorySessions(id)
 	}
+	s.userActiveChanged(r, id, attrs.Active)
 	current, err := s.users.Get(id)
 	if err != nil {
 		scimError(w, 500, "", "Unable to read user")

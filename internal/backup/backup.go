@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -14,27 +15,30 @@ import (
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/devices"
+	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 	"github.com/Busnes-app/kyvault-server/internal/vault"
 )
 
 type Collector struct {
-	Vault         *vault.Store
-	Audit         *audit.Store
-	Users         *users.Store
-	Devices       *devices.Store
-	SSO           *sso.Store
-	State         *StateStore
-	PairingSecret string
-	SCIMToken     string
-	RetentionDays int
-	DataDir       string
-	AppVersion    string
+	Vault              *vault.Store
+	Audit              *audit.Store
+	Users              *users.Store
+	Devices            *devices.Store
+	SSO                *sso.Store
+	Shared             *shared.Store
+	State              *StateStore
+	PairingSecret      string
+	SCIMToken          string
+	SharedSettingsPath string
+	RetentionDays      int
+	DataDir            string
+	AppVersion         string
 }
 
 func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, error) {
-	if c.Vault == nil || c.Audit == nil || c.Users == nil || c.Devices == nil || c.SSO == nil || c.State == nil || c.PairingSecret == "" {
+	if c.Vault == nil || c.Audit == nil || c.Users == nil || c.Devices == nil || c.SSO == nil || c.Shared == nil || c.State == nil || c.PairingSecret == "" {
 		return nil, nil, nil, errors.New("backup: collector is missing a required source")
 	}
 	userData, err := c.Users.Snapshot()
@@ -54,6 +58,10 @@ func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, er
 		return nil, nil, nil, err
 	}
 	vaultFiles, err := c.Vault.Snapshot()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	sharedFiles, err := c.Shared.Snapshot()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -79,8 +87,19 @@ func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, er
 	if c.SCIMToken != "" {
 		files = append(files, capsule.File{Path: "config/scim.token", Content: []byte(c.SCIMToken), Mode: 0600})
 	}
+	if c.SharedSettingsPath != "" {
+		data, err := os.ReadFile(c.SharedSettingsPath)
+		if err == nil {
+			files = append(files, capsule.File{Path: "config/shared.json", Content: data, Mode: 0600})
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, nil, err
+		}
+	}
 	for _, file := range vaultFiles {
 		files = append(files, capsule.File{Path: "data/vaults/" + file.Path, Content: file.Data, Mode: file.Mode})
+	}
+	for _, file := range sharedFiles {
+		files = append(files, capsule.File{Path: "data/shared/" + file.Path, Content: file.Data, Mode: file.Mode})
 	}
 	stateFiles, err := c.State.CapsuleFiles()
 	if err != nil {

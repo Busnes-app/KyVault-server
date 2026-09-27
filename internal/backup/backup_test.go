@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
@@ -19,6 +20,7 @@ import (
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/devices"
+	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 	"github.com/Busnes-app/kyvault-server/internal/vault"
@@ -121,13 +123,20 @@ func testCollector(t *testing.T) Collector {
 	if err := ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: "https://signon.example", ClientID: "kyvault", ClientSecret: "sealed-inside-capsule"}); err != nil {
 		t.Fatal(err)
 	}
-	return Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: ssoStore,
+	sh, err := shared.NewStore(filepath.Join(dataDir, "shared"), 90, func(id, dst string) error {
+		return v.MoveOut(shared.StoreKey(id), dst)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: ssoStore, Shared: sh,
 		State: NewStateStore(configDir), DataDir: dataDir, PairingSecret: "replication-secret", RetentionDays: 90, AppVersion: "test"}
 }
 
 type openingDepositor struct {
 	t       *testing.T
 	private recoverykey.PrivateKey
+	opened  *[]capsule.File
 }
 
 func (d openingDepositor) Deposit(_ context.Context, _, _ string, raw []byte) (Receipt, error) {
@@ -139,17 +148,34 @@ func (d openingDepositor) Deposit(_ context.Context, _, _ string, raw []byte) (R
 	if len(files) < 9 {
 		d.t.Fatalf("capsule has only %d files", len(files))
 	}
+	if d.opened != nil {
+		*d.opened = files
+	}
 	sum := sha256.Sum256(raw)
 	return Receipt{CapsuleID: manifest.CapsuleID, Digest: hex.EncodeToString(sum[:]), SizeBytes: int64(len(raw)), DepositedAt: time.Now()}, nil
 }
 
 func TestDepositAndRestoreDrillRoundTrip(t *testing.T) {
 	collector := testCollector(t)
+	sv, err := collector.Shared.Create("Finance", "u-1", base64.StdEncoding.EncodeToString(make([]byte, shared.SealedKeyBytes)), "FP", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedVaultBytes := []byte("shared-vault-ciphertext")
+	if _, err := collector.Vault.SaveVault(shared.StoreKey(sv.ID), 0, sharedVaultBytes, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	sharedRecordBytes, err := os.ReadFile(filepath.Join(collector.DataDir, "shared", sv.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	private, key := generatedKey(t)
 	if err := collector.State.StorePairing("https://recovery.example", "secret-token", key); err != nil {
 		t.Fatal(err)
 	}
-	service := Service{State: collector.State, Collector: collector, Client: openingDepositor{t: t, private: private}}
+	var opened []capsule.File
+	service := Service{State: collector.State, Collector: collector, Client: openingDepositor{t: t, private: private, opened: &opened}}
 	result, err := service.Run(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -157,9 +183,33 @@ func TestDepositAndRestoreDrillRoundTrip(t *testing.T) {
 	if result.Receipt.CapsuleID != result.Manifest.CapsuleID {
 		t.Fatal("receipt and manifest capsule IDs differ")
 	}
+
+	byPath := make(map[string][]byte, len(opened))
+	for _, f := range opened {
+		byPath[f.Path] = f.Content
+	}
+	if !bytes.Equal(byPath["data/shared/"+sv.ID+".json"], sharedRecordBytes) {
+		t.Fatalf("restored data/shared/%s.json bytes differ", sv.ID)
+	}
+	if !bytes.Equal(byPath["data/vaults/shared/"+sv.ID+"/vault.kdbx"], sharedVaultBytes) {
+		t.Fatalf("restored data/vaults/shared/%s/vault.kdbx bytes differ", sv.ID)
+	}
+
 	drill, err := RunDrill(t.Context(), collector)
 	if err != nil || !drill.Passed {
 		t.Fatalf("RunDrill = %+v, %v", drill, err)
+	}
+	found := false
+	for _, c := range drill.Checks {
+		if c.Name == "shared vault records" {
+			found = true
+			if !c.Passed {
+				t.Fatalf("shared vault records check failed: %s", c.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("drill did not run the shared vault records check")
 	}
 }
 
@@ -224,5 +274,166 @@ func TestSCIMTokenIncludedInRecoveryCapsule(t *testing.T) {
 	result, err := RunDrill(context.Background(), collector)
 	if err != nil || !result.Passed {
 		t.Fatalf("SCIM-aware restore drill: %+v %v", result, err)
+	}
+}
+
+func TestCapsuleIncludesSharedVaults(t *testing.T) {
+	c := testCollector(t)
+	sv, err := c.Shared.Create("Finance", "u-1", base64.StdEncoding.EncodeToString(make([]byte, shared.SealedKeyBytes)), "FP", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Vault.SaveVault(shared.StoreKey(sv.ID), 0, []byte("shared-ct"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	files, _, _, err := c.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"data/shared/" + sv.ID + ".json": false, "data/vaults/shared/" + sv.ID + "/vault.kdbx": false, "data/vaults/shared/" + sv.ID + "/metadata.json": false}
+	for _, f := range files {
+		if _, ok := want[f.Path]; ok {
+			want[f.Path] = true
+		}
+	}
+	for p, seen := range want {
+		if !seen {
+			t.Fatalf("capsule lacks %s", p)
+		}
+	}
+}
+
+func TestCollectFailsWithoutSharedStore(t *testing.T) {
+	c := testCollector(t)
+	c.Shared = nil
+	if _, _, _, err := c.Collect(); err == nil {
+		t.Fatal("expected Collect to fail with no Shared store")
+	}
+}
+
+func TestSharedSettingsIncludedWhenPresent(t *testing.T) {
+	c := testCollector(t)
+	configDir := filepath.Dir(c.State.dir)
+	c.SharedSettingsPath = filepath.Join(configDir, "shared.json")
+	settingsBytes := []byte(`{"createRestrictedToAdmins":true}`)
+	if err := os.WriteFile(c.SharedSettingsPath, settingsBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	files, _, _, err := c.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range files {
+		if f.Path == "config/shared.json" {
+			found = true
+			if !bytes.Equal(f.Content, settingsBytes) || f.Mode != 0600 {
+				t.Fatal("wrong config/shared.json snapshot")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("config/shared.json missing from sealed payload inputs")
+	}
+}
+
+func TestSharedSettingsOmittedWhenAbsent(t *testing.T) {
+	c := testCollector(t)
+	c.SharedSettingsPath = filepath.Join(filepath.Dir(c.State.dir), "shared.json")
+	files, _, _, err := c.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Path == "config/shared.json" {
+			t.Fatal("config/shared.json present without a settings file")
+		}
+	}
+}
+
+func TestDrillChecksDeletedSharedVaultRecords(t *testing.T) {
+	c := testCollector(t)
+	sv, err := c.Shared.Create("Finance", "u-1", base64.StdEncoding.EncodeToString(make([]byte, shared.SealedKeyBytes)), "FP", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Vault.SaveVault(shared.StoreKey(sv.ID), 0, []byte("shared-ct"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Shared.Delete(sv.ID, "u-1", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(c.DataDir, "shared", "deleted", sv.ID, "record.json")); err != nil {
+		t.Fatal(err)
+	}
+	drill, err := RunDrill(t.Context(), c)
+	if err != nil || !drill.Passed {
+		t.Fatalf("RunDrill = %+v, %v", drill, err)
+	}
+	found := false
+	for _, chk := range drill.Checks {
+		if chk.Name == "shared vault records" {
+			found = true
+			if !chk.Passed {
+				t.Fatalf("shared vault records check failed on deleted vault: %s", chk.Message)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("drill did not run the shared vault records check")
+	}
+}
+
+func sharedRecordsCheck(t *testing.T, root string) Check {
+	t.Helper()
+	result := validateRestore(t.Context(), root, capsule.Manifest{})
+	for _, c := range result.Checks {
+		if c.Name == "shared vault records" {
+			return c
+		}
+	}
+	t.Fatal("no shared vault records check in result")
+	return Check{}
+}
+
+func TestDrillFailsLiveSharedRecordIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data", "shared")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sv_1.json"), []byte(`{"id":"sv_2","members":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if c := sharedRecordsCheck(t, root); c.Passed {
+		t.Fatal("expected failure on live record ID mismatch")
+	}
+}
+
+func TestDrillFailsDeletedSharedRecordIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data", "shared", "deleted", "sv_1")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "record.json"), []byte(`{"id":"sv_2","members":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if c := sharedRecordsCheck(t, root); c.Passed {
+		t.Fatal("expected failure on deleted record ID mismatch")
+	}
+}
+
+func TestDrillFailsUnexpectedFileUnderSharedDir(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data", "shared")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a record"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if c := sharedRecordsCheck(t, root); c.Passed {
+		t.Fatal("expected failure on unexpected file under data/shared")
 	}
 }

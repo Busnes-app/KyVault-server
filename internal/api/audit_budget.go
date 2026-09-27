@@ -231,6 +231,7 @@ func (s *Server) flushSuppressed() {
 
 func (s *Server) flushOnce() {
 	s.pruneSessions()
+	s.pruneShared()
 	s.pairings.sweep()
 	for src, n := range s.rejects.sweep() {
 		s.recordSuppressed(context.Background(), src, n)

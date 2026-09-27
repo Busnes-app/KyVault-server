@@ -15,8 +15,59 @@ import (
 	"github.com/Busnes-app/kyvault-server/internal/vault"
 )
 
+// vaultTarget names which store entry a data handler acts on and who is acting.
+type vaultTarget struct {
+	key       string     // vault.Store key: u.ID or shared.StoreKey(id)
+	user      users.User // acting user, for audit
+	deviceID  string     // session DeviceID, for audit and conflict filenames
+	shared    bool       // true → envelopes/rotation headers refused/ignored, audit prefix "shared."
+	sharedID  string     // shared vault id; writes go through writeTarget
+	filename  string     // Content-Disposition base name
+	fileParam string     // PathValue name of a history/conflict id: "id" personal, "hid"/"cid" shared
+}
+
+// auditAction maps a personal audit action to its shared equivalent.
+func (t vaultTarget) auditAction(personal string) string {
+	if !t.shared {
+		return personal
+	}
+	switch personal {
+	case "vault.download":
+		return "shared.downloaded"
+	case "vault.restored_snapshot":
+		return "shared.rolled_back"
+	case "vault.conflict_download":
+		return "shared.conflict_downloaded"
+	}
+	return "shared." + strings.TrimPrefix(personal, "vault.")
+}
+
+// detail prefixes an audit detail with the shared vault id when acting on a shared vault.
+func (t vaultTarget) detail(msg string) string {
+	if !t.shared {
+		return msg
+	}
+	return t.key + ": " + msg
+}
+
+// personalTarget builds the vaultTarget for a user's own vault.
+func (s *Server) personalTarget(r *http.Request, u users.User) vaultTarget {
+	sess, _ := s.currentSession(r)
+	return vaultTarget{
+		key:       u.ID,
+		user:      u,
+		deviceID:  sess.DeviceID,
+		filename:  u.Username + "-vault.kdbx",
+		fileParam: "id",
+	}
+}
+
 func (s *Server) handleVaultMetadata(w http.ResponseWriter, r *http.Request, u users.User) {
-	meta, err := s.vault.GetMetadata(u.ID)
+	s.vaultMetadata(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultMetadata(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	meta, err := s.vault.GetMetadata(t.key)
 	if err != nil {
 		http.Error(w, "failed to get vault metadata: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -25,7 +76,11 @@ func (s *Server) handleVaultMetadata(w http.ResponseWriter, r *http.Request, u u
 }
 
 func (s *Server) handleVaultDownload(w http.ResponseWriter, r *http.Request, u users.User) {
-	rc, meta, err := s.vault.OpenVault(u.ID)
+	s.vaultDownload(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultDownload(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	rc, meta, err := s.vault.OpenVault(t.key)
 	if err != nil {
 		if errors.Is(err, vault.ErrNotFound) {
 			http.Error(w, "vault does not exist yet", http.StatusNotFound)
@@ -37,13 +92,13 @@ func (s *Server) handleVaultDownload(w http.ResponseWriter, r *http.Request, u u
 	defer rc.Close()
 
 	w.Header().Set("Content-Type", "application/x-keepass2")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s-vault.kdbx\"", u.Username))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", t.filename))
 	w.Header().Set("ETag", fmt.Sprintf("\"%d\"", meta.Version))
 	w.Header().Set("X-Vault-Version", strconv.FormatInt(meta.Version, 10))
 	w.Header().Set("X-Vault-Checksum", meta.Checksum)
 
 	_, _ = io.Copy(w, rc)
-	s.record(r, "vault.download", u.ID, "", clientIP(r), fmt.Sprintf("downloaded vault v%d", meta.Version))
+	s.record(r, t.auditAction("vault.download"), t.user.ID, "", clientIP(r), t.detail(fmt.Sprintf("downloaded vault v%d", meta.Version)))
 }
 
 type VaultUploadRequest struct {
@@ -54,6 +109,14 @@ type VaultUploadRequest struct {
 }
 
 func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u users.User) {
+	s.vaultUpload(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultUpload(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	if t.shared && r.Header.Get("X-Vault-Key-Rotated") == "1" {
+		http.Error(w, "shared vaults do not rotate through this route", http.StatusBadRequest)
+		return
+	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 50<<20))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -71,8 +134,7 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 	var recEnv string
 	// The device that saved is what the session proves, never what the body or a header
 	// claims: the id is audited and becomes part of a conflict filename.
-	current, _ := s.currentSession(r)
-	devID := current.DeviceID
+	devID := t.deviceID
 
 	expectedVersion = ifMatchVersion(r)
 
@@ -105,6 +167,11 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		return
 	}
 
+	if t.shared {
+		pwEnv = ""
+		recEnv = ""
+	}
+
 	rotated := r.Header.Get("X-Vault-Key-Rotated") == "1"
 	var meta vault.Metadata
 	if rotated {
@@ -114,18 +181,28 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 			http.Error(w, "X-User-Key: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		meta, err = s.vault.RotateVault(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID, userKey)
+		meta, err = s.vault.RotateVault(t.key, expectedVersion, kdbxData, pwEnv, recEnv, devID, userKey)
 	} else {
-		meta, err = s.vault.SaveVault(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+		err = s.writeTarget(t, func() (saveErr error) {
+			meta, saveErr = s.vault.SaveVault(t.key, expectedVersion, kdbxData, pwEnv, recEnv, devID)
+			return saveErr
+		})
+	}
+	if sharedRefused(w, err) {
+		return
 	}
 	if errors.Is(err, vault.ErrRotationEnvelopes) || errors.Is(err, vault.ErrRotationUserKey) || errors.Is(err, userkey.ErrShape) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if errors.Is(err, vault.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		var confErr *vault.ConflictError
 		if errors.As(err, &confErr) {
-			s.record(r, "vault.conflict_rejected", u.ID, devID, clientIP(r), confErr.Error())
+			s.record(r, t.auditAction("vault.conflict_rejected"), t.user.ID, devID, clientIP(r), t.detail(confErr.Error()))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(confErr)
@@ -135,12 +212,12 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		return
 	}
 
-	s.record(r, "vault.saved", u.ID, devID, clientIP(r), fmt.Sprintf("saved vault v%d", meta.Version))
+	s.record(r, t.auditAction("vault.saved"), t.user.ID, devID, clientIP(r), t.detail(fmt.Sprintf("saved vault v%d", meta.Version)))
 	if rotated {
-		s.record(r, "vault.key_rotated", u.ID, devID, clientIP(r), fmt.Sprintf("rotated vault key at v%d", meta.Version))
+		s.record(r, "vault.key_rotated", t.user.ID, devID, clientIP(r), fmt.Sprintf("rotated vault key at v%d", meta.Version))
 		// Every device holds the retired key, and a pending pairing code could mint a
 		// fresh 90-day session for one; end them all here, not in the browser's loop.
-		s.revokeAllDevices(r, u.ID, "key_rotated")
+		s.revokeAllDevices(r, t.user.ID, "key_rotated")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
@@ -180,7 +257,11 @@ func (s *Server) handleVaultEnvelopes(w http.ResponseWriter, r *http.Request, u 
 }
 
 func (s *Server) handleVaultHistory(w http.ResponseWriter, r *http.Request, u users.User) {
-	history, err := s.vault.ListHistory(u.ID)
+	s.vaultHistory(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultHistory(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	history, err := s.vault.ListHistory(t.key)
 	if err != nil {
 		http.Error(w, "failed to list history: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -189,13 +270,24 @@ func (s *Server) handleVaultHistory(w http.ResponseWriter, r *http.Request, u us
 }
 
 func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Request, u users.User) {
-	id := r.PathValue("id")
+	s.vaultHistoryRestore(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultHistoryRestore(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	id := r.PathValue(t.fileParam)
 	if id == "" {
 		http.Error(w, "missing snapshot id", http.StatusBadRequest)
 		return
 	}
 
-	meta, err := s.vault.RestoreHistory(u.ID, id)
+	var meta vault.Metadata
+	err := s.writeTarget(t, func() (restoreErr error) {
+		meta, restoreErr = s.vault.RestoreHistory(t.key, id)
+		return restoreErr
+	})
+	if sharedRefused(w, err) {
+		return
+	}
 	if errors.Is(err, vault.ErrStaleKey) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "This snapshot was saved under a previous vault key. The current key cannot open it, so it cannot be rolled back to."})
 		return
@@ -209,7 +301,7 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	s.record(r, "vault.restored_snapshot", u.ID, "", clientIP(r), fmt.Sprintf("restored snapshot %s to v%d", id, meta.Version))
+	s.record(r, t.auditAction("vault.restored_snapshot"), t.user.ID, "", clientIP(r), t.detail(fmt.Sprintf("restored snapshot %s to v%d", id, meta.Version)))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"metadata": meta,
@@ -217,8 +309,12 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleVaultHistoryDownload(w http.ResponseWriter, r *http.Request, u users.User) {
-	id := r.PathValue("id")
-	rc, err := s.vault.OpenHistory(u.ID, id)
+	s.vaultHistoryDownload(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultHistoryDownload(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	id := r.PathValue(t.fileParam)
+	rc, err := s.vault.OpenHistory(t.key, id)
 	if err != nil {
 		if errors.Is(err, vault.ErrNotFound) {
 			http.Error(w, "snapshot not found", http.StatusNotFound)
@@ -231,11 +327,15 @@ func (s *Server) handleVaultHistoryDownload(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/x-keepass2")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, rc)
-	s.record(r, "vault.snapshot_downloaded", u.ID, "", clientIP(r), "downloaded snapshot "+id)
+	s.record(r, t.auditAction("vault.snapshot_downloaded"), t.user.ID, "", clientIP(r), t.detail("downloaded snapshot "+id))
 }
 
 func (s *Server) handleVaultConflicts(w http.ResponseWriter, r *http.Request, u users.User) {
-	conflicts, err := s.vault.ListConflicts(u.ID)
+	s.vaultConflicts(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultConflicts(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	conflicts, err := s.vault.ListConflicts(t.key)
 	if err != nil {
 		http.Error(w, "failed to list conflicts: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -244,24 +344,40 @@ func (s *Server) handleVaultConflicts(w http.ResponseWriter, r *http.Request, u 
 }
 
 func (s *Server) handleVaultConflictDiscard(w http.ResponseWriter, r *http.Request, u users.User) {
-	id := r.PathValue("id")
+	s.vaultConflictDiscard(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultConflictDiscard(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	id := r.PathValue(t.fileParam)
 	if id == "" {
 		http.Error(w, "missing conflict id", http.StatusBadRequest)
 		return
 	}
 
-	if err := s.vault.DiscardConflict(u.ID, id); err != nil {
+	err := s.writeTarget(t, func() error { return s.vault.DiscardConflict(t.key, id) })
+	if sharedRefused(w, err) {
+		return
+	}
+	if errors.Is(err, vault.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
 		http.Error(w, "failed to discard conflict: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.record(r, "vault.conflict_discarded", u.ID, "", clientIP(r), "discarded conflict "+id)
+	s.record(r, t.auditAction("vault.conflict_discarded"), t.user.ID, "", clientIP(r), t.detail("discarded conflict "+id))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleVaultConflictDownload(w http.ResponseWriter, r *http.Request, u users.User) {
-	id := r.PathValue("id")
-	rc, err := s.vault.OpenConflict(u.ID, id)
+	s.vaultConflictDownload(w, r, s.personalTarget(r, u))
+}
+
+func (s *Server) vaultConflictDownload(w http.ResponseWriter, r *http.Request, t vaultTarget) {
+	id := r.PathValue(t.fileParam)
+	rc, err := s.vault.OpenConflict(t.key, id)
 	if err != nil {
 		if errors.Is(err, vault.ErrNotFound) {
 			http.Error(w, "conflict not found", http.StatusNotFound)
@@ -275,5 +391,5 @@ func (s *Server) handleVaultConflictDownload(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Disposition", `attachment; filename="conflict.kdbx"`)
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, rc)
-	s.record(r, "vault.conflict_download", u.ID, "", clientIP(r), "downloaded preserved conflict "+id)
+	s.record(r, t.auditAction("vault.conflict_download"), t.user.ID, "", clientIP(r), t.detail("downloaded preserved conflict "+id))
 }

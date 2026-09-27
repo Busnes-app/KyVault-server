@@ -18,6 +18,7 @@ import (
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 
 	"github.com/Busnes-app/kyvault-server/internal/audit"
+	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/vault"
 )
 
@@ -140,6 +141,38 @@ func validateRestore(_ context.Context, root string, manifest capsule.Manifest) 
 		return nil
 	})
 	add("encrypted vault checksums", err)
+
+	err = filepath.WalkDir(filepath.Join(root, "data", "shared"), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(filepath.Join(root, "data", "shared"), path)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+		segments := strings.Split(rel, "/")
+		switch {
+		case len(segments) == 3 && segments[0] == "deleted" && segments[2] == "record.json":
+			return checkSharedRecord(path, segments[1])
+		case len(segments) >= 3 && segments[0] == "deleted" && segments[2] == "vault":
+			if !entry.Type().IsRegular() {
+				return fmt.Errorf("shared deleted vault file %s is not regular", rel)
+			}
+			return nil
+		case len(segments) == 1 && strings.HasSuffix(rel, ".json"):
+			return checkSharedRecord(path, strings.TrimSuffix(rel, ".json"))
+		default:
+			return fmt.Errorf("unexpected shared backup file %s", rel)
+		}
+	})
+	add("shared vault records", err)
 	add("zero-knowledge boundary", nil)
 	result.Checks[len(result.Checks)-1].Message = "server holds no vault decryption key; ciphertext integrity verified"
 	if manifest.ServiceName != "" {
@@ -184,6 +217,24 @@ func validateRecipe(root string, raw any) error {
 		if !seen[path] {
 			return fmt.Errorf("recipe omits %s", path)
 		}
+	}
+	return nil
+}
+
+// checkSharedRecord parses a shared vault record and requires its ID to equal the name
+// derived from its path: the filename stem for a live record, the parent directory for a
+// deleted one.
+func checkSharedRecord(path, wantID string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var v shared.Vault
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	if v.ID != wantID {
+		return fmt.Errorf("shared record %s has ID %q, want %q", path, v.ID, wantID)
 	}
 	return nil
 }
