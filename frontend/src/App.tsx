@@ -183,7 +183,9 @@ export function App() {
         try {
           const latest = await getJSON<VaultMetadata>("/api/vault/metadata");
           if (generation !== unlockGeneration.current) return;
-          setUserKey(await adoptUserKey(latest.userKey, key, u.id));
+          const adopted = await adoptUserKey(latest.userKey, key, u.id);
+          if (generation !== unlockGeneration.current) return;
+          setUserKey(adopted);
           setMeta(latest);
           return;
         } catch (err2) {

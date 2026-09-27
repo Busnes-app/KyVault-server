@@ -26,6 +26,9 @@ func (s *Server) handleUserKeyPut(w http.ResponseWriter, r *http.Request, u user
 	case errors.Is(err, userkey.ErrShape):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	case errors.Is(err, vault.ErrConflict) && createOnly:
+		http.Error(w, "A key is already published for this account. Reload the vault to adopt it.", http.StatusConflict)
+		return
 	case errors.Is(err, vault.ErrConflict):
 		http.Error(w, "The vault changed on the server since this key was wrapped. Reload the vault and try again.", http.StatusConflict)
 		return
