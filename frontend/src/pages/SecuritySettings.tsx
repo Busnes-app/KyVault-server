@@ -16,9 +16,8 @@ import { newUserKeyRecord } from "../lib/userKeyState";
 import type { UserKeyState } from "../lib/userKeyState";
 import { fingerprint } from "../lib/userKey";
 import { KnownKeys } from "../components/KnownKeys";
-import { ErrorLine } from "../components/ErrorLine";
-import { planReplace, replaceWarning, resealHeld, zeroKeys, type HeldKey, type ResealFailure, type SealIdentity } from "../lib/keyReplaceReseal";
-import { sharedApi as defaultSharedApi, type SharedApi, type SharedVaultSummary } from "../lib/sharedVaults";
+import { runKeyReplace, zeroKeys, type ResealPending } from "../lib/keyReplaceReseal";
+import { sharedApi as defaultSharedApi, type SharedApi } from "../lib/sharedVaults";
 import type { KeePassVault } from "../lib/kdbx";
 
 // Type-it-back comparison ignores formatting, not case or characters.
@@ -65,19 +64,16 @@ type Props = {
   // Pins live in the personal vault, whichever vault is selected.
   pinVault?: KeePassVault | null;
   onPinsChanged?: () => void;
-  // Replacing the user key retires the key every shared vault key is sealed to, so the
-  // rows are needed here to open them first and re-seal them afterwards.
-  sharedVaults: SharedVaultSummary[];
+  // Replacing the user key retires the key every shared vault key is sealed to. The keys it
+  // re-seals belong to App, which outlives this page: the panel that retries a failure and
+  // the keys it needs must survive the navigation this page does not.
+  onResealPending: (pending: ResealPending | null) => void;
+  resealPending: boolean;
   onSharedChanged: () => void;
   sharedApi?: SharedApi;
 };
 
-// What a re-seal still owes: the failures on screen, the keys they need, and who to seal to.
-type ResealPending = { failed: ResealFailure[]; held: HeldKey[]; me: SealIdentity };
-
-const REPLACE_KEY_MESSAGE = "Anyone who has verified your current key will be asked to verify the new one. Do this if you believe your private key was exposed.";
-
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration, personalOnly = true, pinVault, onPinsChanged, sharedVaults, onSharedChanged, sharedApi: api = defaultSharedApi }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration, personalOnly = true, pinVault, onPinsChanged, onResealPending, resealPending, onSharedChanged, sharedApi: api = defaultSharedApi }: Props) {
   const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -101,14 +97,6 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [revoking, setRevoking] = useState<string | null>(null);
   const [unrevoked, setUnrevoked] = useState<Device[]>([]);
   const [keyFingerprint, setKeyFingerprint] = useState<string>("");
-  const [reseal, setReseal] = useState<ResealPending | null>(null);
-  const [resealing, setResealing] = useState(false);
-
-  // Shared vault keys held for a re-seal are live secrets: they stay only until the re-seal
-  // lands or this page goes away (a lock unmounts it), and are wiped either way.
-  const resealRef = useRef<ResealPending | null>(null);
-  const rememberReseal = (next: ResealPending | null) => { resealRef.current = next; setReseal(next); };
-  useEffect(() => () => { if (resealRef.current) zeroKeys(resealRef.current.held); resealRef.current = null; }, []);
 
   useEffect(() => {
     let live = true;
@@ -178,7 +166,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       if (meta.passwordEnvelope && (await verifyMasterPassword(meta.passwordEnvelope, currentPassword, vaultKey))) {
         return meta.version;
       }
-      setError("Rotating the key needs your master password. The paper code cannot be used here.");
+      setError("This needs your master password. The paper code cannot be used here.");
       return null;
     }
     if (!meta.passwordEnvelope && !meta.recoveryEnvelope) {
@@ -379,62 +367,37 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
     const generation = unlockGeneration();
     setBusy(true);
-    let held: HeldKey[] = [];
+    // True once the server holds the new key: after that a failure is not "nothing changed".
+    let published = false;
     try {
-      // Open every shared vault key with the key about to be retired, before anything
-      // changes: the same confirm names the vaults replacing it cannot recover, and the
-      // keys that did open are re-sealed to the new key once the server has it.
-      const plan = await planReplace(sharedVaults, userKey?.kind === "ready" ? userKey.seed : null, undefined, api.get);
-      held = plan.held;
-      const version = await proveCurrentPassword("password");
-      if (version === null || !alive.current) return;
-      const confirmed = await dialogs.confirm({
-        title: "Replace your key?",
-        message: [REPLACE_KEY_MESSAGE, replaceWarning(plan)].filter(Boolean).join("\n\n"),
-        confirmLabel: "Replace key",
-        danger: true,
+      const { pending } = await runKeyReplace({
+        api,
+        seed: userKey?.kind === "ready" ? userKey.seed : null,
+        prove: () => proveCurrentPassword("password"),
+        confirm: (message) => dialogs.confirm({ title: "Replace your key?", message, confirmLabel: "Replace key", danger: true }),
+        publish: async (version) => {
+          const made = await newUserKeyRecord(vaultKey, user.id);
+          await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
+          published = true;
+          onUserKeyReplaced({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record }, generation);
+          if (alive.current) setCurrentPassword("");
+          return { id: user.id, publicKey: made.publicKey, fingerprint: await fingerprint(made.publicKey) };
+        },
       });
-      if (!confirmed || !alive.current) return;
-      const made = await newUserKeyRecord(vaultKey, user.id);
-      await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
-      onUserKeyReplaced({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record }, generation);
-      if (alive.current) setCurrentPassword("");
-      // The new key is published, so every held row is sealed to a retired key until this
-      // runs. It runs even if the vault locked meanwhile — it only writes sealed keys — but
-      // then there is no screen to report on, and a row left behind shows as "Key changed"
-      // with a self-reseal in Members.
-      const me: SealIdentity = { id: user.id, publicKey: made.publicKey, fingerprint: await fingerprint(made.publicKey) };
-      const { failed } = await resealHeld(held, me, api);
-      const stillNeeded = held.filter((h) => failed.some((f) => f.id === h.id));
-      zeroKeys(held.filter((h) => !failed.some((f) => f.id === h.id)));
-      held = stillNeeded;
-      if (alive.current && unlockGeneration() === generation) {
-        rememberReseal(stillNeeded.length ? { failed, held: stillNeeded, me } : null);
-        held = [];
-      }
+      // App owns the pending re-seal: its keys must outlive this page, which any in-app
+      // navigation unmounts. A lock during the flow ends them instead — nothing holds a
+      // vault key past a lock, and the rows stay sealed to the old key.
+      if (alive.current && unlockGeneration() === generation) onResealPending(pending);
+      else if (pending) zeroKeys(pending.held);
       onSharedChanged();
     } catch (err) {
-      if (alive.current) setError(toErrorMessage(err, "Could not replace the key."));
+      if (!alive.current) return;
+      setError(published
+        ? ["Your key was replaced, but the shared vaults were not re-sealed to it.", toErrorMessage(err, ""),
+           "They stay locked to your old key: another active owner must share each one with you again, and a vault you own alone cannot be recovered."].filter(Boolean).join(" ")
+        : toErrorMessage(err, "Could not replace the key."));
     } finally {
-      zeroKeys(held);
       if (alive.current) setBusy(false);
-    }
-  };
-
-  // The failed subset only, sealed from the keys still held in state.
-  const retryReseal = async () => {
-    if (!reseal || resealing) return;
-    setResealing(true);
-    setError("");
-    try {
-      const { failed } = await resealHeld(reseal.held, reseal.me, api);
-      const stillNeeded = reseal.held.filter((h) => failed.some((f) => f.id === h.id));
-      zeroKeys(reseal.held.filter((h) => !failed.some((f) => f.id === h.id)));
-      if (!alive.current) { zeroKeys(stillNeeded); return; }
-      rememberReseal(stillNeeded.length ? { ...reseal, failed, held: stillNeeded } : null);
-      onSharedChanged();
-    } finally {
-      if (alive.current) setResealing(false);
     }
   };
 
@@ -752,24 +715,9 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           </div>
         )}
         {personalOnly && userKey && userKey.kind !== "none" && userKey.kind !== "unavailable" ? (
-          <button type="button" className="btn btn-danger" onClick={() => void replaceUserKey()} disabled={busy || !currentPassword}
-            title={currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
-        ) : null}
-        {reseal ? (
-          <div style={{ marginTop: "1rem" }}>
-            <p style={{ margin: "0 0 0.5rem", color: "var(--danger)" }}>
-              Your new key is published, but {reseal.failed.length === 1 ? "one shared vault is" : `${reseal.failed.length} shared vaults are`} still
-              sealed to the old one. Retry now, or they show as "Key changed" until you re-seal them from Members.
-            </p>
-            <ul style={{ margin: "0 0 0.75rem 1.25rem", padding: 0 }}>
-              {reseal.failed.map((f) => (
-                <li key={f.id}><strong>{f.name}</strong><ErrorLine text={f.error} /></li>
-              ))}
-            </ul>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void retryReseal()} disabled={resealing}>
-              {resealing ? "Re-sealing…" : "Retry"}
-            </button>
-          </div>
+          <button type="button" className="btn btn-danger" onClick={() => void replaceUserKey()} disabled={busy || !currentPassword || resealPending}
+            title={resealPending ? "Finish re-sealing your shared vaults first; replacing the key again would lose the keys that retry needs."
+              : currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
         ) : null}
       </section>
 

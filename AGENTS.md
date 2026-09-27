@@ -578,16 +578,23 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   swaps an existing key. Replace needs the master password in the browser and, because the server cannot check that, a KySignOn sign-in within `freshSessionWindow` (403 `re-authenticate…` otherwise; the page offers "Sign in again"); it appends the old public key to
   `previous` (max 5); the callback is generation-guarded like `settleUserKey`/`rotateKey` so a lock
   during the async publish cannot resurrect a stale key into app state. Replace carries the shared
-  vaults with it: `lib/keyReplaceReseal.ts` opens every active row's sealed key with the old
-  seed before anything changes (`planReplace`), so one confirm names what the old key already
-  cannot open and says the contents are lost where no other active owner remains
-  (`replaceWarning`; a member list that could not be read counts as sole ownership, and a
-  `mismatch` key opens nothing so every active row is named), then
-  re-seals each held key to the new key after the PUT (`resealHeld`, a self-reseal per vault,
-  never throws). Failures list per vault in Security → Your key with one Retry over the keys
-  still held, through the shared `components/ErrorLine.tsx` so the self-reseal's fresh-session
-  403 offers "Sign in again"; held keys are zeroed once re-sealed and on unmount (`zeroKeys`).
-  `keyReplaceReseal.test.ts`. `PUT /api/vault/user-key` is
+  vaults with it, in `lib/keyReplaceReseal.ts`: `runKeyReplace` plans, proves, confirms,
+  publishes and re-seals in that order. `planReplace` fetches `GET /api/shared` itself —
+  never a cached list, whose emptiness would strand every vault — opens each active row's
+  sealed key with the seed about to be retired, and a list failure refuses the replace
+  instead of planning nothing. `replaceWarning` names what the old key already cannot open
+  and adds that the contents are lost where no other active owner remains (an unreadable
+  member list counts as sole ownership; a `mismatch` key opens nothing, so every active row
+  is named; invited, stale and suspended rows are skipped, no key opens them today).
+  `resealHeld` then writes one self-reseal per held vault and never throws. Every held key
+  the caller is not handed back is zeroed (`zeroKeys`). A failure becomes a `ResealPending`
+  owned by `App.tsx`, not the page: `components/ResealPanel.tsx` renders in the app shell
+  beside the lock notice, with `retryPending` behind its Retry, because the held keys are the
+  last copies and any in-app navigation unmounts Security. `closeVault` and the state setter
+  are the only things that zero them, Replace is disabled while a pending exists, and the
+  panel's re-auth link opens in a new tab so the document never navigates.
+  `keyReplaceReseal.test.ts` covers the order, the list failure publishing nothing, the
+  warning branches and the zeroing. `PUT /api/vault/user-key` is
   refused with 403 for a device-session bearer token (a stolen extension token must not be able to
   swap the published key); only a browser session may publish or replace. `GET /api/users/{id}/key`
   serves the public half to any session or device token, never `wrappedSeed`; readers trust their own

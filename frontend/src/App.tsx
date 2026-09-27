@@ -26,6 +26,8 @@ import { useRoute, type Route } from "./lib/route";
 import { personal, selectionScope, selectionBase, sameSelection, resolveSelection, openShared, type Selected } from "./lib/vaultSelection";
 import { switchTo, lostAccess, restorePlan, applyRotation, type OpenedPersonal } from "./lib/appSelection";
 import { useSharedVaults, sharedApi, type SharedVaultSummary } from "./lib/sharedVaults";
+import { retryPending, zeroKeys, type ResealPending } from "./lib/keyReplaceReseal";
+import { ResealPanel } from "./components/ResealPanel";
 import { VaultSwitcher } from "./components/VaultSwitcher";
 import { AcceptInvitationDialog } from "./components/AcceptInvitationDialog";
 import { SharedMembersDialog } from "./components/SharedMembersDialog";
@@ -133,6 +135,30 @@ export function App() {
   const restored = useRef(-1);
   const pinChain = useRef<Promise<void>>(Promise.resolve());
   const shared = useSharedVaults(!!vault && !!user);
+  // A re-seal that failed after a user-key replace. The held shared vault keys are the only
+  // copies left, so they live here, above every page, and only a landed re-seal or closeVault
+  // wipes them.
+  const [reseal, setReseal] = useState<ResealPending | null>(null);
+  const [resealing, setResealing] = useState(false);
+  const resealRef = useRef<ResealPending | null>(null);
+  const setResealPending = useCallback((next: ResealPending | null) => {
+    const prev = resealRef.current;
+    // Whatever the next pending does not carry is a key nobody can use again.
+    if (prev) zeroKeys(prev.held.filter((h) => !next?.held.includes(h)));
+    resealRef.current = next;
+    setReseal(next);
+  }, []);
+  const retryReseal = useCallback(async () => {
+    const pending = resealRef.current;
+    if (!pending) return;
+    setResealing(true);
+    try {
+      setResealPending(await retryPending(pending, sharedApi));
+      void shared.refresh();
+    } finally {
+      setResealing(false);
+    }
+  }, [setResealPending, shared]);
   const [acceptRow, setAcceptRow] = useState<SharedVaultSummary | null>(null);
   const [showMembers, setShowMembers] = useState(false);
   // My own fingerprint: the server checks it against my published key on every seal.
@@ -527,6 +553,8 @@ export function App() {
       try { localStorage.setItem(`kyvault.locked:${user.id}`, "1"); } catch {}
     }
     saveQueue?.discard();
+    // The held shared vault keys go with the vault key.
+    setResealPending(null);
     draft.current = null;
     setInitialDraft(null);
     setSaveQueue(null);
@@ -973,6 +1001,8 @@ export function App() {
         </p>
       ) : null}
 
+      {reseal ? <ResealPanel pending={reseal} busy={resealing} onRetry={() => void retryReseal()} /> : null}
+
       {/* Keep the editor mounted across tabs so drafts and save status survive navigation. */}
       {vault && vaultKey && saveQueue ? (
         <>
@@ -1035,7 +1065,8 @@ export function App() {
           onUserKeyReplaced={(s: UserKeyState, generation: number) => { if (generation === unlockGeneration.current) setUserKey(s); }}
           pinVault={pinVault ?? null}
           onPinsChanged={() => { void savePersonalPins(); }}
-          sharedVaults={shared.vaults}
+          onResealPending={setResealPending}
+          resealPending={!!reseal}
           onSharedChanged={() => { void shared.refresh(); }}
         /> : null
       ) : (

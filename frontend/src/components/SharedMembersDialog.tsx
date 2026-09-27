@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Dialog } from "./Dialog";
-import { ErrorLine } from "./ErrorLine";
 import { useDialogs } from "./DialogHost";
 import { toErrorMessage } from "../lib/api";
 import { inviteMember, resealMember, resolveInvitee, REPIN_FIRST, type FlowDeps, type PinStatus } from "../lib/sharedFlows";
@@ -17,6 +16,16 @@ type Props = {
   onLeftOrDeleted: () => void;
   onClose: () => void;
 };
+
+// A fresh-session refusal is the one error with a way out on screen.
+function ErrorLine({ text }: { text: string }) {
+  return (
+    <p role="alert" style={{ color: "var(--danger)" }}>
+      {text}
+      {text.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login?reauth=true">Sign in again</a></> : null}
+    </p>
+  );
+}
 
 const ROLES: Role[] = ["owner", "editor", "reader"];
 const NAME_OK = (v: string) => v.trim().length >= 1 && v.trim().length <= 64 && !/[\p{Cc}\p{Cf}]/u.test(v);
