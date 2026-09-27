@@ -12,7 +12,7 @@ import (
 // retiredCredentialFields are the JSON keys that held password- and recovery-derived
 // material. The server authenticates nobody now — KySignOn does — so none of these may
 // appear in a user record again.
-var retiredCredentialFields = []string{"passwordHash", "authSalt", "authIterations", "recoveryHash", "mustChangePassword"}
+var retiredCredentialFields = []string{"passwordHash", "authSalt", "authIterations", "recoveryHash", "mustChangePassword", "userKey", "wrappedSeed"}
 
 func TestUserRecordCarriesNoAuthenticationSecret(t *testing.T) {
 	// The regression guard for the whole SSO-only change: if any of these reappear, the

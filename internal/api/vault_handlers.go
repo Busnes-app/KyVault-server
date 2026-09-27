@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Busnes-app/kyvault-server/internal/userkey"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 	"github.com/Busnes-app/kyvault-server/internal/vault"
 )
@@ -104,13 +105,20 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		return
 	}
 
-	save := s.vault.SaveVault
 	rotated := r.Header.Get("X-Vault-Key-Rotated") == "1"
+	var meta vault.Metadata
 	if rotated {
-		save = s.vault.RotateVault
+		var userKey *userkey.Record
+		userKey, err = userKeyHeader(r)
+		if err != nil {
+			http.Error(w, "X-User-Key: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		meta, err = s.vault.RotateVault(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID, userKey)
+	} else {
+		meta, err = s.vault.SaveVault(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID)
 	}
-	meta, err := save(u.ID, expectedVersion, kdbxData, pwEnv, recEnv, devID)
-	if errors.Is(err, vault.ErrRotationEnvelopes) {
+	if errors.Is(err, vault.ErrRotationEnvelopes) || errors.Is(err, vault.ErrRotationUserKey) || errors.Is(err, userkey.ErrShape) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

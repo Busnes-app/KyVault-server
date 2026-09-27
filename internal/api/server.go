@@ -216,6 +216,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/vault/kdbx", s.withAuth(s.handleVaultDownload))
 	mux.HandleFunc("POST /api/vault/upload", s.withAuth(s.handleVaultUpload))
 	mux.HandleFunc("PUT /api/vault/envelopes", s.withAuth(s.handleVaultEnvelopes))
+	mux.HandleFunc("PUT /api/vault/user-key", s.withAuth(s.handleUserKeyPut))
+	mux.HandleFunc("GET /api/users/{id}/key", s.withAuth(s.handleUserKeyGet))
 	mux.HandleFunc("GET /api/vault/history", s.withAuth(s.handleVaultHistory))
 	mux.HandleFunc("GET /api/vault/history/{id}", s.withAuth(s.handleVaultHistoryDownload))
 	mux.HandleFunc("POST /api/vault/history/{id}/restore", s.withAuth(s.handleVaultHistoryRestore))

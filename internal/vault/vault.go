@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Busnes-app/kyvault-server/internal/userkey"
 )
 
 const maxHistorySnapshots = 100
@@ -26,7 +28,9 @@ var (
 	ErrStaleKey = errors.New("snapshot was saved under a previous vault key")
 	// ErrRotationEnvelopes refuses a rotation upload that lacks either new envelope.
 	ErrRotationEnvelopes = errors.New("a key rotation must carry both new envelopes")
-	ErrConflict          = errors.New("vault version conflict: a newer version exists on the server")
+	// ErrRotationUserKey refuses a rotation that drops or swaps the published user key.
+	ErrRotationUserKey = errors.New("a key rotation must carry the re-wrapped user key, unchanged public key")
+	ErrConflict        = errors.New("vault version conflict: a newer version exists on the server")
 )
 
 // ConflictError conveys details about a rejected upload.
@@ -63,6 +67,9 @@ type Metadata struct {
 	// KeyEpochSince is the version the last key rotation wrote. Older snapshots are
 	// encrypted under a retired key and must not become the current vault.
 	KeyEpochSince int64 `json:"keyEpochSince,omitempty"`
+	// UserKey is the owner's published X-Wing key with its seed wrapped under the vault
+	// key. Opaque here beyond shape checks; rotation must re-wrap it in the same write.
+	UserKey *userkey.Record `json:"userKey,omitempty"`
 }
 
 // HistoryEntry represents a past vault snapshot.
@@ -367,19 +374,26 @@ func (s *Store) saveMetadataLocked(userID string, meta Metadata) error {
 
 // SaveVault saves a new encrypted KDBX version atomically.
 func (s *Store) SaveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string) (Metadata, error) {
-	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, false)
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, false, nil)
 }
 
 // RotateVault saves a vault re-encrypted under a new key with both new envelopes, and
-// marks the version it writes as the start of the new key epoch.
-func (s *Store) RotateVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string) (Metadata, error) {
+// marks the version it writes as the start of the new key epoch. userKey, when the
+// caller has a published key, must re-wrap the seed under the new vault key without
+// changing the public key; changing the public key is Replace, a separate action.
+func (s *Store) RotateVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, userKey *userkey.Record) (Metadata, error) {
 	if passwordEnvelope == "" || recoveryEnvelope == "" {
 		return Metadata{}, ErrRotationEnvelopes
 	}
-	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true)
+	if userKey != nil {
+		if err := userKey.Validate(); err != nil {
+			return Metadata{}, err
+		}
+	}
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true, userKey)
 }
 
-func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated bool) (Metadata, error) {
+func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated bool, userKey *userkey.Record) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -407,6 +421,12 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 			CurrentVersion:  current.Version,
 			ExpectedVersion: expectedVersion,
 			ConflictID:      conflictID,
+		}
+	}
+
+	if rotated && current.UserKey != nil {
+		if userKey == nil || userKey.PublicKey != current.UserKey.PublicKey {
+			return Metadata{}, ErrRotationUserKey
 		}
 	}
 
@@ -446,10 +466,18 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 		RecoveryEnvelope: current.RecoveryEnvelope,
 		DeviceEnvelopes:  current.DeviceEnvelopes,
 		KeyEpochSince:    current.KeyEpochSince,
+		UserKey:          current.UserKey,
 	}
 	if rotated {
 		nextMeta.KeyEpochSince = newVersion
 		nextMeta.DeviceEnvelopes = make(map[string]DeviceEnvelope)
+		if userKey != nil {
+			kept := *userKey
+			if current.UserKey != nil {
+				kept.Previous = current.UserKey.Previous
+			}
+			nextMeta.UserKey = &kept
+		}
 	}
 
 	if passwordEnvelope != "" {
@@ -465,6 +493,38 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 
 	s.pruneOldHistoryLocked(userID)
 	return nextMeta, nil
+}
+
+// SaveUserKey publishes or replaces the owner's key. The vault version is a precondition
+// only; the write does not bump it, like SaveEnvelopes. A replace keeps the last
+// MaxPrevious public keys so a pinned peer can see the change was the owner's.
+func (s *Store) SaveUserKey(userID string, expectedVersion int64, rec userkey.Record) (bool, error) {
+	if err := rec.Validate(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.userVaultDir(userID), 0700); err != nil {
+		return false, err
+	}
+	meta, _ := s.getMetadataLocked(userID)
+	if meta.Version != expectedVersion {
+		return false, ErrConflict
+	}
+	rec.Previous = nil
+	created := meta.UserKey == nil
+	if !created {
+		rec.Previous = meta.UserKey.Previous
+		if meta.UserKey.PublicKey != rec.PublicKey {
+			rec.Previous = append(rec.Previous, userkey.Previous{PublicKey: meta.UserKey.PublicKey, ReplacedAt: time.Now().UTC()})
+			if n := len(rec.Previous); n > userkey.MaxPrevious {
+				rec.Previous = rec.Previous[n-userkey.MaxPrevious:]
+			}
+		}
+	}
+	meta.UserKey = &rec
+	meta.UpdatedAt = time.Now().UTC()
+	return created, s.saveMetadataLocked(userID, meta)
 }
 
 // ListHistory returns all preserved historical versions.
