@@ -23,8 +23,8 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
 - `sealedKey` is exactly 1168 bytes of standard base64 (HPKE enc + key + tag),
   shape-checked only. `keyFingerprint` records which user key it was sealed to; the caller
   checks it against the current published key.
-- Owner-only methods (`Rename`, `Invite`, `Reseal`, `SetRole`, `Remove`, `Delete`) take an
-  `actorID` re-checked inside the locked update: `""` is an admin, anyone else must hold an
+- Owner-only methods (`Rename`, `SetRole`, `Remove`, `Delete` take `actorID`; `Invite` and
+  `Reseal` take it as `sealedBy`) re-check the actor inside the locked update: `""` is an admin, anyone else must hold an
   active owner row (`ErrForbidden`, `ErrNotMember`). `Remove` of one's own row skips that
   check (leave, decline) but not the last-owner rule; only an admin removes the last owner.
 - Invariants: `SetRole` and non-admin `Remove` keep one active owner (`ErrLastOwner`);

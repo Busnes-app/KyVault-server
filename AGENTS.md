@@ -103,8 +103,8 @@ yourself adding one, the design has been misread.
   restore, conflict discard) admit active owners and editors; other rows get 403. Every
   state-changing shared and admin-shared route checks `validCSRF` (bearer tokens pass).
   Owner delete (`requireFresh`) and admin delete, admin member removal and
-  `PUT /api/admin/shared/settings` (`withFreshAdmin`) need a fresh session; all three
-  gates call `sessionIsFresh`. `GET /api/admin/shared` and its settings GET are `withAdmin`.
+  `PUT /api/admin/shared/settings` (`withFreshAdmin`) need a fresh session; every
+  freshness gate goes through `requireFresh` → `sessionIsFresh`. `GET /api/admin/shared` and its settings GET are `withAdmin`.
 - SSO settings come from `KYVAULT_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`
   (optional `_REDIRECT_URI`, `_AUTO_PROVISION`) and take precedence over
   `config/sso.json`. `PUT /api/admin/sso` answers 409 while they are set. Without an
@@ -298,8 +298,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   regression in `vault_upload_limit_test.go` proves oversized uploads preserve the current
   bytes/version and that a boundary-sized upload round-trips intact.
   `vault.Store.MoveOut(key, dst)` renames a vault directory under the store lock and retires
-  the key in memory; every writer refuses a retired key (`ErrRetired`, an `ErrNotFound`)
-  before creating directories, so a racing save cannot resurrect a deleted shared vault
+  the key in memory; every writer except `RemoveDeviceEnvelope` (personal ids only, never
+  creates a directory) refuses a retired key (`ErrRetired`, an `ErrNotFound`) before creating
+  directories, so a racing save cannot resurrect a deleted shared vault
   (`TestMoveOutMovesDirectoryAndSaveDoesNotResurrect`).
 
 - `internal/api/shared_handlers.go` and `shared_settings.go`: `sharedMember` resolves the

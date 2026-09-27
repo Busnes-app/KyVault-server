@@ -107,8 +107,8 @@ not leaked. Bodies are JSON, ≤ 64 KiB.
   for every vault the caller has a row in, including `invited`. Only the caller's own
   sealed key is ever returned.
 - `GET /api/shared/{id}` → `{id, name, createdBy, createdAt, keyEpoch, members: [{userId,
-  username, role, state, keyFingerprint, keyEpoch, addedAt, acceptedAt?}]}`. Members only
-  (any state). No sealed keys.
+  username, role, state, keyFingerprint, keyEpoch, addedAt, acceptedAt?}]}`. Members only;
+  an `invited` row gets 404 and sees only its `GET /api/shared` entry. No sealed keys.
 - `PATCH /api/shared/{id}` `{name}`: active owners.
 - `DELETE /api/shared/{id}`: active owners, fresh session (`freshSessionWindow`).
 
