@@ -16,7 +16,7 @@ import { newUserKeyRecord } from "../lib/userKeyState";
 import type { UserKeyState } from "../lib/userKeyState";
 import { fingerprint } from "../lib/userKey";
 import { KnownKeys } from "../components/KnownKeys";
-import { runKeyReplace, zeroKeys, type ResealPending } from "../lib/keyReplaceReseal";
+import { handOff, runKeyReplace, type ResealPending } from "../lib/keyReplaceReseal";
 import { sharedApi as defaultSharedApi, type SharedApi } from "../lib/sharedVaults";
 import type { KeePassVault } from "../lib/kdbx";
 
@@ -385,13 +385,11 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         },
       });
       // App owns the pending re-seal: its keys must outlive this page, which any in-app
-      // navigation unmounts. A lock during the flow ends them instead — nothing holds a
-      // vault key past a lock, and the rows stay sealed to the old key.
-      if (alive.current && unlockGeneration() === generation) onResealPending(pending);
-      else if (pending) zeroKeys(pending.held);
+      // navigation unmounts, so this hand-off is not gated on being mounted. Only a lock,
+      // which bumps the generation, ends them — the rows then stay sealed to the old key.
+      onResealPending(handOff(pending, unlockGeneration(), generation));
       onSharedChanged();
     } catch (err) {
-      if (!alive.current) return;
       setError(published
         ? ["Your key was replaced, but the shared vaults were not re-sealed to it.", toErrorMessage(err, ""),
            "They stay locked to your old key: another active owner must share each one with you again, and a vault you own alone cannot be recovered."].filter(Boolean).join(" ")

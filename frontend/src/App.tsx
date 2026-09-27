@@ -155,6 +155,10 @@ export function App() {
     try {
       setResealPending(await retryPending(pending, sharedApi));
       void shared.refresh();
+    } catch (err) {
+      // retryPending is not supposed to throw; if it ever does, the keys stay held and the
+      // user hears about it instead of the browser swallowing a rejection.
+      setLockNotice(toErrorMessage(err, "Could not re-seal the shared vaults. Try again."));
     } finally {
       setResealing(false);
     }
@@ -221,6 +225,9 @@ export function App() {
         setUserKey(null);
         setSaveQueue(null);
         setHasDraft(false);
+        // No session, so the held shared vault keys belong to nobody: a pending must never
+        // outlive the account it was replaced for.
+        setResealPending(null);
       }
     } catch {
       setUser(null);
@@ -229,6 +236,7 @@ export function App() {
       setUserKey(null);
       setSaveQueue(null);
       setHasDraft(false);
+      setResealPending(null);
     } finally {
       setLoading(false);
     }

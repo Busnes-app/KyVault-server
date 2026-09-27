@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planReplace, replaceWarning, resealHeld, retryPending, runKeyReplace, zeroKeys, type HeldKey, type SealIdentity } from "./keyReplaceReseal";
+import { handOff, planReplace, replaceWarning, resealHeld, retryPending, runKeyReplace, zeroKeys, type HeldKey, type SealIdentity } from "./keyReplaceReseal";
 import { generateUserKey, fingerprint } from "./userKey";
 import { sealSharedKey, openSharedKey, newSharedKey } from "./sharedKey";
 
@@ -231,4 +231,22 @@ test("runKeyReplace wipes held keys when publishing throws", async () => {
   };
   await assert.rejects(() => runKeyReplace({ ...steps({ seed: me.seed, api: fakeApi(vaults), publish: async () => { throw new Error("409"); } }), openKey }), /409/);
   assert.deepEqual([...opened[0].key], new Array(32).fill(0));
+});
+
+test("handOff keeps the keys for the same unlock and wipes them for another", async () => {
+  const me = await generateUserKey();
+  const pending = (key: Uint8Array) => ({
+    failed: [{ id: B, name: "Ops", error: "boom" }],
+    held: [{ id: B, name: "Ops", key }],
+    me: { id: "me", publicKey: me.publicKey, fingerprint: "" },
+  });
+  const k1 = newSharedKey();
+  const same = pending(k1);
+  // The page being unmounted is not a reason to drop them; only a new unlock generation is.
+  assert.equal(handOff(same, 4, 4), same);
+  assert.deepEqual([...same.held[0].key], [...k1]);
+  const locked = pending(newSharedKey());
+  assert.equal(handOff(locked, 5, 4), null);
+  assert.deepEqual([...locked.held[0].key], new Array(32).fill(0));
+  assert.equal(handOff(null, 4, 4), null);
 });

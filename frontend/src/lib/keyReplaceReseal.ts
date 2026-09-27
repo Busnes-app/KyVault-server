@@ -111,6 +111,18 @@ export async function runKeyReplace(steps: ReplaceSteps): Promise<{ replaced: bo
   }
 }
 
+// Where the held keys go when a replace finishes. The unlock generation is the whole gate:
+// the page being unmounted is not one — the user only clicked another tab, and these are the
+// last copies of those vault keys. A lock bumps the generation, and then nobody may keep them.
+export function handOff(pending: ResealPending | null, current: number, started: number): ResealPending | null {
+  if (!pending) return null;
+  if (current !== started) {
+    zeroKeys(pending.held);
+    return null;
+  }
+  return pending;
+}
+
 // A retry of the failed subset only, from the keys the caller still holds. The caller's own
 // state setter zeroes what it drops, so nothing is wiped here.
 export async function retryPending(pending: ResealPending, api: SharedApi, seal: typeof sealSharedKey = sealSharedKey): Promise<ResealPending | null> {

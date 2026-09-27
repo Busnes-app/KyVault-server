@@ -590,7 +590,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   the caller is not handed back is zeroed (`zeroKeys`). A failure becomes a `ResealPending`
   owned by `App.tsx`, not the page: `components/ResealPanel.tsx` renders in the app shell
   beside the lock notice, with `retryPending` behind its Retry, because the held keys are the
-  last copies and any in-app navigation unmounts Security. `closeVault` and the state setter
+  last copies and any in-app navigation unmounts Security. `handOff` is the whole gate on that
+  hand-off — the unlock generation, never whether the page is still mounted — and `checkAuth`
+  losing the session drops the pending like `closeVault` does. `closeVault` and the state setter
   are the only things that zero them, Replace is disabled while a pending exists, and the
   panel's re-auth link opens in a new tab so the document never navigates.
   `keyReplaceReseal.test.ts` covers the order, the list failure publishing nothing, the
