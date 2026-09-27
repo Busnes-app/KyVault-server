@@ -78,8 +78,10 @@ byte-compatible with Go `hpke.Seal(pk, HKDFSHA256(), AES256GCM(), info, pt)`.
 ## Lifecycle
 
 - **Generation.** On unlock, if the server record has no `userKey`, the browser generates
-  one and publishes it in the background (no prompt). A failed publish retries on the next
-  unlock. Generation runs after the vault is usable, never blocks unlock.
+  one and publishes it in the background (no prompt) with `If-None-Match: *`; a concurrent
+  publisher's 409 makes the client re-read metadata and adopt the winning record instead of
+  overwriting it. A failed publish retries on the next unlock. Generation runs after the
+  vault is usable, never blocks unlock.
 - **Unlock.** After the vault key is unwrapped, fetch the record, unwrap the seed, derive
   the public key, compare with the published one. Mismatch: the key is not used and the
   Security page shows "Your published key does not match your private key" with a Replace
@@ -89,9 +91,10 @@ byte-compatible with Go `hpke.Seal(pk, HKDFSHA256(), AES256GCM(), info, pt)`.
   record.
 - **Vault key rotation.** `keyRotation.ts` re-wraps the seed under the new vault key and
   sends it in the same `POST /api/vault/upload` (`X-Vault-Key-Rotated: 1`) as the new
-  envelopes, as JSON field `userKey` (full record). `RotateVault` writes it atomically and
-  refuses (400) a rotation that omits `userKey` while one exists. Public key and fingerprint
-  do not change; no one re-pins.
+  envelopes, as header `X-User-Key` (base64 JSON, full record). `RotateVault` writes it
+  atomically and refuses (400) a rotation that omits `X-User-Key` while a key exists, or
+  that changes the public key — rotation re-wraps, it never publishes or replaces. Public
+  key and fingerprint do not change; no one re-pins.
 - **Paper recovery** unwraps the vault key, which unwraps the seed. Nothing is added to the
   paper code.
 - **Replace** (Security → Your key → Replace my key): requires the master password
@@ -103,14 +106,20 @@ byte-compatible with Go `hpke.Seal(pk, HKDFSHA256(), AES256GCM(), info, pt)`.
 
 - `PUT /api/vault/user-key` (session auth, CSRF): body is the record without `previous`;
   `If-Match: "<vault version>"` required, 409 on mismatch, writes under the vault store
-  lock and bumps nothing else (version unchanged, like envelopes). If a record exists and
-  the public key differs, the old one is appended to `previous`. Audit
+  lock and bumps nothing else (version unchanged, like envelopes). First publish is
+  create-only: the client sends `If-None-Match: *`; if a record already exists the server
+  answers 409 without writing and the client re-reads metadata and adopts it instead of
+  overwriting. Rotation carries the re-wrapped record on the raw vault upload as header
+  `X-User-Key` (base64 JSON), refused (400) when no key exists yet or when it would change
+  the public key — rotation re-wraps, it never publishes or replaces. If Replace's PUT
+  changes the public key, the old one is appended to `previous`. Audit
   `user_key.published` (first) or `user_key.replaced`, detail = fingerprint.
-- `GET /api/vault/user-key` (owner): full record including `wrappedSeed`.
+- The owner reads the record from `GET /api/vault/metadata`, which already returns
+  `Metadata`; there is no separate owner GET.
 - `GET /api/users/{id}/key` (any signed-in user): `{userId, alg, publicKey, fingerprint,
   createdAt, previous:[{publicKey, replacedAt}]}`; 404 if none. Never `wrappedSeed`.
   Fingerprint is computed server-side with the same definition (tested equal).
-- Device-pairing tokens reach `GET /api/vault/user-key` and `GET /api/users/{id}/key`
+- Device-pairing tokens reach `GET /api/vault/metadata` and `GET /api/users/{id}/key`
   (a paired client needs them to open shared vaults later) but not the PUT.
 
 ## Pins
@@ -133,7 +142,8 @@ byte-compatible with Go `hpke.Seal(pk, HKDFSHA256(), AES256GCM(), info, pt)`.
 ## Backup
 
 The record is in `metadata.json`, already collected into the capsule; restore brings it
-back. No `internal/backup` change.
+back. No `internal/backup` change. `RestoreHistory` (rollback) carries `UserKey` through
+unchanged; a rollback never drops the key.
 
 ## Security properties
 

@@ -80,7 +80,9 @@ yourself adding one, the design has been misread.
   browser and is never transmitted. Changing it is a client-side re-wrap against
   `PUT /api/vault/envelopes`. Changing it, generating a paper code and showing the
   offline vault key each require the current master password or paper code, verified in
-  the browser against the stored envelope (`verifyMasterPassword`).
+  the browser against the stored envelope (`verifyMasterPassword`). A session also reaches
+  `PUT /api/vault/user-key` (publish/rotate/replace the user key record) and
+  `GET /api/users/{id}/key` (any user's public key and fingerprint).
 - A version-0 vault shows a create dialog with a confirm field (`lib/unlockMode.ts`); the unlock dialog auto-opens only on the vault tab.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Key rotation (`keyRotation.ts`, Security → Rotate Vault Key) proves the current master password (the paper code is refused there, since the typed value becomes the new password envelope secret), generates a new vault key, re-encrypts the KDBX and sends it with both new envelopes in one `POST /api/vault/upload` with `If-Match`, so `SaveVault` writes vault and envelopes under one lock; `PUT /api/vault/envelopes` is never used for rotation. It runs inside the save queue's serializer (`VaultSaveQueue.exclusive`) and is refused while edits are unsaved. A server error restores the old key in memory; a lost response is adopted only if the stored envelopes are ours at exactly the expected version + 1; otherwise (unreadable, or ours with a later save on top) the tab locks. On success the tab swaps key and queue, re-caches the device key, shows the new paper code with type-it-back, and revokes every device best effort (404 counts as done, failures offer Retry revoking). The server already revoked them: a successful rotation upload cancels the user's outstanding pairing codes and revokes every device, its envelope and its sessions in one critical section under the session lock (`revokeAllDevices`); a pairing code also names the device session that issued it (`pairingOrigin.issuerDeviceId`), and minting checks under the same lock that this device still exists, so a code issued by a device that a rotation later revoked cannot mint a replacement session (`TestRotationRefusesPairingsIssuedByRevokedDevice`), auditing `vault.key_rotated` and one `device.revoked` (`key_rotated`) per device, so the browser loop is only a safety net. A locked draft sealed under the pre-rotation key is unreadable after unlock, so the existing checkpoint path deletes it and reports it. A cached device key that fails with `InvalidKey` on a passwordless unlock is cleared before the error shows. Every device-key cache write goes through `lib/deviceKeyCache.ts`, which re-checks the unlock generation after the write and undoes a write that lost a race with Forget This Device or a lock (`deviceKeyCache.test.ts`). Snapshots and conflicts older than a rotation are encrypted with a retired key. The rotation upload sends `X-Vault-Key-Rotated: 1` (both envelope headers required, else 400) and `RotateVault` records its version as `Metadata.KeyEpochSince`; `ListHistory` flags older snapshots `staleKey` and `RestoreHistory` refuses them with 409 (`ErrStaleKey`), so every client, locked or not, is refused without decrypting. Password changes (`PUT /api/vault/envelopes`) and rollbacks never move the epoch; that PUT requires `If-Match` with the version `proveCurrentPassword` verified against (missing counts as 0, like uploads) and answers 409 without writing on mismatch; `vault_rotation_test.go` pins it. `keyRotation.test.ts` proves old key refused, new key and both envelopes open, one upload, rollback on failure and the reconcile; `vault_rotation_test.go` pins that a stale upload changes nothing, a current one replaces vault and both envelopes, rotation ends device tokens and envelopes, and a stale envelope PUT is 409.
@@ -461,6 +463,25 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   self-consistent; agreeing on a vector is what proves they interoperate — the same lesson
   the silently-mismatched replication format taught. The client refuses master passwords under 12 characters (lib/masterPassword.ts) on create and change; the server never sees one so it cannot enforce this.
   The Security page shows the paper code and vault key with Copy (cleared after 30 seconds when allowed), Print (print-only region), auto-hide (`lib/secretDisplay.ts`) and a type-it-back confirmation for the paper code.
+
+- `frontend/src/lib/userKey.ts`, `lib/userKeyState.ts`, `lib/keyPins.ts`, `internal/userkey/` and
+  `internal/api/user_key_handlers.go`: every user has one X-Wing (ML-KEM-768 + X25519) key pair.
+  The 32-byte seed is wrapped under the raw vault key (AES-256-GCM, AAD `kyvault-user-key:<userId>`)
+  and stored as `Metadata.UserKey` next to the envelopes; the server checks shape only. Sealing is
+  HPKE (HKDF-SHA256, AES-256-GCM) through hpke-js and is byte-compatible with Go `crypto/hpke`
+  (`MLKEM768X25519`, the `ky-primitives` capsule suite): `frontend/src/lib/testdata/hpke-xwing-vector.json`
+  is sealed by each side and opened by the other (`internal/userkey` `-update`, JS `UPDATE_VECTOR=1`).
+  **Load the seed with `kem.importKey("raw", seed, false)`; `deriveKeyPair` yields a different key.**
+  Fingerprint = SHA-256 of the public key, first 20 hex upper in fours; Go and JS pin the same vector.
+  Unlock adopts the record (mismatch → Security warning, key unused) or generates and publishes one
+  (`PUT /api/vault/user-key`, `If-Match` on the vault version, no version bump). Rotation re-wraps the
+  seed and sends it as `X-User-Key` in the same upload; the server refuses a rotation that drops or
+  swaps an existing key. Replace needs the master password and appends the old public key to
+  `previous` (max 5). `GET /api/users/{id}/key` serves the public half to any session or device token,
+  never `wrappedSeed`; readers trust their own pin, not the server. Pins are KDBX meta custom data
+  `kyvault.pin.<userId>` and travel with the vault. KyAuth and the extension must pass the same
+  interop vector before they implement this. Audit `user_key.published` / `user_key.replaced` carry
+  the fingerprint only.
 
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
