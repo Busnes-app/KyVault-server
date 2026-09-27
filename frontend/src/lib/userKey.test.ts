@@ -29,6 +29,20 @@ test("seal and open round trip; wrong seed and wrong info fail", async () => {
   await assert.rejects(open(a.seed, "kyvault/other/1", sealed));
 });
 
+test("b64 round-trips a 1 MiB buffer", () => {
+  const big = new Uint8Array(1 << 20);
+  for (let i = 0; i < big.length; i++) big[i] = i & 0xff;
+  assert.deepEqual(b64.decode(b64.encode(big)), big);
+});
+
+test("a seed passed as a subarray view is handled like a fresh buffer", async () => {
+  const buf = new Uint8Array(64);
+  crypto.getRandomValues(buf);
+  const view = buf.subarray(16, 48);
+  const seed = view.slice();
+  assert.deepEqual(await publicKeyFromSeed(view), await publicKeyFromSeed(seed));
+});
+
 test("fingerprint matches the Go vector", async () => {
   const pk = new Uint8Array(1216);
   for (let i = 0; i < pk.length; i++) pk[i] = i & 0xff;
@@ -45,6 +59,7 @@ test("HPKE interop with Go crypto/hpke", async () => {
     writeFileSync(VECTOR, JSON.stringify(v, null, 2) + "\n");
   } else {
     assert.ok(v.jsSealed, "jsSealed missing; run once with UPDATE_VECTOR=1");
+    assert.equal(dec(await open(seed, v.info, b64.decode(v.jsSealed))), "hello from js");
   }
 });
 

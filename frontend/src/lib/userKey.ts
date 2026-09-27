@@ -15,8 +15,14 @@ export type UserKeyRecord = {
   previous?: { publicKey: string; replacedAt: string }[];
 };
 
+const CHUNK = 0x8000; // spreading more args than this into String.fromCharCode overflows the call stack
+
 export const b64 = {
-  encode: (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)),
+  encode: (bytes: Uint8Array): string => {
+    let out = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
+    return btoa(out);
+  },
   decode: (text: string): Uint8Array => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)),
 };
 
@@ -30,19 +36,21 @@ function suite() {
   return suitePromise;
 }
 
-// importKey("raw") is X-Wing's own seed expansion, which is what Go's NewPrivateKey(seed)
-// does. deriveKeyPair applies HPKE's labelled derivation on top and yields a different key.
+// importKey("raw") is X-Wing's own seed expansion (matches Go's NewPrivateKey(seed)); never
+// deriveKeyPair, which applies HPKE's labelled derivation on top and yields a different key.
+// .slice() copies out of a possible subarray view: hpke-js reads the whole underlying buffer.
 async function privateKey(seed: Uint8Array) {
   if (seed.length !== SEED_BYTES) throw new Error("user key seed must be 32 bytes");
-  return (await suite()).kem.importKey("raw", seed as unknown as ArrayBuffer, false);
+  return (await suite()).kem.importKey("raw", seed.slice() as unknown as ArrayBuffer, false);
 }
 
-// generateKeyPairDerand(seed) is hpke-js's X-Wing expansion from the 32-byte seed and
-// matches Go's NewPrivateKey(seed) (verified against the interop fixture).
+// generateKeyPairDerand(seed) and importKey("raw", seed, false) are both X-Wing's own seed
+// expansion (matches Go's NewPrivateKey(seed), pinned by the interop fixture); never
+// deriveKeyPair, which applies HPKE's labelled derivation on top and yields a different key.
 export async function publicKeyFromSeed(seed: Uint8Array): Promise<Uint8Array> {
   if (seed.length !== SEED_BYTES) throw new Error("user key seed must be 32 bytes");
   const s = await suite();
-  const kp = await (s.kem as unknown as { generateKeyPairDerand(sk: Uint8Array): Promise<CryptoKeyPair> }).generateKeyPairDerand(seed);
+  const kp = await (s.kem as unknown as { generateKeyPairDerand(sk: Uint8Array): Promise<CryptoKeyPair> }).generateKeyPairDerand(seed.slice());
   return new Uint8Array(await s.kem.serializePublicKey(kp.publicKey));
 }
 
@@ -64,6 +72,7 @@ async function gcmKey(vaultKey: Uint8Array, usage: KeyUsage) {
 }
 
 export async function wrapSeed(seed: Uint8Array, vaultKey: Uint8Array, userId: string): Promise<Uint8Array> {
+  if (vaultKey.length !== 32) throw new Error("vault key must be 32 bytes");
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad(userId) }, await gcmKey(vaultKey, "encrypt"), seed as BufferSource));
   const out = new Uint8Array(iv.length + ct.length);
@@ -72,6 +81,7 @@ export async function wrapSeed(seed: Uint8Array, vaultKey: Uint8Array, userId: s
 }
 
 export async function unwrapSeed(wrapped: Uint8Array, vaultKey: Uint8Array, userId: string): Promise<Uint8Array> {
+  if (vaultKey.length !== 32) throw new Error("vault key must be 32 bytes");
   if (wrapped.length !== 12 + SEED_BYTES + 16) throw new Error("wrapped seed has the wrong length");
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: wrapped.slice(0, 12) as BufferSource, additionalData: aad(userId) }, await gcmKey(vaultKey, "decrypt"), wrapped.slice(12) as BufferSource);
   return new Uint8Array(pt);
