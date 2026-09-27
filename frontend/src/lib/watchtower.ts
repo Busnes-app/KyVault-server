@@ -28,9 +28,16 @@ function isLocalIPv6(addr: string): boolean {
 
 function isLocalHost(host: string): boolean {
   if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+  if (host.endsWith(".lan") || host.endsWith(".home.arpa") || host.endsWith(".internal")) return true;
   if (host.startsWith("[")) return isLocalIPv6(host.slice(1, -1));
   const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  return v4 ? isLocalIPv4(v4.slice(1).map(Number)) : false;
+  if (v4) {
+    const [a, b] = v4.slice(1).map(Number);
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return isLocalIPv4(v4.slice(1).map(Number));
+  }
+  // Bare hostnames (no dot) are homelab devices, e.g. "nas" reached via mDNS or /etc/hosts.
+  return !host.includes(".");
 }
 
 // http:// to a public host. LAN devices (routers, NAS) often have no HTTPS and are not flagged.
@@ -42,7 +49,7 @@ export function isInsecureUrl(raw: string): boolean {
 // KeePass URLs are often stored without a scheme; assume https for the host lookup only.
 export function twoFactorDomainFor(raw: string, domains: ReadonlySet<string>): string | null {
   const text = raw.trim();
-  const url = parseUrl(/^[a-z][a-z0-9+.-]*:/i.test(text) ? text : `https://${text}`);
+  const url = parseUrl(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
   if (!url || !url.hostname) return null;
   for (let d = bareHost(url); d.includes("."); d = d.slice(d.indexOf(".") + 1)) {
     if (domains.has(d)) return d;

@@ -626,7 +626,7 @@ export function App() {
             route={route}
             navigate={navigate}
           />
-          <WatchtowerPage vault={vault} hidden={navTab !== "watchtower"} onOpenEntry={(uuid) => navigate({ tab: "vault", entry: uuid })} />
+          <WatchtowerPage vault={vault} hidden={navTab !== "watchtower"} userId={user.id} onOpenEntry={(uuid) => navigate({ tab: "vault", entry: uuid })} />
         </>
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (

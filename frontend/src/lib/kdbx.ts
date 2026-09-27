@@ -386,7 +386,10 @@ export class KeePassVault {
         notes,
         totpSeed: otp,
         groupUuid: gUuid,
-        updatedAt: e.times.lastModTime || new Date(),
+        // A stable fallback, not "now": both fields are Date | undefined (never a falsy
+        // Date), so a fresh Date() here would change on every read and break Watchtower's
+        // updatedAt-stamped breach/strength caches for entries with no recorded times.
+        updatedAt: e.times.lastModTime ?? e.times.creationTime ?? new Date(0),
         tags,
         favorite,
         expiresAt,

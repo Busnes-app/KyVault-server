@@ -11,10 +11,12 @@ test("insecure URL table", () => {
     "http://10.0.0.5", "http://172.16.4.1", "http://172.31.255.1", "http://192.168.1.1", "http://127.0.0.1",
     "http://169.254.1.1", "http://[::1]", "http://[fe80::1]", "http://[fd00::1]", "http://[::ffff:192.168.1.1]",
     "example.com", "", "not a url", "ftp://example.com", "javascript:alert(1)",
+    "http://nas:5000", "http://router.lan", "http://pve.home.arpa", "http://grafana.internal", "http://100.100.1.1",
   ];
   for (const u of flagged) assert.equal(isInsecureUrl(u), true, u);
   for (const u of clean) assert.equal(isInsecureUrl(u), false, u);
   assert.equal(isInsecureUrl("http://172.32.0.1"), true);
+  assert.equal(isInsecureUrl("http://100.128.0.1"), true);
 });
 
 test("2FA domain match on label boundaries", () => {
@@ -28,6 +30,7 @@ test("2FA domain match on label boundaries", () => {
   assert.equal(twoFactorDomainFor("https://notgithub.com", domains), null);
   assert.equal(twoFactorDomainFor("", domains), null);
   assert.equal(twoFactorDomainFor("::::", domains), null);
+  assert.equal(twoFactorDomainFor("github.com:443/login", domains), "github.com");
 });
 
 const tick = () => new Promise((r) => setTimeout(r, 5));

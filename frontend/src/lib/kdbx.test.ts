@@ -134,6 +134,30 @@ describe("KDBX vault round-trip", () => {
     assert.equal(vault.updateEntry({ ...before }), false, "identical metadata in a different order is a no-op");
     assert.equal(vault.getEntryHistory(before.uuid).length, historyBefore, "no history revision was created");
   });
+
+  // A foreign entry with no LastModTime/CreationTime (both write as an empty element and
+  // read back as undefined) must still get a stable updatedAt across reads, or breach and
+  // strength stamps in Watchtower never match and every entry rescans on every render.
+  test("an entry with no recorded times gets a stable updatedAt fallback", async () => {
+    const key = vaultKey();
+    const credentials = new Credentials(ProtectedValue.fromString(bytesToHex(key)));
+    const db = Kdbx.create(credentials, "Foreign Vault");
+    db.header.setKdf(Consts.KdfId.Aes);
+    const entry = db.createEntry(db.getDefaultGroup());
+    entry.fields.set("Title", "No times");
+    entry.fields.set("UserName", "u");
+    entry.fields.set("Password", ProtectedValue.fromString("p"));
+    entry.fields.set("URL", "");
+    entry.fields.set("Notes", "");
+    entry.times.lastModTime = undefined;
+    entry.times.creationTime = undefined;
+    const buffer = await db.save();
+
+    const first = (await KeePassVault.open(buffer, key)).getEntries()[0].updatedAt.getTime();
+    const second = (await KeePassVault.open(buffer, key)).getEntries()[0].updatedAt.getTime();
+
+    assert.equal(first, second);
+  });
 });
 
 // A vault only reaches its owner during a KySignOn outage if they can actually open the

@@ -6,7 +6,7 @@ import { HIBP_DISCLOSURE } from "../lib/hibp";
 import { toErrorMessage } from "../lib/api";
 import { useDialogs } from "../components/DialogHost";
 
-const AUTO_BREACH_KEY = "kyvault.watchtower.autoBreach";
+const autoBreachKey = (userId: string) => `kyvault.watchtower.autoBreach:${userId}`;
 const LABELS: Record<Category, string> = {
   breached: "Breached", reused: "Reused", weak: "Weak", insecureUrl: "Insecure URL",
   missing2fa: "Missing 2FA", expired: "Expired", expiring: "Expiring soon",
@@ -16,7 +16,7 @@ const SEVERITY: Record<Category, string> = {
   missing2fa: "var(--warning)", expired: "var(--warning)", expiring: "var(--ink-muted)",
 };
 
-type Props = { vault: KeePassVault; hidden: boolean; onOpenEntry: (uuid: string) => void };
+type Props = { vault: KeePassVault; hidden: boolean; userId: string; onOpenEntry: (uuid: string) => void };
 type Deps = { strength: StrengthChecker; twoFactorDomains: ReadonlySet<string> };
 
 function verdict(score: number | null): string {
@@ -27,12 +27,12 @@ function verdict(score: number | null): string {
   return "At risk.";
 }
 
-function readAutoBreach(): boolean {
-  try { return localStorage.getItem(AUTO_BREACH_KEY) === "1"; } catch { return false; }
+function readAutoBreach(userId: string): boolean {
+  try { return localStorage.getItem(autoBreachKey(userId)) === "1"; } catch { return false; }
 }
 
 // Stays mounted while unlocked so the cache and breach results last the session; lock unmounts it.
-export function WatchtowerPage({ vault, hidden, onOpenEntry }: Props) {
+export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
   const dialogs = useDialogs();
   const [deps, setDeps] = useState<Deps | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -43,7 +43,7 @@ export function WatchtowerPage({ vault, hidden, onOpenEntry }: Props) {
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [breachError, setBreachError] = useState<string | null>(null);
-  const [autoBreach, setAutoBreach] = useState(readAutoBreach);
+  const [autoBreach, setAutoBreach] = useState(() => readAutoBreach(userId));
   const cache = useRef<StrengthCache>(new Map());
   const breachAbort = useRef<AbortController | null>(null);
   const autoRan = useRef(false);
@@ -66,7 +66,7 @@ export function WatchtowerPage({ vault, hidden, onOpenEntry }: Props) {
     if (hidden || !deps) return;
     const controller = new AbortController();
     buildWatchtowerReport(vault, { ...deps, breached, cache: cache.current, signal: controller.signal })
-      .then((r) => { setError(null); setReport(r); })
+      .then((r) => { if (controller.signal.aborted) return; setError(null); setReport(r); })
       .catch((err) => { if (!controller.signal.aborted) setError(toErrorMessage(err, "Could not build the report.")); });
     return () => controller.abort();
   }, [hidden, deps, vault, breached]);
@@ -97,10 +97,10 @@ export function WatchtowerPage({ vault, hidden, onOpenEntry }: Props) {
 
   const toggleAuto = async (on: boolean) => {
     if (on && !(await confirmCheck(true))) return;
-    try { localStorage.setItem(AUTO_BREACH_KEY, on ? "1" : "0"); } catch {}
+    try { localStorage.setItem(autoBreachKey(userId), on ? "1" : "0"); } catch {}
     setAutoBreach(on);
     autoRan.current = true;
-    if (on && !breached) void runCheck();
+    if (on && !breached && !breachAbort.current) void runCheck();
   };
 
   useEffect(() => {

@@ -513,12 +513,14 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 - `frontend/src/lib/watchtower.ts`, `lib/passwordStrength.ts`, `lib/hibp.ts` and `pages/WatchtowerPage.tsx`:
   the `#/watchtower` tab scores live entries in memory: breached, reused, weak (zxcvbn-ts score ≤ 2,
-  `l33tMaxSubstitutions: 10`), insecure URL (`http:` to a non-local host), missing 2FA (no TOTP and
+  `l33tMaxSubstitutions: 10`), insecure URL (`http:` to a non-local host — local also covers
+  single-label hosts, `.lan`, `.home.arpa`, `.internal` and CGNAT/Tailscale `100.64.0.0/10`, so
+  homelab devices like `http://nas` or `http://router.lan` are not flagged), missing 2FA (no TOTP and
   the host matches the bundled 2fa.directory list), expired and expiring. The report holds uuids,
   titles and reasons only; `watchtower.test.ts` asserts no secret serialises. zxcvbn and
   `twoFactorDomains.ts` are lazy chunks and `scripts/check-bundle.mjs` (postbuild) fails the build
   if either loads eagerly. Refresh the list with `npm run update-2fa-list` before a release.
-  The HIBP check is opt-in per click or per browser (`kyvault.watchtower.autoBreach`, off by
+  The HIBP check is opt-in per click or per browser and account (`kyvault.watchtower.autoBreach:<userId>`, off by
   default, same disclosure); it sends the 5-character SHA-1 prefix with `Add-Padding` and no
   credentials, and is the only allowed non-self `connect-src` in `internal/api/headers.go`.
   Breach results and the strength cache are stamped with each entry's `updatedAt` and live in the

@@ -44,7 +44,7 @@ field contents beyond that feedback. Only live entries (`getLiveEntries()`) are 
 | weak | zxcvbn score ≤ 2; empty password is weak. `detail` = zxcvbn warning or "empty". |
 | reused | existing `findReusedPasswords`; `detail` = "used N times". |
 | breached | existing `checkBreached`; `detail` = "seen N times". |
-| insecureUrl | URL scheme `http:` and host is not `localhost`, `*.localhost`, `*.local`, or a loopback, private (RFC 1918, ULA `fc00::/7`), or link-local (`169.254/16`, `fe80::/10`) address. Unparseable URLs are ignored. |
+| insecureUrl | URL scheme `http:` and host is not `localhost`, `*.localhost`, `*.local`, `*.lan`, `*.home.arpa`, `*.internal`, a single-label hostname (no dot), or a loopback, private (RFC 1918, ULA `fc00::/7`), link-local (`169.254/16`, `fe80::/10`), or CGNAT/Tailscale (`100.64.0.0/10`) address. Unparseable URLs are ignored. |
 | missing2fa | entry has no TOTP and its URL host equals, or is a subdomain of, a domain in the bundled 2fa.directory TOTP list. Suffix match on label boundaries only; no public-suffix library. |
 | expired / expiring | existing `isExpired` / `expiresWithin(entry, 30)`. |
 
@@ -86,7 +86,8 @@ each. When the breach check has not run, breached contributes 0 and the UI label
     the entry would otherwise be filtered out of the list.
   - Under 900px the grid is one column (`useMediaQuery`).
 - Breach auto-check: checkbox "Check automatically when I open Watchtower", `localStorage`
-  key `kyvault.watchtower.autoBreach`, default off. Enabling shows the existing HIBP
+  key `kyvault.watchtower.autoBreach:<userId>` (per account, since `localStorage` is shared
+  across accounts on a device), default off. Enabling shows the existing HIBP
   disclosure via `useDialogs().confirm`; declining leaves it off.
 - Breach results are keyed by entry UUID + `updatedAt`; an entry edited after the check is
   no longer reported breached until checked again. In-flight checks abort on unmount.
@@ -114,7 +115,9 @@ each. When the breach check has not run, breached contributes 0 and the UI label
   entry; serialised report contains no password, TOTP secret or protected field value.
 - insecureUrl table: `http://example.com` flagged; `http://192.168.1.1`, `http://10.0.0.5`,
   `http://[fe80::1]`, `http://[fd00::1]`, `http://nas.local`, `http://localhost:8080`,
-  `https://example.com` and non-URL text not flagged.
+  `http://nas:5000`, `http://router.lan`, `http://pve.home.arpa`, `http://grafana.internal`,
+  `http://100.100.1.1`, `https://example.com` and non-URL text not flagged;
+  `http://100.128.0.1` (outside the CGNAT range) is flagged.
 - missing2fa: `login.github.com` matches `github.com`; `github.com.evil.example` and
   `notgithub.com` do not; TOTP present suppresses it.
 - `update-2fa-list.mjs` parser tested on a fixture, no network.
