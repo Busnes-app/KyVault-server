@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { KeePassVault, VaultEntry, VaultGroup, CustomField } from "../lib/kdbx";
 import { readKdbxFile, describeImport } from "../lib/kdbxImport";
 import type { EntryDraft } from "../lib/lockedDraft";
-import type { SaveState } from "../lib/vaultSave";
+import { PERSONAL_BASE, type SaveState } from "../lib/vaultSave";
 import { createFromDraft, type NewEntryDraft } from "../lib/newEntryDraft";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { parseTags, hasReservedTag, sortEntries, entryMatches, isExpired, expiresWithin, RESERVED_FIELDS, type SortKey } from "../lib/entryMeta";
@@ -61,9 +61,10 @@ type Props = {
   onReload: () => Promise<void>;
   route: Route;
   navigate: (next: Route) => void;
+  basePath?: string;
 };
 
-export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate }: Props) {
+export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate, basePath = PERSONAL_BASE }: Props) {
   const dialogs = useDialogs();
   const narrow = useMediaQuery(NARROW);
   const [pane, setPane] = useState<"folders" | "list" | "detail">(initialDraft ? "detail" : "list");
@@ -1338,6 +1339,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       {showHistory ? (
         <HistoryModal
           allowRollback={saveState.kind === "saved" && !draftDirty}
+          basePath={basePath}
           snapshot={{ vault, vaultKey }}
           recovery={{ vault, vaultKey, onRecovered: (uuid) => {
             onChanged();

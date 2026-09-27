@@ -12,6 +12,10 @@ export type LockedDraft = { iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer
 
 export const DRAFT_MAX_AGE_MS = 7 * 86_400_000;
 
+export type DraftScope = "personal" | `sv_${string}`;
+export const draftAccount = (userId: string, scope: DraftScope) => `${userId}:${scope}`;
+export const draftId = (userId: string, scope: DraftScope) => `${userId}:${scope}:${crypto.randomUUID()}`;
+
 export function draftPointer(storage: Pick<Storage, "getItem">, userId: string): string | undefined {
   return storage.getItem(`kyvault.draft:${userId}`) ?? storage.getItem(`kypassword.draft:${userId}`) ?? undefined;
 }
@@ -52,6 +56,14 @@ export async function openDraft(draft: LockedDraft, key: Uint8Array, account: st
     } : null;
     return { binary: plain.slice(4 + length), metadata: { version: metadata.version, dirty: metadata.dirty, entry } };
   } finally { new Uint8Array(plain).fill(0); }
+}
+
+// The personal-scope account string was renamed from the bare userId to `${userId}:personal`.
+// Try the current scoped account first; a checkpoint sealed before the rename only opens
+// under the bare userId, so retry once with that before giving up on the checkpoint.
+export async function openDraftCompat(draft: LockedDraft, key: Uint8Array, userId: string): Promise<{ binary: ArrayBuffer; metadata: DraftMetadata }> {
+  try { return await openDraft(draft, key, draftAccount(userId, "personal")); }
+  catch { return openDraft(draft, key, userId); }
 }
 
 function isCustomField(value: unknown): value is CustomField {

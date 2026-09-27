@@ -3,7 +3,7 @@ import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback }
 import { getJSON, postJSON, putJSON, requestJSON, toErrorMessage, HttpError } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
-import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
+import { sealDraft, openDraftCompat, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, draftAccount, draftId, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault, isWrongVaultKey } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
 import { rotateAndUpload, RotationUnconfirmedError, uploadRotatedVault } from "./lib/keyRotation";
@@ -287,10 +287,10 @@ export function App() {
       const local = memoryDraft.current ? { kind: "available", draft: memoryDraft.current } : await readDraft(id);
       const stored = "draft" in local ? local.draft : undefined;
       if (local.kind === "unavailable") notices.push("Opened the server copy. Could not read the local recovery copy; retry unlocking when browser storage is available to recover local edits.");
-      let recovered: Awaited<ReturnType<typeof openDraft>> | undefined;
+      let recovered: Awaited<ReturnType<typeof openDraftCompat>> | undefined;
       if (stored) {
         try {
-          recovered = await openDraft(stored, key, u.id);
+          recovered = await openDraftCompat(stored, key, u.id);
         } catch {
           notices.push("Opened the server copy. The local recovery copy could not be read and was discarded.");
           if (!await removeDraft(id)) notices.push("Could not remove the unreadable recovery copy from browser storage.");
@@ -460,7 +460,7 @@ export function App() {
     const binary = metadata.dirty || metadata.entry ? saveQueue.exportBinary() : null;
     // Duplicating a browser tab copies sessionStorage. Allocate on each lock so those
     // tabs cannot overwrite one another's subsequent recovery snapshots.
-    const id = `${u.id}:${crypto.randomUUID()}`;
+    const id = draftId(u.id, "personal");
     let durableReference = true;
     if (binary) {
       try { sessionStorage.setItem(`kyvault.draft:${u.id}`, id); }
@@ -475,7 +475,7 @@ export function App() {
     checkpoint.current = (async () => {
       try {
         if (binary) {
-          memoryDraft.current = await sealDraft(await binary, metadata, key, u.id);
+          memoryDraft.current = await sealDraft(await binary, metadata, key, draftAccount(u.id, "personal"));
           await draftStore(id, "put", memoryDraft.current);
           setRecoveryPending(!durableReference);
           setLockNotice(durableReference

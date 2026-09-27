@@ -3,6 +3,7 @@ import { KeePassVault, isWrongVaultKey } from "../lib/kdbx";
 import { useState, useEffect, useRef } from "react";
 import { HttpError, getBinary, getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { diffVaults, type DiffRow, type VaultDiff } from "../lib/vaultDiff";
+import { PERSONAL_BASE } from "../lib/vaultSave";
 import { RotateCcw, AlertTriangle, Trash2, CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { Dialog } from "./Dialog";
 import { useDialogs } from "./DialogHost";
@@ -46,9 +47,10 @@ type Props = {
   onClose: () => void;
   onRestored: () => void;
   onNotice: (text: string) => void;
+  basePath?: string;
 };
 
-export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback }: Props) {
+export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback, basePath = PERSONAL_BASE }: Props) {
   const dialogs = useDialogs();
   const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
@@ -77,7 +79,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setPreviews((prev) => ({ ...prev, [id]: { kind: "loading" } }));
     let result: Preview;
     try {
-      const bytes = await getBinary(`/api/vault/history/${encodeURIComponent(id)}`, controller.signal);
+      const bytes = await getBinary(`${basePath}/history/${encodeURIComponent(id)}`, controller.signal);
       const opened = await KeePassVault.open(bytes, snapshot.vaultKey);
       // Closed or locked while decrypting: nothing may continue to a confirm or restore.
       if (controller.signal.aborted) throw new Error("preview cancelled");
@@ -107,8 +109,8 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setError("");
     try {
       const [histData, confData] = await Promise.all([
-        getJSON<HistoryEntry[]>("/api/vault/history"),
-        getJSON<ConflictEntry[]>("/api/vault/conflicts"),
+        getJSON<HistoryEntry[]>(`${basePath}/history`),
+        getJSON<ConflictEntry[]>(`${basePath}/conflicts`),
       ]);
       setHistory(histData || []);
       setConflicts(confData || []);
@@ -146,7 +148,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await postJSON(`/api/vault/history/${id}/restore`, {});
+      await postJSON(`${basePath}/history/${id}/restore`, {});
       onNotice("Vault restored to the selected version.");
       onRestored();
     } catch (err) {
@@ -173,7 +175,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await deleteJSON(`/api/vault/conflicts/${id}`);
+      await deleteJSON(`${basePath}/conflicts/${id}`);
       setConflicts((prev) => prev.filter((c) => c.id !== id));
       setMessage("Conflict upload removed.");
     } catch (err) {
@@ -222,7 +224,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
 
         {comparisonId && recovery ? (
           <ConflictComparison key={comparisonId} conflictId={comparisonId} current={recovery.vault} vaultKey={recovery.vaultKey}
-            onRecovered={recovery.onRecovered} onBack={() => setComparisonId(null)} />
+            basePath={basePath} onRecovered={recovery.onRecovered} onBack={() => setComparisonId(null)} />
         ) : loading ? (
           <p style={{ color: "var(--ink-muted)" }}>Loading {activeTab === "history" ? "snapshots" : "conflicts"}…</p>
         ) : activeTab === "history" ? (

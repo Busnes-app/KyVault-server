@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./vaultSave";
+import { VaultSaveQueue, uploadVault, canDiscardVault, PERSONAL_BASE, type SaveState } from "./vaultSave";
 import { KeePassVault } from "./kdbx";
 
 function settled(queue: VaultSaveQueue): Promise<SaveState> {
@@ -267,6 +267,39 @@ test("key rotation upload carries both envelopes on the one versioned request", 
     return Response.json({ metadata: { version: 5 } });
   });
   assert.equal(await uploadVault(new ArrayBuffer(8), 4, "pw-env", "rec-env"), 5);
+});
+
+test("uploadVault sends the base path instead of the personal default", async (t) => {
+  browserCookie(t);
+  const seen: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options: RequestInit = {}) => {
+    seen.push(`${options.method ?? "GET"} ${url}`);
+    return Response.json({ metadata: { version: 8 } });
+  });
+  const v = await uploadVault(new ArrayBuffer(4), 7, undefined, undefined, undefined, false, undefined, "/api/shared/sv_abcdefghijklmnopqrstuv");
+  assert.equal(v, 8);
+  assert.deepEqual(seen, ["POST /api/shared/sv_abcdefghijklmnopqrstuv/upload"]);
+});
+
+test("a shared-vault queue reads and uploads against its base path and skips the envelope guard", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(5));
+  const basePath = "/api/shared/sv_abcdefghijklmnopqrstuv";
+  const queue = new VaultSaveQueue(vault, 7, undefined, basePath);
+  const seen: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options: RequestInit = {}) => {
+    seen.push(`${options.method ?? "GET"} ${url}`);
+    if (String(url).endsWith("/metadata")) return Response.json({ version: 7 });
+    return Response.json({ metadata: { version: 8 } });
+  });
+  queue.changed();
+  await queue.save({ overwrite: true });
+  assert.deepEqual(queue.getSnapshot(), { kind: "saved", version: 8 });
+  assert.deepEqual(seen, [`GET ${basePath}/metadata`, `POST ${basePath}/upload`]);
+});
+
+test("PERSONAL_BASE is the default vault transport root", () => {
+  assert.equal(PERSONAL_BASE, "/api/vault");
 });
 
 test("overwrite refuses when the key was rotated in another session", async (t) => {

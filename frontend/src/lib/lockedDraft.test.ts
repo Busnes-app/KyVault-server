@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { draftPointer, openDraft, sealDraft, planDraftCleanup, DRAFT_MAX_AGE_MS, type DraftMetadata } from "./lockedDraft";
+import { draftPointer, openDraft, openDraftCompat, sealDraft, draftAccount, draftId, planDraftCleanup, DRAFT_MAX_AGE_MS, type DraftMetadata } from "./lockedDraft";
 
 test("draft pointer reads the renamed key and falls back to the legacy key", () => {
   const values = new Map([["kypassword.draft:u1", "legacy-checkpoint"]]);
@@ -73,6 +73,29 @@ test("openDraft returns copies and does not keep the decrypted buffer", async ()
   assert.equal(opened.metadata.version, 3);
   // The returned buffers are slices, so zeroing the internal plaintext cannot touch them.
   assert.notEqual(opened.binary.byteLength, 0);
+});
+
+test("draft account and id carry the vault scope", async () => {
+  assert.equal(draftAccount("u-1", "personal"), "u-1:personal");
+  assert.equal(draftAccount("u-1", "sv_abcdefghijklmnopqrstuv"), "u-1:sv_abcdefghijklmnopqrstuv");
+  assert.match(draftId("u-1", "personal"), /^u-1:personal:[0-9a-f-]{36}$/);
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  const sealed = await sealDraft(new ArrayBuffer(8), { version: 1, dirty: true, entry: null }, key, draftAccount("u-1", "sv_abcdefghijklmnopqrstuv"));
+  await assert.rejects(openDraft(sealed, key, draftAccount("u-1", "personal")));
+});
+
+test("openDraftCompat opens a scoped draft, then falls back to a pre-upgrade bare-userId draft", async () => {
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  const scoped = await sealDraft(new ArrayBuffer(4), { version: 1, dirty: true, entry: null }, key, draftAccount("u-1", "personal"));
+  const opened = await openDraftCompat(scoped, key, "u-1");
+  assert.deepEqual(new Uint8Array(opened.binary), new Uint8Array(4));
+
+  const legacy = await sealDraft(new ArrayBuffer(4), { version: 1, dirty: true, entry: null }, key, "u-1");
+  const openedLegacy = await openDraftCompat(legacy, key, "u-1");
+  assert.deepEqual(new Uint8Array(openedLegacy.binary), new Uint8Array(4));
+
+  const other = await sealDraft(new ArrayBuffer(4), { version: 1, dirty: true, entry: null }, key, "someone-else");
+  await assert.rejects(openDraftCompat(other, key, "u-1"));
 });
 
 test("cleanup plan removes old drafts of this account, keeps the current pointer and stamps legacy ones", async () => {
