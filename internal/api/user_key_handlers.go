@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/Busnes-app/kyvault-server/internal/userkey"
 	"github.com/Busnes-app/kyvault-server/internal/users"
@@ -26,8 +25,7 @@ func (s *Server) handleUserKeyPut(w http.ResponseWriter, r *http.Request, u user
 	// published identity therefore also needs a recent KySignOn sign-in, like the destructive
 	// backup actions, so a stolen session alone cannot swap the key peers will trust. First
 	// publish is create-only and cannot overwrite anything, so it runs from any session.
-	if !createOnly && (current.AuthenticatedAt.IsZero() || time.Since(current.AuthenticatedAt) > freshSessionWindow) {
-		http.Error(w, "re-authenticate to continue: sign in again through KySignOn", http.StatusForbidden)
+	if !createOnly && !s.requireFresh(w, current) {
 		return
 	}
 	var rec userkey.Record

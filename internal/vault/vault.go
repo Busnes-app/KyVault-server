@@ -790,3 +790,15 @@ func (s *Store) pruneOldHistoryLocked(userID string) {
 		snapshots = append(snapshots[:remove], snapshots[remove+1:]...)
 	}
 }
+
+// MoveOut renames the vault directory for key to dst under the store lock, so no save
+// can land in it mid-move. A missing directory is not an error.
+func (s *Store) MoveOut(key, dst string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.userVaultDir(key)
+	if _, err := os.Lstat(src); os.IsNotExist(err) {
+		return nil
+	}
+	return os.Rename(src, dst)
+}

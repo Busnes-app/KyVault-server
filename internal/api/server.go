@@ -20,6 +20,7 @@ import (
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/backup"
 	"github.com/Busnes-app/kyvault-server/internal/devices"
+	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
 	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
 	"github.com/Busnes-app/kyvault-server/internal/users"
@@ -55,6 +56,11 @@ type Server struct {
 	scimToken     string
 	dataDir       string
 	pairings      *pairingLimiter
+
+	// shared is shared-vault membership; sharedSettings is CONFIG_DIR/shared.json.
+	shared         *shared.Store
+	sharedSettings *sharedSettings
+
 	// trustedProxies are the peers whose X-Forwarded-For sourceKey may believe.
 	trustedProxies []netip.Prefix
 	// sessionsDirty is set when sessions.json could not be written; see saveSessionsLocked.
@@ -133,6 +139,11 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("init vault store: %w", err)
 	}
 
+	shStore, err := shared.NewStore(cfg.DataDir+"/shared", cfg.RetentionDays)
+	if err != nil {
+		return nil, fmt.Errorf("init shared store: %w", err)
+	}
+
 	dStore, err := devices.NewStore(cfg.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("init devices store: %w", err)
@@ -169,6 +180,8 @@ func NewServer(cfg Config) (*Server, error) {
 		scimToken:      cfg.SCIMToken,
 		dataDir:        cfg.DataDir,
 		pairings:       newPairingLimiter(),
+		shared:         shStore,
+		sharedSettings: newSharedSettings(cfg.ConfigDir),
 		trustedProxies: cfg.TrustedProxies,
 		sessions:       make(map[string]Session),
 		logoutPending:  make(map[string]struct{}),
@@ -180,6 +193,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if err := s.loadSessions(); err != nil {
 		return nil, fmt.Errorf("load sessions: %w", err)
 	}
+	s.pruneShared()
 	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery, Config: cfg.Backup}
 	go s.flushSuppressed()
 
@@ -236,6 +250,18 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/sync/webhook", s.signedSyncHandler())
 
 	// Admin Operations
+	// Shared vaults: lifecycle and membership. Every {id} route resolves the caller's row first.
+	mux.HandleFunc("POST /api/shared", s.withAuth(s.handleSharedCreate))
+	mux.HandleFunc("GET /api/shared", s.withAuth(s.handleSharedList))
+	mux.HandleFunc("GET /api/shared/{id}", s.withAuth(s.handleSharedGet))
+	mux.HandleFunc("PATCH /api/shared/{id}", s.withAuth(s.handleSharedRename))
+	mux.HandleFunc("DELETE /api/shared/{id}", s.withAuth(s.handleSharedDelete))
+	mux.HandleFunc("POST /api/shared/{id}/members", s.withAuth(s.handleSharedInvite))
+	mux.HandleFunc("PUT /api/shared/{id}/members/{userId}", s.withAuth(s.handleSharedMemberUpdate))
+	mux.HandleFunc("DELETE /api/shared/{id}/members/{userId}", s.withAuth(s.handleSharedMemberRemove))
+	mux.HandleFunc("POST /api/shared/{id}/accept", s.withAuth(s.handleSharedAccept))
+	mux.HandleFunc("POST /api/shared/{id}/decline", s.withAuth(s.handleSharedDecline))
+
 	mux.HandleFunc("GET /api/admin/provisioning", s.withAdmin(s.handleProvisioningStatus))
 	mux.HandleFunc("GET /api/admin/users", s.withAdmin(s.handleAdminUsersList))
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", s.withAdmin(s.handleAdminUserRole))
@@ -253,6 +279,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/backup/pairing", s.withFreshAdmin(s.handleUnpairRecovery))
 	mux.HandleFunc("PUT /api/backup/schedule", s.withFreshAdmin(s.handleBackupSchedule))
 	mux.HandleFunc("GET /api/backup/status", s.withAdmin(s.handleBackupStatus))
+	mux.HandleFunc("GET /api/admin/shared", s.withAdmin(s.handleAdminSharedList))
+	mux.HandleFunc("DELETE /api/admin/shared/{id}", s.withFreshAdmin(s.handleAdminSharedDelete))
+	mux.HandleFunc("DELETE /api/admin/shared/{id}/members/{userId}", s.withFreshAdmin(s.handleAdminSharedMemberRemove))
+	mux.HandleFunc("GET /api/admin/shared/settings", s.withAdmin(s.handleAdminSharedSettingsGet))
+	mux.HandleFunc("PUT /api/admin/shared/settings", s.withFreshAdmin(s.handleAdminSharedSettingsPut))
 
 	return SecurityHeaders(mux)
 }
@@ -464,12 +495,25 @@ func (s *Server) withAuth(next func(http.ResponseWriter, *http.Request, users.Us
 // back through KySignOn instead.
 const freshSessionWindow = 10 * time.Minute
 
+// sessionIsFresh holds when the session's KySignOn sign-in is within freshSessionWindow.
+func sessionIsFresh(sess Session) bool {
+	return !sess.AuthenticatedAt.IsZero() && time.Since(sess.AuthenticatedAt) <= freshSessionWindow
+}
+
+// requireFresh answers 403 unless sess is fresh.
+func (s *Server) requireFresh(w http.ResponseWriter, sess Session) bool {
+	if !sessionIsFresh(sess) {
+		http.Error(w, "re-authenticate to continue: sign in again through KySignOn", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // withFreshAdmin is withAdmin for destructive backup routes.
 func (s *Server) withFreshAdmin(next func(http.ResponseWriter, *http.Request, users.User)) http.HandlerFunc {
 	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, u users.User) {
 		sess, _ := s.currentSession(r)
-		if sess.AuthenticatedAt.IsZero() || time.Since(sess.AuthenticatedAt) > freshSessionWindow {
-			http.Error(w, "re-authenticate to continue: sign in again through KySignOn", http.StatusForbidden)
+		if !s.requireFresh(w, sess) {
 			return
 		}
 		next(w, r, u)
