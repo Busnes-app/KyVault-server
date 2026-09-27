@@ -12,6 +12,7 @@ import { copyText, SECRET_CLIPBOARD_MS } from "../lib/clipboard";
 import { groupHex, useHideAfter } from "../lib/secretDisplay";
 import { generatePaperCode } from "../lib/paperCode";
 import { revokeDevices } from "../lib/keyRotation";
+import type { UserKeyState } from "../lib/userKeyState";
 
 // Type-it-back comparison ignores formatting, not case or characters.
 function normalizeCode(value: string): string {
@@ -49,6 +50,8 @@ type Props = {
   canRotate: boolean;
   onExport: () => Promise<void>;
   onRotateKey: (password: string, paperCode: string) => Promise<void>;
+  userKey?: UserKeyState | null;
+  onUserKeyReplaced?: (state: UserKeyState) => void;
 };
 
 export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey }: Props) {

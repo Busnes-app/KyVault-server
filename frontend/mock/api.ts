@@ -7,6 +7,7 @@ type Store = {
   history: Array<{ id: string; version: number; sizeBytes: number; checksum: string; timestamp: string; bytes: Buffer }>;
   conflicts: Array<{ id: string; expectedVersion: number; deviceId: string; sizeBytes: number; timestamp: string; bytes: Buffer }>;
   devices: Array<{ id: string; name: string; platform: string; lastSeenAt: string; lastIp: string; current: boolean }>;
+  userKey: undefined | Record<string, unknown>;
 };
 
 export function mockApi(): Plugin {
@@ -20,7 +21,7 @@ export function mockApi(): Plugin {
     ];
     return rows.filter((r) => !endedSessions.has(r.id));
   };
-  const store: Store = { version: 0, keyEpochSince: 0, bytes: null, history: [], conflicts: [], devices: [
+  const store: Store = { version: 0, keyEpochSince: 0, bytes: null, history: [], conflicts: [], userKey: undefined, devices: [
     { id: "dev-1", name: "Pixel 9", platform: "android", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.7", current: false },
     { id: "dev-2", name: "Firefox extension", platform: "browser", lastSeenAt: new Date().toISOString(), lastIp: "10.0.0.8", current: false },
   ] };
@@ -47,7 +48,7 @@ export function mockApi(): Plugin {
     res.setHeader("Content-Type", "application/x-keepass2"); res.setHeader("Cache-Control", "no-store"); res.end(bytes);
   };
   const metadata = () => ({ version: store.version, checksum: store.bytes ? createHash("sha256").update(store.bytes).digest("hex") : "",
-    sizeBytes: store.bytes?.length ?? 0, passwordEnvelope: store.passwordEnvelope, recoveryEnvelope: store.recoveryEnvelope });
+    sizeBytes: store.bytes?.length ?? 0, passwordEnvelope: store.passwordEnvelope, recoveryEnvelope: store.recoveryEnvelope, userKey: store.userKey });
 
   return { name: "kyvault-mock-api", configureServer(server) {
     server.middlewares.use(async (req, res, next) => {
@@ -84,12 +85,33 @@ export function mockApi(): Plugin {
         }
         const rotated = req.headers["x-vault-key-rotated"] === "1";
         if (rotated && !(req.headers["x-password-envelope"] && req.headers["x-recovery-envelope"])) return json(res, 400, { error: "a key rotation must carry both new envelopes" });
+        if (rotated && store.userKey && !req.headers["x-user-key"]) return json(res, 400, { error: "a key rotation must carry the re-wrapped user key" });
         archive();
         store.bytes = body; store.version++;
         if (rotated) { store.keyEpochSince = store.version; store.devices = []; }
         const env = req.headers["x-password-envelope"]; if (typeof env === "string" && env) store.passwordEnvelope = env;
         const rec = req.headers["x-recovery-envelope"]; if (typeof rec === "string" && rec) store.recoveryEnvelope = rec;
+        if (rotated && req.headers["x-user-key"]) {
+          const decoded = JSON.parse(Buffer.from(String(req.headers["x-user-key"]), "base64").toString());
+          store.userKey = { ...decoded, previous: store.userKey?.previous ?? [] };
+        }
         return json(res, 200, { ok: true, metadata: metadata() });
+      }
+      if (p === "/api/vault/user-key" && m === "PUT") {
+        const expected = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));
+        if (expected !== store.version) return json(res, 409, { error: "conflict" });
+        const body = JSON.parse((await readBody(req)).toString() || "{}");
+        const prev = store.userKey && store.userKey.publicKey !== body.publicKey
+          ? [...((store.userKey.previous as unknown[]) ?? []), { publicKey: store.userKey.publicKey, replacedAt: new Date().toISOString() }].slice(-5)
+          : (store.userKey?.previous ?? []);
+        store.userKey = { ...body, previous: prev };
+        return json(res, 200, { ok: true, fingerprint: "MOCK FPRT" });
+      }
+      const keyMatch = p.match(/^\/api\/users\/([^/]+)\/key$/);
+      if (keyMatch && m === "GET") {
+        if (keyMatch[1] !== user.id || !store.userKey) return json(res, 404, { error: "not found" });
+        const { wrappedSeed: _w, ...pub } = store.userKey;
+        return json(res, 200, { userId: user.id, fingerprint: "MOCK FPRT", ...pub });
       }
       if (p === "/api/vault/envelopes" && m === "PUT") {
         const expected = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));

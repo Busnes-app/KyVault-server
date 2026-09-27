@@ -5,6 +5,8 @@ import { unwrapVaultKey } from "./vaultCrypto";
 import { rotateVaultKey, rotateAndUpload, revokeDevices, RotationUnconfirmedError, uploadRotatedVault } from "./keyRotation";
 import { generatePaperCode } from "./paperCode";
 import { HttpError } from "./api";
+import { adoptUserKey, newUserKeyRecord } from "./userKeyState";
+import { b64, unwrapSeed, type UserKeyRecord } from "./userKey";
 
 const PASSWORD = "correct horse battery staple";
 
@@ -130,4 +132,20 @@ test("the rotation upload carries both envelopes and the key-rotated flag in one
   assert.equal(headers.get("If-Match"), '"7"');
   assert.equal(headers.get("X-Password-Envelope"), "pw-env");
   assert.equal(headers.get("X-Recovery-Envelope"), "rec-env");
+});
+
+test("rotation re-wraps the user key seed under the new vault key and sends it", async () => {
+  const oldKey = new Uint8Array(32).fill(1);
+  const vault = await KeePassVault.createNew(oldKey);
+  const made = await newUserKeyRecord(oldKey, "u1");
+  const state = await adoptUserKey(made.record, oldKey, "u1");
+  let sent: UserKeyRecord | undefined;
+  const r = await rotateAndUpload(vault, oldKey, "correct horse battery staple", "paper", 3, {
+    upload: async (_b, _pw, _rec, userKeyRecord) => { sent = userKeyRecord; return 4; },
+    metadata: async () => ({}),
+  }, state, "u1");
+  assert.ok(sent);
+  assert.equal(sent!.publicKey, made.record.publicKey);
+  assert.deepEqual(await unwrapSeed(b64.decode(sent!.wrappedSeed), r.key, "u1"), made.seed);
+  assert.equal(r.userKeyRecord, sent);
 });
