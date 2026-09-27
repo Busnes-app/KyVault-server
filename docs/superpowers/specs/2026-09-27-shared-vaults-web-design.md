@@ -34,11 +34,8 @@ Admin tab. No key ever leaves the browser unsealed.
 existing `vault`, `vaultKey`, `saveQueue`, `meta`, draft and checkpoint state describe the
 selected vault. While a shared vault is selected the personal vault key is kept as
 `personalKey` (seed unwrap, pins) and the personal `KeePassVault` stays in memory for pin
-reads/writes; its save queue is closed while not selected and pin writes on it enqueue a
-personal save when it is next selected or, simpler, pin writes are applied to the personal
-vault and uploaded through a short-lived personal queue immediately. Decision: pins are
-written and uploaded immediately through a dedicated `pinQueue` on the personal vault so a
-pin never waits on a switch.
+reads and writes. Pin writes go through a dedicated `pinQueue` on the personal vault and
+upload immediately, so a pin never waits for a switch back.
 
 `lib/sharedVaults.ts`: API client for `/api/shared*` (list, get, create, rename, delete,
 invite, updateMember, removeMember, accept, decline, kdbx, upload, metadata) and the
