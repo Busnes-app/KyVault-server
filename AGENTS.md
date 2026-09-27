@@ -577,7 +577,17 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   seed and sends it as `X-User-Key` in the same upload; the server refuses a rotation that drops or
   swaps an existing key. Replace needs the master password in the browser and, because the server cannot check that, a KySignOn sign-in within `freshSessionWindow` (403 `re-authenticate…` otherwise; the page offers "Sign in again"); it appends the old public key to
   `previous` (max 5); the callback is generation-guarded like `settleUserKey`/`rotateKey` so a lock
-  during the async publish cannot resurrect a stale key into app state. `PUT /api/vault/user-key` is
+  during the async publish cannot resurrect a stale key into app state. Replace carries the shared
+  vaults with it: `lib/keyReplaceReseal.ts` opens every active row's sealed key with the old
+  seed before anything changes (`planReplace`), so one confirm names what the old key already
+  cannot open and says the contents are lost where no other active owner remains
+  (`replaceWarning`; a member list that could not be read counts as sole ownership, and a
+  `mismatch` key opens nothing so every active row is named), then
+  re-seals each held key to the new key after the PUT (`resealHeld`, a self-reseal per vault,
+  never throws). Failures list per vault in Security → Your key with one Retry over the keys
+  still held, through the shared `components/ErrorLine.tsx` so the self-reseal's fresh-session
+  403 offers "Sign in again"; held keys are zeroed once re-sealed and on unmount (`zeroKeys`).
+  `keyReplaceReseal.test.ts`. `PUT /api/vault/user-key` is
   refused with 403 for a device-session bearer token (a stolen extension token must not be able to
   swap the published key); only a browser session may publish or replace. `GET /api/users/{id}/key`
   serves the public half to any session or device token, never `wrappedSeed`; readers trust their own

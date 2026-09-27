@@ -1035,6 +1035,8 @@ export function App() {
           onUserKeyReplaced={(s: UserKeyState, generation: number) => { if (generation === unlockGeneration.current) setUserKey(s); }}
           pinVault={pinVault ?? null}
           onPinsChanged={() => { void savePersonalPins(); }}
+          sharedVaults={shared.vaults}
+          onSharedChanged={() => { void shared.refresh(); }}
         /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>

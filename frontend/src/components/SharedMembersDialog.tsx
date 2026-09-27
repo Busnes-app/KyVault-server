@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Dialog } from "./Dialog";
+import { ErrorLine } from "./ErrorLine";
 import { useDialogs } from "./DialogHost";
 import { toErrorMessage } from "../lib/api";
 import { inviteMember, resealMember, resolveInvitee, REPIN_FIRST, type FlowDeps, type PinStatus } from "../lib/sharedFlows";
@@ -37,16 +38,6 @@ function MemberKey({ username, view }: { username: string; view: KeyView | undef
       <code className="font-mono" style={{ overflowWrap: "anywhere" }} aria-label={`${username} key fingerprint`}>{view.key.fingerprint}</code>
       <span style={{ color: pinColor(view.key) }}>{pinLabel(view.key)}</span>
     </>
-  );
-}
-
-// A fresh-session refusal is the one error with a way out on screen.
-function ErrorLine({ text }: { text: string }) {
-  return (
-    <p role="alert" style={{ color: "var(--danger)" }}>
-      {text}
-      {text.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login?reauth=true">Sign in again</a></> : null}
-    </p>
   );
 }
 
