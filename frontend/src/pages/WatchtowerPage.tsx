@@ -89,7 +89,7 @@ export function WatchtowerPage({ vault, hidden, onOpenEntry }: Props) {
 
   const confirmCheck = (auto: boolean) => dialogs.confirm({
     title: "Check passwords against Have I Been Pwned?",
-    message: auto ? `${HIBP_DISCLOSURE} This runs every time you open Watchtower in this browser.` : HIBP_DISCLOSURE,
+    message: auto ? `${HIBP_DISCLOSURE} This runs the first time you open Watchtower after each unlock, in this browser.` : HIBP_DISCLOSURE,
     confirmLabel: auto ? "Turn on" : "Check",
   });
 
@@ -99,6 +99,7 @@ export function WatchtowerPage({ vault, hidden, onOpenEntry }: Props) {
     if (on && !(await confirmCheck(true))) return;
     try { localStorage.setItem(AUTO_BREACH_KEY, on ? "1" : "0"); } catch {}
     setAutoBreach(on);
+    autoRan.current = true;
     if (on && !breached) void runCheck();
   };
 
@@ -119,7 +120,7 @@ export function WatchtowerPage({ vault, hidden, onOpenEntry }: Props) {
     <div className="settings-page" style={{ maxWidth: "960px" }}>
       <section className="field-card watchtower-header">
         <div>
-          <div className="watchtower-score font-mono" aria-label="Vault score">{report?.score ?? "–"}</div>
+          <div className="watchtower-score font-mono" role="status" aria-label="Vault score">{report?.score ?? "–"}</div>
           <p style={{ margin: 0 }}>{report ? verdict(report.score) : "Checking your vault…"}</p>
           <p style={{ margin: 0, color: "var(--ink-muted)", fontSize: "0.85rem" }}>{status}</p>
           {breachError ? <p role="alert" style={{ margin: 0, color: "var(--danger)" }}>{breachError}</p> : null}
