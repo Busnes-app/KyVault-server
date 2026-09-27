@@ -1,0 +1,63 @@
+import { KeePassVault } from "./kdbx";
+import { getBinary, getJSON } from "./api";
+import { openSharedKey } from "./sharedKey";
+import { canOpen, sharedBase, type SharedVaultSummary } from "./sharedVaults";
+import { PERSONAL_BASE, uploadVault } from "./vaultSave";
+import type { DraftScope } from "./lockedDraft";
+
+export type Selected = { kind: "personal" } | { kind: "shared"; id: string };
+export const personal: Selected = { kind: "personal" };
+export const selectionScope = (s: Selected): DraftScope => (s.kind === "personal" ? "personal" : (s.id as DraftScope));
+export const selectionBase = (s: Selected) => (s.kind === "personal" ? PERSONAL_BASE : sharedBase(s.id));
+export const sameSelection = (a: Selected, b: Selected) => a.kind === b.kind && (a.kind === "personal" || a.id === (b as { id: string }).id);
+
+export function resolveSelection(routeShared: string | undefined, vaults: SharedVaultSummary[]): { selected: Selected; notice: string | null } {
+  if (!routeShared) return { selected: personal, notice: null };
+  const row = vaults.find((v) => v.id === routeShared);
+  if (!row) return { selected: personal, notice: "You are not a member of that shared vault." };
+  if (!canOpen(row)) {
+    const why = row.state === "invited" ? "You have not accepted the invitation to" : "Your key for";
+    return { selected: personal, notice: `${why} “${row.name}” ${row.state === "invited" ? "yet." : "needs to be re-sealed by an owner."}` };
+  }
+  return { selected: { kind: "shared", id: row.id }, notice: null };
+}
+
+export type OpenDeps = {
+  openKey: (seed: Uint8Array, sealedKey: string) => Promise<Uint8Array>;
+  fetchMetadata: (base: string) => Promise<{ version: number }>;
+  fetchKdbx: (base: string, signal?: AbortSignal) => Promise<ArrayBuffer>;
+  openVault: (bytes: ArrayBuffer, key: Uint8Array) => Promise<KeePassVault>;
+  createVault: (key: Uint8Array, name: string) => Promise<KeePassVault>;
+  upload: (binary: ArrayBuffer, version: number, base: string) => Promise<number>;
+};
+
+export const defaultOpenDeps: OpenDeps = {
+  openKey: openSharedKey,
+  fetchMetadata: (base) => getJSON<{ version: number }>(`${base}/metadata`),
+  fetchKdbx: (base, signal) => getBinary(`${base}/kdbx`, signal ?? new AbortController().signal),
+  openVault: (bytes, key) => KeePassVault.open(bytes, key),
+  createVault: (key, name) => KeePassVault.createNew(key, name),
+  upload: (binary, version, base) => uploadVault(binary, version, undefined, undefined, undefined, false, undefined, base),
+};
+
+export type OpenedShared = { vault: KeePassVault; key: Uint8Array; version: number; readOnly: boolean };
+
+export async function openShared(row: SharedVaultSummary, seed: Uint8Array, deps: OpenDeps = defaultOpenDeps): Promise<OpenedShared> {
+  let key: Uint8Array;
+  try {
+    key = await deps.openKey(seed, row.myKey.sealedKey);
+  } catch {
+    throw new Error("Your copy of the key cannot be opened; ask an owner to re-seal it.");
+  }
+  const base = sharedBase(row.id);
+  const meta = await deps.fetchMetadata(base);
+  const readOnly = row.role === "reader";
+  if (!meta.version) {
+    if (readOnly) throw new Error("This vault is empty; an owner or editor must add the first entry.");
+    const vault = await deps.createVault(key, row.name);
+    const version = await deps.upload(await vault.exportBinary(), 0, base);
+    return { vault, key, version, readOnly };
+  }
+  const vault = await deps.openVault(await deps.fetchKdbx(base), key);
+  return { vault, key, version: meta.version, readOnly };
+}
