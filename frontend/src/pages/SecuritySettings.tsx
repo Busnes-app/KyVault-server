@@ -15,6 +15,8 @@ import { revokeDevices } from "../lib/keyRotation";
 import { newUserKeyRecord } from "../lib/userKeyState";
 import type { UserKeyState } from "../lib/userKeyState";
 import { fingerprint } from "../lib/userKey";
+import { KnownKeys } from "../components/KnownKeys";
+import type { KeePassVault } from "../lib/kdbx";
 
 // Type-it-back comparison ignores formatting, not case or characters.
 function normalizeCode(value: string): string {
@@ -57,9 +59,12 @@ type Props = {
   unlockGeneration: () => number;
   // False while a shared vault is selected: the cards below act on the personal vault only.
   personalOnly?: boolean;
+  // Pins live in the personal vault, whichever vault is selected.
+  pinVault?: KeePassVault | null;
+  onPinsChanged?: () => void;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration, personalOnly = true }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration, personalOnly = true, pinVault, onPinsChanged }: Props) {
   const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -692,6 +697,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             title={currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
         ) : null}
       </section>
+
+      {pinVault ? <KnownKeys vault={pinVault} onChanged={() => onPinsChanged?.()} /> : null}
 
       {personalOnly ? <>
       <section className="field-card" style={{ marginBottom: "2rem" }}>

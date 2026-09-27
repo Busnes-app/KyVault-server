@@ -335,7 +335,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut` (the mover `NewStore` gets):
   lock order `shared.mu` then `vault.mu`, never the reverse; `writeTarget` keeps the same
   order for shared data writes. `shared_test.go` covers routes, CSRF, roles, hooks,
-  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3b/3c/3d): no UI, no shared key rotation, extension
+  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3c/3d): no shared key rotation, extension
   and KyAuth unaware; a removed member's copy of the key is only invalidated by the 3c
   rotation.
 
@@ -466,6 +466,28 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   hides master password, paper code, rotation, offline key and device cards while shared; Forget
   This Device stays in the replacement card.
   Drafts are scoped: pointer `kyvault.draft:<userId>[:<sharedId>]`. `appSelection.test.ts`.
+
+- `frontend/src/lib/sharedFlows.ts`, `components/AcceptInvitationDialog.tsx`,
+  `SharedMembersDialog.tsx` and `KnownKeys.tsx`: the shared-vault flows take a `FlowDeps`
+  (api, the personal vault the pins live in, the pin saver, `lookupKey`/`pinKey`, my own key
+  and fingerprint), so they are tested without a browser (`sharedFlows.test.ts`). `App.tsx`
+  rebuilds `flowDeps` with `useMemo` over the user key, the `personalRef` vault object and
+  `savePersonalPins`, and every entry point needs `userKey.kind === "ready"`; pins written by
+  a flow save through `savePersonalPins`, which reports mid-switch failures rather than
+  dropping the pin. Create seals a fresh key to myself, then selects the vault from the row
+  `shared.refresh()` returned, never from the pre-refresh list. Sealing for someone else pins
+  an unknown key first and refuses a changed one everywhere (invite and re-seal) until it is
+  re-pinned from Security → Known keys. Accept shows the inviter's fingerprint, the pin
+  verdict and the invitation's own `invitedBy.fingerprint` (a drift from the published key is
+  `changed` too), warns that KyVault trusts the server for who is in a vault and never for
+  its contents, and re-pins only after a second confirm. The members dialog carries rename,
+  delete, leave, remove, role changes (own row disabled, last-owner 409 shown inline), re-seal
+  for stale rows and the invite form; a 400 fingerprint refusal re-runs the lookup so the new
+  fingerprint is compared again, and a 403 shows the "Sign in again" link. No "sealed by"
+  column: the server reports `sealedByFingerprint` only for my own row, which the switcher
+  shows in its title. `closeVault` closes both dialogs, matching the lock-cancels-questions
+  rule. Known keys lists the pins in the personal vault with Re-pin (both fingerprints, then
+  confirm) and Forget.
 
 - `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
   appends the anchor and revokes the object URL a second later so Firefox and Safari do not

@@ -17,9 +17,13 @@ type Props = {
 export function VaultSwitcher({ selected, vaults, onSelect, onCreate, onAccept, onDecline, onMembers, canCreate, busy, error }: Props) {
   const invitations = vaults.filter((v) => v.state === "invited");
   const value = selected.kind === "personal" ? "personal" : selected.id;
+  // Whose key sealed my copy of the selected vault's key: the server only reports it for
+  // my own row, so it belongs here rather than in the members list.
+  const sealedBy = selected.kind === "shared" ? vaults.find((v) => v.id === selected.id)?.myKey?.sealedByFingerprint : undefined;
   return (
     <div className="vault-switcher" style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center", padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--line)" }}>
       <select id="vault-switcher" className="select" aria-label="Vault" value={value} disabled={busy}
+        title={sealedBy ? `Your copy of this vault key was sealed by key ${sealedBy}` : undefined}
         onChange={(e) => onSelect(e.target.value === "personal" ? { kind: "personal" } : { kind: "shared", id: e.target.value })}>
         <option value="personal">My vault</option>
         {vaults.filter((v) => v.state !== "invited").map((v) => (

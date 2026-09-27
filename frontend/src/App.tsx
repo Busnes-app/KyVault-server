@@ -1,5 +1,5 @@
 import { ThemeSwitcher } from './components/ThemeSwitcher';
-import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback } from "react";
+import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback, useMemo } from "react";
 import { getBinary, getJSON, postJSON, putJSON, requestJSON, toErrorMessage, HttpError } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, PERSONAL_BASE, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
@@ -8,7 +8,9 @@ import { KeePassVault, isWrongVaultKey } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
 import { rotateAndUpload, RotationUnconfirmedError, uploadRotatedVault } from "./lib/keyRotation";
 import { adoptUserKey, newUserKeyRecord, type UserKeyState } from "./lib/userKeyState";
-import type { UserKeyRecord } from "./lib/userKey";
+import { fingerprint, type UserKeyRecord } from "./lib/userKey";
+import { lookupKey, pinKey } from "./lib/keyPins";
+import { createSharedVault, type FlowDeps } from "./lib/sharedFlows";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
@@ -23,8 +25,10 @@ import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
 import { personal, selectionScope, selectionBase, sameSelection, resolveSelection, openShared, type Selected } from "./lib/vaultSelection";
 import { switchTo, lostAccess, restorePlan, applyRotation, type OpenedPersonal } from "./lib/appSelection";
-import { useSharedVaults, type SharedVaultSummary } from "./lib/sharedVaults";
+import { useSharedVaults, sharedApi, type SharedVaultSummary } from "./lib/sharedVaults";
 import { VaultSwitcher } from "./components/VaultSwitcher";
+import { AcceptInvitationDialog } from "./components/AcceptInvitationDialog";
+import { SharedMembersDialog } from "./components/SharedMembersDialog";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
 import { WatchtowerPage } from "./pages/WatchtowerPage";
@@ -129,6 +133,16 @@ export function App() {
   const restored = useRef(-1);
   const pinChain = useRef<Promise<void>>(Promise.resolve());
   const shared = useSharedVaults(!!vault && !!user);
+  const [acceptRow, setAcceptRow] = useState<SharedVaultSummary | null>(null);
+  const [showMembers, setShowMembers] = useState(false);
+  // My own fingerprint: the server checks it against my published key on every seal.
+  const [myFingerprint, setMyFingerprint] = useState("");
+  useEffect(() => {
+    if (userKey?.kind !== "ready") { setMyFingerprint(""); return; }
+    let live = true;
+    void fingerprint(userKey.publicKey).then((f) => { if (live) setMyFingerprint(f); });
+    return () => { live = false; };
+  }, [userKey]);
   const resetSelection = () => {
     sharedKeyRef.current?.fill(0);
     sharedKeyRef.current = null;
@@ -524,6 +538,8 @@ export function App() {
     setUnlockConfirm("");
     setShowUnlockModal(false);
     setShowHistoryModal(false);
+    setAcceptRow(null);
+    setShowMembers(false);
     resetSelection();
     personalRef.current = null;
     switchingRef.current = false;
@@ -546,7 +562,7 @@ export function App() {
 
   // Pins live in the personal vault. While it is selected its queue saves them; otherwise
   // they upload on their own chain against the retained personal version.
-  const savePersonalPins = (): Promise<void> => {
+  const savePersonalPins = useCallback((): Promise<void> => {
     if (selectedRef.current.kind === "personal") { queueRef.current?.changed(); return Promise.resolve(); }
     const run = pinChain.current.then(async () => {
       const p = personalRef.current;
@@ -565,7 +581,23 @@ export function App() {
     });
     pinChain.current = run.catch(() => {});
     return run;
-  };
+  }, []);
+
+  // The shared-vault flows take their world as an argument. Recomputing it whenever the
+  // user key, the personal vault object or the pin saver changes is what stops a dialog
+  // capturing a key from a previous unlock.
+  const pinVault = personalRef.current?.vault;
+  const flowDeps = useMemo<FlowDeps | null>(() => {
+    if (!user || !pinVault || userKey?.kind !== "ready" || !myFingerprint) return null;
+    return {
+      api: sharedApi,
+      pinVault,
+      onPinChanged: () => { void savePersonalPins(); },
+      lookupKey: (v, id) => lookupKey(v, id),
+      pinKey,
+      me: { id: user.id, publicKey: userKey.publicKey, seed: userKey.seed, fingerprint: myFingerprint },
+    };
+  }, [user, pinVault, userKey, myFingerprint, savePersonalPins]);
 
   const switchVault = async (target: Selected, row?: SharedVaultSummary, opts: { force?: boolean } = {}): Promise<boolean> => {
     const u = user;
@@ -652,6 +684,38 @@ export function App() {
   };
 
   const sharedRow = (id: string) => shared.vaults.find((v) => v.id === id);
+
+  // Create, then select from the list the server just gave us: the sealed copy of the key
+  // that opens the new vault only exists in that row.
+  const createShared = async () => {
+    if (!flowDeps) return;
+    const name = await dialogs.prompt({
+      title: "New shared vault",
+      label: "Name",
+      validate: (v) => (v.trim().length >= 1 && v.trim().length <= 64 && !/[\p{Cc}\p{Cf}]/u.test(v) ? null : "1 to 64 characters, no control characters"),
+    });
+    if (name === null) return;
+    try {
+      const made = await createSharedVault(name.trim(), flowDeps);
+      made.key.fill(0);
+      const rows = await shared.refresh();
+      await switchVault({ kind: "shared", id: made.id }, rows.find((r) => r.id === made.id));
+    } catch (err) {
+      setLockNotice(toErrorMessage(err, "Could not create the shared vault."));
+    }
+  };
+
+  const declineShared = async (row: SharedVaultSummary) => {
+    if (!(await dialogs.confirm({ title: `Decline “${row.name}”?`, message: "The invitation is removed. An owner can invite you again.", danger: true, confirmLabel: "Decline" }))) return;
+    try { await sharedApi.decline(row.id); } catch (err) { setLockNotice(toErrorMessage(err, "Could not decline the invitation.")); }
+    void shared.refresh();
+  };
+
+  const invitationSettled = async (row: SharedVaultSummary, accepted: boolean) => {
+    setAcceptRow(null);
+    const rows = await shared.refresh();
+    if (accepted) await switchVault({ kind: "shared", id: row.id }, rows.find((r) => r.id === row.id));
+  };
 
   // Route restore: once per unlock, reopen the #/shared/<id> the tab was on, after the list
   // has loaded and the user key that opens it is ready.
@@ -934,11 +998,11 @@ export function App() {
               selected={selected}
               vaults={shared.vaults}
               onSelect={(s) => void switchVault(s, s.kind === "shared" ? sharedRow(s.id) : undefined)}
-              onCreate={() => {}}
-              onAccept={() => {}}
-              onDecline={() => {}}
-              onMembers={() => {}}
-              canCreate={userKey?.kind === "ready"}
+              onCreate={() => void createShared()}
+              onAccept={(row) => setAcceptRow(row)}
+              onDecline={(row) => void declineShared(row)}
+              onMembers={() => setShowMembers(true)}
+              canCreate={!!flowDeps}
               busy={switching || rotating}
               error={shared.error}
             />}
@@ -966,6 +1030,8 @@ export function App() {
           userKey={userKey}
           unlockGeneration={() => unlockGeneration.current}
           onUserKeyReplaced={(s: UserKeyState, generation: number) => { if (generation === unlockGeneration.current) setUserKey(s); }}
+          pinVault={pinVault ?? null}
+          onPinsChanged={() => { void savePersonalPins(); }}
         /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1082,6 +1148,27 @@ export function App() {
               </div>
             </form>
         </Dialog>
+      ) : null}
+
+      {acceptRow && flowDeps ? (
+        <AcceptInvitationDialog key={acceptRow.id} row={acceptRow} deps={flowDeps} onDone={(accepted) => void invitationSettled(acceptRow, accepted)} />
+      ) : null}
+
+      {showMembers && flowDeps && selected.kind === "shared" ? (
+        <SharedMembersDialog
+          key={selected.id}
+          vaultId={selected.id}
+          myId={user.id}
+          myRole={sharedRow(selected.id)?.role ?? "reader"}
+          sharedKey={sharedKeyRef.current}
+          deps={flowDeps}
+          onChanged={() => { void shared.refresh(); }}
+          onLeftOrDeleted={() => {
+            setShowMembers(false);
+            void switchVault(personal, undefined, { force: true }).then(() => { void shared.refresh(); });
+          }}
+          onClose={() => setShowMembers(false)}
+        />
       ) : null}
 
       {/* History & Rollback Modal */}
