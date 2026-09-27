@@ -28,8 +28,9 @@ var (
 	ErrStaleKey = errors.New("snapshot was saved under a previous vault key")
 	// ErrRotationEnvelopes refuses a rotation upload that lacks either new envelope.
 	ErrRotationEnvelopes = errors.New("a key rotation must carry both new envelopes")
-	// ErrRotationUserKey refuses a rotation that drops or swaps the published user key.
-	ErrRotationUserKey = errors.New("a key rotation must carry the re-wrapped user key, unchanged public key")
+	// ErrRotationUserKey refuses a rotation that drops or swaps the published user key,
+	// or that tries to publish one where none exists: rotation re-wraps, it never publishes.
+	ErrRotationUserKey = errors.New("a key rotation must carry the re-wrapped user key, unchanged public key; X-User-Key is accepted only for an existing key")
 	ErrConflict        = errors.New("vault version conflict: a newer version exists on the server")
 )
 
@@ -424,8 +425,11 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 		}
 	}
 
-	if rotated && current.UserKey != nil {
-		if userKey == nil || userKey.PublicKey != current.UserKey.PublicKey {
+	if rotated {
+		if current.UserKey != nil && (userKey == nil || userKey.PublicKey != current.UserKey.PublicKey) {
+			return Metadata{}, ErrRotationUserKey
+		}
+		if current.UserKey == nil && userKey != nil {
 			return Metadata{}, ErrRotationUserKey
 		}
 	}
@@ -501,6 +505,10 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 func (s *Store) SaveUserKey(userID string, expectedVersion int64, rec userkey.Record) (bool, error) {
 	if err := rec.Validate(); err != nil {
 		return false, err
+	}
+	if expectedVersion == 0 {
+		// No vault to wrap the seed against yet.
+		return false, ErrConflict
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -622,6 +630,7 @@ func (s *Store) RestoreHistory(userID, historyID string) (Metadata, error) {
 		RecoveryEnvelope: current.RecoveryEnvelope,
 		DeviceEnvelopes:  current.DeviceEnvelopes,
 		KeyEpochSince:    current.KeyEpochSince,
+		UserKey:          current.UserKey,
 	}
 
 	if err := s.saveMetadataLocked(userID, nextMeta); err != nil {

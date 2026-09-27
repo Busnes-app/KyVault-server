@@ -381,3 +381,67 @@ func TestMetadataWithoutUserKeyDecodes(t *testing.T) {
 		t.Fatalf("decode: %+v %v", meta.UserKey, err)
 	}
 }
+
+func TestRestoreHistoryKeepsUserKey(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v1"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	key := testUserKey(1)
+	if _, err := store.SaveUserKey("u1", 1, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 1, []byte("v2"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.ListHistory("u1")
+	if err != nil || len(history) == 0 {
+		t.Fatalf("history: %v %v", history, err)
+	}
+	meta, err := store.RestoreHistory("u1", history[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.UserKey == nil || meta.UserKey.PublicKey != key.PublicKey || meta.UserKey.WrappedSeed != key.WrappedSeed {
+		t.Fatalf("rollback lost the user key: %+v", meta.UserKey)
+	}
+	if len(meta.UserKey.Previous) != len(key.Previous) {
+		t.Fatalf("rollback changed previous: %+v", meta.UserKey.Previous)
+	}
+}
+
+func TestRotateVaultRefusesPublishingNewUserKey(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	// No published key yet: a rotation carrying X-User-Key must not publish one.
+	fresh := testUserKey(1)
+	if _, err := store.RotateVault("u1", 1, []byte("v2"), "pw2", "rec2", "", &fresh); !errors.Is(err, ErrRotationUserKey) {
+		t.Fatalf("rotation publishing a new key: %v", err)
+	}
+	meta, _ := store.GetMetadata("u1")
+	if meta.UserKey != nil {
+		t.Fatalf("rotation published a user key: %+v", meta.UserKey)
+	}
+}
+
+func TestSaveUserKeyRefusesZeroVersion(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserKey("u1", 0, testUserKey(1)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("save against version 0: %v", err)
+	}
+	meta, _ := store.GetMetadata("u1")
+	if meta.UserKey != nil {
+		t.Fatal("save against version 0 stored a key")
+	}
+}

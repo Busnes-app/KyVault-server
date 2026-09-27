@@ -437,6 +437,9 @@ func TestRotationUploadCarriesUserKeyHeader(t *testing.T) {
 	if rec := rotate("not base64"); rec.Code != http.StatusBadRequest {
 		t.Fatalf("garbage X-User-Key = %d", rec.Code)
 	}
+	if rec := rotate(base64.StdEncoding.EncodeToString(userKeyBody(t, 2))); rec.Code != http.StatusBadRequest {
+		t.Fatalf("rotation swapping the public key = %d", rec.Code)
+	}
 	if rec := rotate(base64.StdEncoding.EncodeToString(userKeyBody(t, 1))); rec.Code != http.StatusOK {
 		t.Fatalf("rotation with X-User-Key = %d %s", rec.Code, rec.Body.String())
 	}
