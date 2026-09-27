@@ -27,6 +27,13 @@ test("unwrap failure yields a mismatch state", async () => {
   if (s.kind === "mismatch") assert.match(s.reason, /does not match/);
 });
 
+test("a record with unparsable base64 publicKey yields mismatch, not a rejection", async () => {
+  const made = await newUserKeyRecord(vk, "u1");
+  const tampered = { ...made.record, publicKey: "not-base64!!" };
+  const s = await adoptUserKey(tampered, vk, "u1");
+  assert.equal(s.kind, "mismatch");
+});
+
 test("rewrap keeps the seed and public key under the new vault key", async () => {
   const made = await newUserKeyRecord(vk, "u1");
   const state = await adoptUserKey(made.record, vk, "u1");

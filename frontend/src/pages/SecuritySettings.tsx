@@ -53,10 +53,11 @@ type Props = {
   onExport: () => Promise<void>;
   onRotateKey: (password: string, paperCode: string) => Promise<void>;
   userKey: UserKeyState | null;
-  onUserKeyReplaced: (state: UserKeyState) => void;
+  onUserKeyReplaced: (state: UserKeyState, generation: number) => void;
+  unlockGeneration: () => number;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration }: Props) {
   const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -348,6 +349,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   // see the change was ours.
   const replaceUserKey = async () => {
     setError("");
+    const generation = unlockGeneration();
     const version = await proveCurrentPassword("password");
     if (version === null) return;
     const confirmed = await dialogs.confirm({
@@ -361,7 +363,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     try {
       const made = await newUserKeyRecord(vaultKey, user.id);
       await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
-      onUserKeyReplaced({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record });
+      onUserKeyReplaced({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record }, generation);
       setCurrentPassword("");
     } catch (err) {
       setError(toErrorMessage(err, "Could not replace the key."));
@@ -653,6 +655,10 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </p>
         {userKey === null || userKey.kind === "none" ? (
           <p style={{ color: "var(--ink-muted)", margin: 0 }}>{userKey === null ? "Unlock the vault to see your key." : "No key published yet. It is created the next time you unlock."}</p>
+        ) : userKey.kind === "unavailable" ? (
+          <div role="alert" style={{ marginBottom: "1rem" }}>
+            <p style={{ margin: 0, color: "var(--danger)" }}>Your key could not be loaded: {userKey.reason}. Reload the page to try again.</p>
+          </div>
         ) : userKey.kind === "mismatch" ? (
           <div role="alert" style={{ marginBottom: "1rem" }}>
             <p style={{ margin: "0 0 0.5rem", color: "var(--danger)" }}>{userKey.reason} Replace it to publish a key this vault can use.</p>
@@ -664,7 +670,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>Created {formatWhen(userKey.record.createdAt)}</span>
           </div>
         )}
-        {userKey && userKey.kind !== "none" ? (
+        {userKey && userKey.kind !== "none" && userKey.kind !== "unavailable" ? (
           <button type="button" className="btn btn-danger" onClick={() => void replaceUserKey()} disabled={busy || !currentPassword}
             title={currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
         ) : null}
@@ -681,7 +687,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           from before the rotation can no longer be opened here. A new paper code is shown once afterwards;
           if this tab closes before you save it, your master password still unlocks the vault and you can
           generate another code. The download opens only with the offline vault key shown below; reveal and
-          save it first.
+          save it first. If your vault key itself was exposed, also use Replace my key: the private key is
+          wrapped under the vault key.
         </p>
         {unrevoked.length > 0 ? (
           <div role="alert" style={{ marginBottom: "1rem", fontSize: "0.85rem" }}>
@@ -696,13 +703,16 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <Download size={14} /> Download vault first
           </button>
           <button type="button" className="btn btn-danger" onClick={handleRotateKey}
-            disabled={busy || !currentPassword || !canRotate || userKey === null || userKey.kind === "mismatch"}
-            title={userKey === null || userKey.kind === "mismatch" ? "Replace your key first: the stored private key cannot be re-wrapped." : canRotate ? undefined : "Save or discard your unsaved edits first."}>
+            disabled={busy || !currentPassword || !canRotate || userKey === null || userKey.kind === "mismatch" || userKey.kind === "unavailable"}
+            title={userKey?.kind === "unavailable" ? "Your key could not be loaded; reload and try again."
+              : userKey === null || userKey.kind === "mismatch" ? "Replace your key first: the stored private key cannot be re-wrapped."
+              : canRotate ? undefined : "Save or discard your unsaved edits first."}>
             Rotate key
           </button>
         </div>
         {!canRotate ? <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.5rem" }}>Save or discard your unsaved edits first.</p> : null}
-        {userKey === null || userKey.kind === "mismatch" ? <p style={{ fontSize: "0.8rem", color: "var(--danger)", marginTop: "0.5rem" }}>Replace your key first: the stored private key cannot be re-wrapped.</p> : null}
+        {userKey?.kind === "unavailable" ? <p style={{ fontSize: "0.8rem", color: "var(--danger)", marginTop: "0.5rem" }}>Your key could not be loaded; reload and try again.</p>
+          : userKey === null || userKey.kind === "mismatch" ? <p style={{ fontSize: "0.8rem", color: "var(--danger)", marginTop: "0.5rem" }}>Replace your key first: the stored private key cannot be re-wrapped.</p> : null}
       </section>
 
       {/* Offline recovery: the key that opens a downloaded vault in any KeePass client */}

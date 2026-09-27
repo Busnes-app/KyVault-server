@@ -3,7 +3,8 @@ import { generateUserKey, publicKeyFromSeed, wrapSeed, unwrapSeed, b64, USER_KEY
 export type UserKeyState =
   | { kind: "none" }
   | { kind: "ready"; seed: Uint8Array; publicKey: Uint8Array; record: UserKeyRecord }
-  | { kind: "mismatch"; record: UserKeyRecord; reason: string };
+  | { kind: "mismatch"; record: UserKeyRecord; reason: string }
+  | { kind: "unavailable"; reason: string };
 
 const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
 
@@ -17,8 +18,15 @@ export async function adoptUserKey(record: UserKeyRecord | undefined, vaultKey: 
   } catch {
     return { kind: "mismatch", record, reason: "The stored private key could not be opened with this vault key." };
   }
-  const publicKey = await publicKeyFromSeed(seed);
-  if (!same(publicKey, b64.decode(record.publicKey))) {
+  let publicKey: Uint8Array;
+  let publishedKey: Uint8Array;
+  try {
+    publicKey = await publicKeyFromSeed(seed);
+    publishedKey = b64.decode(record.publicKey);
+  } catch {
+    return { kind: "mismatch", record, reason: "Your published key could not be read." };
+  }
+  if (!same(publicKey, publishedKey)) {
     return { kind: "mismatch", record, reason: "Your published public key does not match your private key." };
   }
   return { kind: "ready", seed, publicKey, record };

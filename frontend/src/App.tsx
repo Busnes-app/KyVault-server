@@ -168,33 +168,39 @@ export function App() {
   // another tab won the race to publish first, so this tab re-reads metadata and adopts
   // whatever that tab wrote instead of overwriting it.
   const settleUserKey = async (u: User, key: Uint8Array, record: UserKeyRecord | undefined, version: number, generation: number) => {
-    const state = await adoptUserKey(record, key, u.id);
-    if (generation !== unlockGeneration.current) return;
-    if (state.kind !== "none") { setUserKey(state); return; }
     try {
-      const made = await newUserKeyRecord(key, u.id);
-      await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "If-None-Match": "*", "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
+      const state = await adoptUserKey(record, key, u.id);
       if (generation !== unlockGeneration.current) return;
-      setUserKey({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record });
-      setMeta((m) => (m ? { ...m, userKey: made.record } : m));
+      if (state.kind !== "none") { setUserKey(state); return; }
+      try {
+        const made = await newUserKeyRecord(key, u.id);
+        await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "If-None-Match": "*", "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
+        if (generation !== unlockGeneration.current) return;
+        setUserKey({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record });
+        setMeta((m) => (m ? { ...m, userKey: made.record } : m));
+      } catch (err) {
+        if (generation !== unlockGeneration.current) return;
+        if (err instanceof HttpError && err.status === 409) {
+          try {
+            const latest = await getJSON<VaultMetadata>("/api/vault/metadata");
+            if (generation !== unlockGeneration.current) return;
+            const adopted = await adoptUserKey(latest.userKey, key, u.id);
+            if (generation !== unlockGeneration.current) return;
+            setUserKey(adopted);
+            setMeta(latest);
+            return;
+          } catch (err2) {
+            if (generation !== unlockGeneration.current) return;
+            console.warn("user key adopt after conflict failed:", err2);
+          }
+        }
+        setUserKey({ kind: "none" });
+        console.warn("user key publish deferred:", err);
+      }
     } catch (err) {
       if (generation !== unlockGeneration.current) return;
-      if (err instanceof HttpError && err.status === 409) {
-        try {
-          const latest = await getJSON<VaultMetadata>("/api/vault/metadata");
-          if (generation !== unlockGeneration.current) return;
-          const adopted = await adoptUserKey(latest.userKey, key, u.id);
-          if (generation !== unlockGeneration.current) return;
-          setUserKey(adopted);
-          setMeta(latest);
-          return;
-        } catch (err2) {
-          if (generation !== unlockGeneration.current) return;
-          console.warn("user key adopt after conflict failed:", err2);
-        }
-      }
-      setUserKey({ kind: "none" });
-      console.warn("user key publish deferred:", err);
+      setUserKey({ kind: "unavailable", reason: toErrorMessage(err, "Your key could not be loaded.") });
+      console.warn("user key settle failed:", err);
     }
   };
 
@@ -688,7 +694,8 @@ export function App() {
           onExport={handleExportKdbx}
           onRotateKey={rotateKey}
           userKey={userKey}
-          onUserKeyReplaced={(s: UserKeyState) => setUserKey(s)}
+          unlockGeneration={() => unlockGeneration.current}
+          onUserKeyReplaced={(s: UserKeyState, generation: number) => { if (generation === unlockGeneration.current) setUserKey(s); }}
         /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>

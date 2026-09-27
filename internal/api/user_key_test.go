@@ -145,4 +145,25 @@ func TestUserKeyReadableWithDeviceToken(t *testing.T) {
 	if out.Code != http.StatusOK {
 		t.Fatalf("device token read = %d", out.Code)
 	}
+
+	// A device token must not be able to publish or replace the key.
+	putReq := httptest.NewRequest(http.MethodPut, "/api/vault/user-key", bytes.NewReader(userKeyBody(t, 2)))
+	putReq.Header.Set("Content-Type", "application/json")
+	putReq.Header.Set("If-Match", `"1"`)
+	putReq.Header.Set("Authorization", "Bearer "+token)
+	putOut := httptest.NewRecorder()
+	handler.ServeHTTP(putOut, putReq)
+	if putOut.Code != http.StatusForbidden {
+		t.Fatalf("device token PUT = %d", putOut.Code)
+	}
+
+	checkReq := httptest.NewRequest(http.MethodGet, "/api/users/"+alice.ID+"/key", nil)
+	checkReq.AddCookie(cookie)
+	checkOut := httptest.NewRecorder()
+	handler.ServeHTTP(checkOut, checkReq)
+	var pub userkey.Public
+	_ = json.Unmarshal(checkOut.Body.Bytes(), &pub)
+	if pub.Fingerprint != userkey.Fingerprint(bytes.Repeat([]byte{1}, userkey.PublicKeyBytes)) || len(pub.Previous) != 0 {
+		t.Fatalf("device PUT changed the record: %+v", pub)
+	}
 }

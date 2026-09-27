@@ -473,15 +473,21 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   is sealed by each side and opened by the other (`internal/userkey` `-update`, JS `UPDATE_VECTOR=1`).
   **Load the seed with `kem.importKey("raw", seed, false)`; `deriveKeyPair` yields a different key.**
   Fingerprint = SHA-256 of the public key, first 20 hex upper in fours; Go and JS pin the same vector.
-  Unlock adopts the record (mismatch → Security warning, key unused) or generates and publishes one
-  (`PUT /api/vault/user-key`, `If-Match` on the vault version, no version bump). Rotation re-wraps the
+  Unlock adopts the record (mismatch → Security warning, key unused; a settle failure that never
+  reaches a verdict, e.g. a decode error or the lazy hpke chunk 404ing, is `unavailable`, no Replace,
+  Rotate disabled) or generates and publishes one. First publish is create-only (`If-None-Match: *`,
+  `If-Match` on the vault version, no version bump); a 409 means another tab won the race, so this tab
+  re-reads metadata and adopts what that tab wrote instead of overwriting it. Rotation re-wraps the
   seed and sends it as `X-User-Key` in the same upload; the server refuses a rotation that drops or
   swaps an existing key. Replace needs the master password and appends the old public key to
-  `previous` (max 5). `GET /api/users/{id}/key` serves the public half to any session or device token,
-  never `wrappedSeed`; readers trust their own pin, not the server. Pins are KDBX meta custom data
-  `kyvault.pin.<userId>` and travel with the vault. KyAuth and the extension must pass the same
-  interop vector before they implement this. Audit `user_key.published` / `user_key.replaced` carry
-  the fingerprint only.
+  `previous` (max 5); the callback is generation-guarded like `settleUserKey`/`rotateKey` so a lock
+  during the async publish cannot resurrect a stale key into app state. `PUT /api/vault/user-key` is
+  refused with 403 for a device-session bearer token (a stolen extension token must not be able to
+  swap the published key); only a browser session may publish or replace. `GET /api/users/{id}/key`
+  serves the public half to any session or device token, never `wrappedSeed`; readers trust their own
+  pin, not the server. Pins are KDBX meta custom data `kyvault.pin.<userId>` and travel with the vault.
+  KyAuth and the extension must pass the same interop vector before they implement this. Audit
+  `user_key.published` / `user_key.replaced` carry the fingerprint only.
 
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
