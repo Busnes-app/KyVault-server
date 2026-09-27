@@ -17,6 +17,7 @@ import (
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/backup"
 	"github.com/Busnes-app/kyvault-server/internal/devices"
+	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
 	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
 	"github.com/Busnes-app/kyvault-server/internal/users"
@@ -70,13 +71,18 @@ func openOfflineBackup() (*offlineBackup, error) {
 	if err != nil {
 		return fail(err)
 	}
+	sh, err := shared.NewStore(filepath.Join(dataDir, "shared"), retention)
+	if err != nil {
+		return fail(err)
+	}
 	state := backup.NewStateStore(configDir)
 	scimToken, err := kysync.LoadSCIMToken(configDir, os.Getenv("KYVAULT_SCIM_TOKEN"))
 	if err != nil {
 		return fail(err)
 	}
-	collector := backup.Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: sso.NewStore(configDir), State: state,
-		PairingSecret: secret, SCIMToken: scimToken, RetentionDays: retention, AppVersion: buildVersion(), DataDir: dataDir}
+	collector := backup.Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: sso.NewStore(configDir), Shared: sh, State: state,
+		PairingSecret: secret, SCIMToken: scimToken, RetentionDays: retention, AppVersion: buildVersion(), DataDir: dataDir,
+		SharedSettingsPath: filepath.Join(configDir, "shared.json")}
 	cfg, err := backup.ConfigFromEnv()
 	if err != nil {
 		return fail(err)

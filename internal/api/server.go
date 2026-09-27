@@ -164,9 +164,9 @@ func NewServer(cfg Config) (*Server, error) {
 	backupState := backup.NewStateStore(cfg.ConfigDir)
 	recovery := backup.NewClient(cfg.Backup.AllowPrivate)
 	collector := backup.Collector{
-		Vault: vStore, Audit: aStore, Users: uStore, Devices: dStore, SSO: ssoSt,
+		Vault: vStore, Audit: aStore, Users: uStore, Devices: dStore, SSO: ssoSt, Shared: shStore,
 		State: backupState, PairingSecret: cfg.PairingSecret, SCIMToken: cfg.SCIMToken, RetentionDays: cfg.RetentionDays,
-		AppVersion: cfg.AppVersion, DataDir: cfg.DataDir,
+		AppVersion: cfg.AppVersion, DataDir: cfg.DataDir, SharedSettingsPath: cfg.ConfigDir + "/shared.json",
 	}
 
 	s := &Server{

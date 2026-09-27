@@ -29,7 +29,7 @@ func ConfigFromEnv() (Config, error) {
 		if err != nil {
 			return c, fmt.Errorf("KYVAULT_BACKUP_DIR: %w", err)
 		}
-		for _, root := range []string{config, filepath.Join(data, "vaults"), filepath.Join(data, "audit"), filepath.Join(data, "drill")} {
+		for _, root := range []string{config, filepath.Join(data, "vaults"), filepath.Join(data, "shared"), filepath.Join(data, "audit"), filepath.Join(data, "drill")} {
 			root, err = resolvedPath(root)
 			if err != nil {
 				return c, fmt.Errorf("KYVAULT_BACKUP_DIR: %w", err)

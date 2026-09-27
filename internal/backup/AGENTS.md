@@ -38,9 +38,15 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
   refused. All address policy, including resolved addresses, belongs to recoveryclient;
   v0.5.1 does not classify documentation networks as blocked.
 - Local copies use KYVAULT_BACKUP_DIR and BACKUP_KEEP (same prefix, default 7, >=1).
-  The directory must not overlap CONFIG_DIR or DATA_DIR/{vaults,audit,drill},
+  The directory must not overlap CONFIG_DIR or DATA_DIR/{vaults,shared,audit,drill},
   including existing symlink ancestors. Interval defaults from KYVAULT_BACKUP_DEPOSIT_INTERVAL, overridden by admin settings:
   off or 900–31622400 whole seconds. Runs count from last attempt, including failures.
+- The Collector also snapshots `internal/shared`'s store (`Shared`, files under `data/shared/`,
+  including the `deleted/<id>/` retention area) and, when present, `CONFIG_DIR/shared.json`
+  as `config/shared.json`; both are required for Collect like the other sources (Shared nil
+  fails the same way). The restore drill parses every `data/shared/*.json` and
+  `data/shared/deleted/<id>/record.json` and checks its `ID` matches the filename/parent
+  directory ("shared vault records" check).
 - Unpair removes URL/token only. Pins, topology, receipts and local copies stay. Remote
   revocation is a separate KyRecovery-admin action. Status never exposes a token.
 - Keep partial local/remote results visible (HTTP 207 and an alert) and persist the last outcome.

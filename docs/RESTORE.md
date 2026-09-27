@@ -30,9 +30,13 @@ vault:
 | Path in the capsule | What it is |
 |---|---|
 | `data/vaults/<user>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Every user's encrypted KDBX file with its checksum, size and version, plus history and conflict copies. Still encrypted under the user's master password |
+| `data/vaults/shared/<id>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Each shared vault's encrypted KDBX with its version history. Encrypted under a key only its members hold |
+| `data/shared/<id>.json` | Shared vault membership: name, members, roles, states and each member's copy of the vault key sealed to that member's user key. The server cannot open these |
+| `data/shared/deleted/<id>/` | Shared vaults deleted within the retention window (record and vault data), kept for operator recovery |
 | `data/audit/audit.jsonl` | The append-only audit log |
 | `config/users.json`, `config/devices.json` | Accounts and paired devices |
 | `config/sso.json` | The KySignOn (OIDC) issuer, client ID and client secret. Environment variables override it when set |
+| `config/shared.json` | Shared vault settings (creation restricted to admins or not) |
 | `config/pairing.secret` | The bearer secret KySignOn uses to replicate accounts into this server |
 | `config/audit.key`, `config/audit.state` | The HMAC key and anchor that make the audit chain verifiable |
 | `config/recovery.pub`, `config/kyrecovery.json`, `config/recovery-token.key` | The pinned suite public key and settings; the sealed token and its key exist only when previously paired |
@@ -165,8 +169,10 @@ find restored -type f -printf '%m %p\n'
 ```
 
 Every file is mode `600`, under `restored/config` and `restored/data`. Expect the ten config
-and audit files from the table above plus one directory per user under `restored/data/vaults`.
-An instance that never had a user has no `vaults` entries; that is not an error.
+and audit files from the table above plus one directory per user under `restored/data/vaults`
+and, for any shared vaults, one directory per shared vault under
+`restored/data/vaults/shared/<id>`. An instance that never had a user has no `vaults` entries,
+and one that never had a shared vault has no `restored/data/shared/*.json`; neither is an error.
 
 `cat restored/config/restore-manifest.json` shows the version the old server ran and states
 `vaultDecryptionKey: not held by server`.
@@ -296,6 +302,20 @@ history, and the audit log. Anything changed after that moment is undone.
 
    Confirm with **Deposit now** so the recovered server has a capsule that reflects the
    rotation.
+
+## Recovering a deleted shared vault
+
+This does not need a capsule, custodian shares, or a second machine: a shared vault deleted
+within its retention window stays on the running server under `data/shared/deleted/<id>/`
+until it ages out, and moving it back is a host-side file operation.
+
+1. Stop the server.
+2. Move `data/shared/deleted/<id>/record.json` back to `data/shared/<id>.json`, and
+   `data/shared/deleted/<id>/vault/` back to `data/vaults/shared/<id>/`.
+3. Start the server.
+
+Nothing was rotated, so the members' sealed keys are still valid and every member can open
+the vault exactly as before it was deleted.
 
 ## Afterwards
 
