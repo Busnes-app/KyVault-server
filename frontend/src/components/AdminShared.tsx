@@ -8,7 +8,7 @@ import { useDialogs } from "./DialogHost";
 type Member = AdminSharedVault["members"][number];
 
 // A fresh-session refusal is the one error with a way out on screen.
-function ErrorLine({ text }: { text: string }) {
+export function ErrorLine({ text }: { text: string }) {
   return (
     <p role="alert" style={{ color: "var(--danger)" }}>
       {text}
@@ -19,6 +19,22 @@ function ErrorLine({ text }: { text: string }) {
 
 const stateBadgeClass = (state: Member["state"]) =>
   state === "active" ? "badge badge-green" : state === "invited" ? "badge badge-cyan" : "badge badge-warning";
+
+// A running action marks its own vault's row busy, never another vault's: the member key is
+// prefixed with the vault id so one list can hold both.
+export const rowBusy = (busyId: string | null, vaultId: string) => busyId === vaultId || busyId?.startsWith(`${vaultId}:`) === true;
+
+// The toggle is optimistic; a refused PUT puts the server's value back and says why.
+export async function saveRestricted(prev: boolean | null, checked: boolean,
+  save: (s: { createRestrictedToAdmins: boolean }) => Promise<void> = adminSharedApi.saveSettings,
+): Promise<{ restricted: boolean | null; error: string }> {
+  try {
+    await save({ createRestrictedToAdmins: checked });
+    return { restricted: checked, error: "" };
+  } catch (err) {
+    return { restricted: prev, error: toErrorMessage(err, "Could not save shared vault settings.") };
+  }
+}
 
 function MemberRow({ vault, member, busy, onRemove }: { vault: AdminSharedVault; member: Member; busy: boolean; onRemove: () => void }) {
   return (
@@ -35,7 +51,7 @@ function MemberRow({ vault, member, busy, onRemove }: { vault: AdminSharedVault;
   );
 }
 
-function VaultRow({ vault, expanded, busy, onToggle, onDelete, onRemoveMember }: {
+export function VaultRow({ vault, expanded, busy, onToggle, onDelete, onRemoveMember }: {
   vault: AdminSharedVault;
   expanded: boolean;
   busy: boolean;
@@ -115,12 +131,9 @@ export function AdminShared() {
     const prev = restricted;
     setRestricted(checked);
     setSettingsError("");
-    try {
-      await adminSharedApi.saveSettings({ createRestrictedToAdmins: checked });
-    } catch (err) {
-      setRestricted(prev);
-      setSettingsError(toErrorMessage(err, "Could not save shared vault settings."));
-    }
+    const done = await saveRestricted(prev, checked);
+    setRestricted(done.restricted);
+    setSettingsError(done.error);
   };
 
   const deleteVault = async (v: AdminSharedVault) => {
@@ -187,7 +200,7 @@ export function AdminShared() {
             key={v.id}
             vault={v}
             expanded={!!expanded[v.id]}
-            busy={busyId === v.id || busyId?.startsWith(`${v.id}:`) === true}
+            busy={rowBusy(busyId, v.id)}
             onToggle={() => setExpanded((prev) => ({ ...prev, [v.id]: !prev[v.id] }))}
             onDelete={() => void deleteVault(v)}
             onRemoveMember={(m) => void removeMember(v, m)}
