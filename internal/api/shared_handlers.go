@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyvault-server/internal/backup"
@@ -107,8 +109,26 @@ func (s *Server) withSharedWrite(next func(http.ResponseWriter, *http.Request, v
 		if !s.sharedCSRF(w, r) {
 			return
 		}
+		if epoch, ok := sharedEpoch(r); !ok || epoch != c.vault.KeyEpoch {
+			http.Error(w, "the shared vault key was rotated; reload the vault", http.StatusConflict)
+			return
+		}
 		next(w, r, sharedTarget(r, c))
 	}
+}
+
+const sharedEpochHeader = "X-Shared-Key-Epoch"
+
+// sharedEpoch reads the key epoch a write claims its ciphertext was sealed under. It is
+// required: a client that does not send it cannot prove it holds the current key, and a
+// member re-sealed by a rotation whose tab still holds the retired key would otherwise
+// write ciphertext nobody left in the vault can open.
+func sharedEpoch(r *http.Request) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(r.Header.Get(sharedEpochHeader)))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // writeTarget runs a vault store write; for a shared target, only while the caller's row
@@ -576,7 +596,7 @@ func (s *Server) handleSharedMemberRemove(w http.ResponseWriter, r *http.Request
 	if !found {
 		return
 	}
-	if err := s.shared.Remove(c.vault.ID, u.ID, target); err != nil {
+	if err := s.shared.Remove(c.vault.ID, u.ID, target, time.Now()); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -622,7 +642,7 @@ func (s *Server) handleSharedDecline(w http.ResponseWriter, r *http.Request, u u
 		http.Error(w, "only an invitation can be declined", http.StatusConflict)
 		return
 	}
-	if err := s.shared.Remove(c.vault.ID, u.ID, u.ID); err != nil {
+	if err := s.shared.Remove(c.vault.ID, u.ID, u.ID, time.Now()); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -678,7 +698,7 @@ func (s *Server) handleAdminSharedMemberRemove(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id, target := r.PathValue("id"), r.PathValue("userId")
-	if err := s.shared.Remove(id, "", target); err != nil {
+	if err := s.shared.Remove(id, "", target, time.Now()); err != nil {
 		sharedErr(w, err)
 		return
 	}

@@ -531,3 +531,71 @@ func TestMoveOutMovesDirectoryAndSaveDoesNotResurrect(t *testing.T) {
 		t.Fatalf("save to a retired never-written key = %v", err)
 	}
 }
+
+func TestClearHistoryRemovesSnapshotsAndConflicts(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_abcdefghijklmnopqrstuv"
+	meta, err := store.SaveVault(key, 0, []byte("one"), "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault(key, meta.Version, []byte("two"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// A rejected upload leaves a conflict behind.
+	if _, err := store.SaveVault(key, 1, []byte("stale"), "", "", ""); err == nil {
+		t.Fatal("expected a conflict")
+	}
+	hist, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confs, err := store.ListConflicts(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) == 0 || len(confs) == 0 {
+		t.Fatalf("fixture: %d snapshots, %d conflicts", len(hist), len(confs))
+	}
+	if err := store.ClearHistory(key); err != nil {
+		t.Fatal(err)
+	}
+	if hist, err = store.ListHistory(key); err != nil || len(hist) != 0 {
+		t.Fatalf("history after clear: %d %v", len(hist), err)
+	}
+	if confs, err = store.ListConflicts(key); err != nil || len(confs) != 0 {
+		t.Fatalf("conflicts after clear: %d %v", len(confs), err)
+	}
+	// The current vault is untouched.
+	rc, cur, err := store.OpenVault(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "two" || cur.Version != 2 {
+		t.Fatalf("current vault = %q v%d", data, cur.Version)
+	}
+	// Idempotent, and a key that never existed is not an error.
+	if err := store.ClearHistory(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClearHistory("shared/sv_zzzzzzzzzzzzzzzzzzzzzz"); err != nil {
+		t.Fatal(err)
+	}
+	// A retired key is refused, like every other writer.
+	if err := store.MoveOut(key, filepath.Join(t.TempDir(), "gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClearHistory(key); !errors.Is(err, ErrRetired) {
+		t.Fatalf("retired = %v", err)
+	}
+}

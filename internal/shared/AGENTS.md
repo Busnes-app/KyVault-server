@@ -49,7 +49,8 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   then calls `writeVault` and returns its error untouched, and only then re-seals, bumps
   `keyEpoch`, marks every unnamed member `stale` at the old epoch and clears the flag. Any
   refusal writes nothing. A named row lands on `freshState` like a `Reseal`, so a stale or
-  left-behind member who is re-sealed comes back.
+  left-behind member who is re-sealed comes back. An admin actor (`""`) can never rotate:
+  the actor must be one of the named members and `""` is never a member id.
 - `Rotate` does **not** compare the supplied `keyFingerprint` to the row's: `MarkStale`
   leaves the retired fingerprint on the row, so a member who replaced their user key is
   re-sealed to a fingerprint the row has never held. It overwrites the row's value, exactly
@@ -69,8 +70,9 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   sealed key. `Accept` requires `invited` and refuses an ownerless vault (`ErrState`).
 - `SetSuspended` mirrors the account: suspending keeps the prior state in `suspendedFrom`;
   restoring returns to it, or to `freshState` (active if `AcceptedAt`, else invited) when
-  none is recorded. `landOn(m, state)` is the one place a row changes state: a suspended
-  row keeps `suspended` and records the target in `suspendedFrom` instead.
+  none is recorded. Every transition but `Accept` (only an `invited` row, which is never
+  suspended) and `SetSuspended` itself goes through `landOn(m, state)`: a suspended row
+  keeps `suspended` and records the target in `suspendedFrom` instead.
   `MarkStale` flags active and invited rows sealed to another fingerprint; a suspended row
   gets `suspendedFrom: stale`. `Reseal` lands a row on `freshState`. Both hooks return the
   ids they touched even on error.

@@ -26,6 +26,10 @@ import (
 
 var t0 = time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
 
+// epoch1 is the key epoch of a shared vault that has never been rotated; every write
+// must prove the epoch its ciphertext was sealed under.
+var epoch1 = map[string]string{sharedEpochHeader: "1"}
+
 // sealedKeyFor is a well-formed sealed key whose bytes are all b, so each member's copy
 // is distinguishable in a response body.
 func sealedKeyFor(b byte) string {
@@ -57,7 +61,7 @@ func publishKey(t *testing.T, srv *Server, u users.User, pk byte) string {
 }
 
 // do sends a request as a browser would: a cookie session also carries its CSRF token.
-func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, body any) *httptest.ResponseRecorder {
+func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, body any, extra ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var rd *bytes.Reader
 	if body == nil {
@@ -71,6 +75,11 @@ func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, bod
 	}
 	req := httptest.NewRequest(method, path, rd)
 	req.Header.Set("Content-Type", "application/json")
+	for _, h := range extra {
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+	}
 	if cookie != nil {
 		browserAuth(srv, req, cookie)
 	}
@@ -499,7 +508,7 @@ func TestSharedOwnerRemovedMidRequestIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Removed between resolve and write: 404, and he cannot re-add anyone, himself included.
-	race(func() error { return srv.shared.Remove(id, alice.ID, bob.ID) })
+	race(func() error { return srv.shared.Remove(id, alice.ID, bob.ID, time.Now()) })
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", bobC, map[string]any{"userId": dave.ID, "role": "owner", "sealedKey": sealedKeyFor(0xE5), "keyFingerprint": daveFP}), http.StatusNotFound, "removed invite")
 
 	v, err := srv.shared.Get(id)
@@ -532,8 +541,13 @@ func rawReq(srv *Server, method, path string, cookie *http.Cookie, bearer string
 	return rec
 }
 
-func uploadShared(srv *Server, cookie *http.Cookie, id, ifMatch, body string, extra map[string]string) *httptest.ResponseRecorder {
+// uploadShared posts to a shared vault. epoch is the key epoch the ciphertext claims to be
+// encrypted under; a negative epoch sends no epoch header at all.
+func uploadShared(srv *Server, cookie *http.Cookie, id, ifMatch, body string, epoch int, extra map[string]string) *httptest.ResponseRecorder {
 	headers := map[string]string{"If-Match": ifMatch}
+	if epoch >= 0 {
+		headers[sharedEpochHeader] = strconv.Itoa(epoch)
+	}
 	for k, v := range extra {
 		headers[k] = v
 	}
@@ -590,8 +604,8 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", carolC, nil), http.StatusOK, "carol accept")
 
 	// Envelope headers and JSON envelope fields are ignored; the rotation header is refused.
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx-v1", map[string]string{"X-Password-Envelope": "pw-env", "X-Recovery-Envelope": "rec-env"}), http.StatusOK, "owner upload")
-	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "kdbx-rot", map[string]string{"X-Vault-Key-Rotated": "1", "X-Password-Envelope": "p", "X-Recovery-Envelope": "r"}), http.StatusBadRequest, "rotation header")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx-v1", 1, map[string]string{"X-Password-Envelope": "pw-env", "X-Recovery-Envelope": "rec-env"}), http.StatusOK, "owner upload")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "kdbx-rot", 1, map[string]string{"X-Vault-Key-Rotated": "1", "X-Password-Envelope": "p", "X-Recovery-Envelope": "r"}), http.StatusBadRequest, "rotation header")
 	if meta := sharedMeta(t, srv, id); meta.Version != 1 {
 		t.Fatalf("rotation attempt changed the vault: %+v", meta)
 	}
@@ -599,13 +613,13 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, uploadShared(srv, bobC, id, "", string(jsonBody), map[string]string{"Content-Type": "application/json"}), http.StatusOK, "editor JSON upload")
+	expectCode(t, uploadShared(srv, bobC, id, "", string(jsonBody), 1, map[string]string{"Content-Type": "application/json"}), http.StatusOK, "editor JSON upload")
 	if meta := sharedMeta(t, srv, id); meta.Version != 2 || meta.PasswordEnvelope != "" || meta.RecoveryEnvelope != "" || len(meta.DeviceEnvelopes) != 0 {
 		t.Fatalf("shared metadata carries envelopes: %+v", meta)
 	}
 
 	// Reader: reads, cannot write. Writes need CSRF on a cookie session.
-	expectCode(t, uploadShared(srv, carolC, id, `"2"`, "kdbx-v3", nil), http.StatusForbidden, "reader upload")
+	expectCode(t, uploadShared(srv, carolC, id, `"2"`, "kdbx-v3", 1, nil), http.StatusForbidden, "reader upload")
 	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", bobC, "", true, "kdbx-v3", map[string]string{"If-Match": `"2"`}), http.StatusForbidden, "editor upload without CSRF")
 	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
 		t.Fatalf("a refused upload saved: %+v", meta)
@@ -631,7 +645,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	}
 
 	// Conflict: preserved on a stale If-Match; reader downloads but cannot discard.
-	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "kdbx-stale", nil), http.StatusConflict, "stale upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "kdbx-stale", 1, nil), http.StatusConflict, "stale upload")
 	conflicts := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/conflicts", bobC, nil))
 	if len(conflicts) != 1 {
 		t.Fatalf("conflicts: %v", conflicts)
@@ -642,7 +656,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	}
 	expectCode(t, do(t, srv, http.MethodDelete, cpath, carolC, nil), http.StatusForbidden, "reader discard")
 	expectCode(t, rawReq(srv, http.MethodDelete, cpath, bobC, "", true, "", nil), http.StatusForbidden, "editor discard without CSRF")
-	expectCode(t, do(t, srv, http.MethodDelete, cpath, bobC, nil), http.StatusOK, "editor discard")
+	expectCode(t, do(t, srv, http.MethodDelete, cpath, bobC, nil, epoch1), http.StatusOK, "editor discard")
 
 	// Snapshot: reader downloads; restore is a write and leaves envelopes and membership alone.
 	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", bobC, nil))
@@ -659,7 +673,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, do(t, srv, http.MethodPost, hpath+"/restore", bobC, nil), http.StatusOK, "editor restore")
+	expectCode(t, do(t, srv, http.MethodPost, hpath+"/restore", bobC, nil, epoch1), http.StatusOK, "editor restore")
 	meta := sharedMeta(t, srv, id)
 	if meta.Version != 3 || meta.PasswordEnvelope != "" || meta.RecoveryEnvelope != "" || meta.UserKey != nil {
 		t.Fatalf("restore polluted metadata: %+v", meta)
@@ -671,7 +685,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	// An editor's device token reads and writes; the save records the session's device.
 	deviceID, token := pairDeviceForTest(t, srv.Routes(), bobC)
 	expectCode(t, rawReq(srv, http.MethodGet, "/api/shared/"+id+"/metadata", nil, token, false, "", nil), http.StatusOK, "device read")
-	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", nil, token, false, "kdbx-dev", map[string]string{"If-Match": `"` + strconv.FormatInt(meta.Version, 10) + `"`}), http.StatusOK, "device upload")
+	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", nil, token, false, "kdbx-dev", map[string]string{"If-Match": `"` + strconv.FormatInt(meta.Version, 10) + `"`, sharedEpochHeader: "1"}), http.StatusOK, "device upload")
 	if meta := sharedMeta(t, srv, id); meta.UpdatedByDevice != deviceID {
 		t.Fatalf("shared save device = %q, want %q", meta.UpdatedByDevice, deviceID)
 	}
@@ -692,7 +706,7 @@ func TestSharedDownloadFilenameIsSanitised(t *testing.T) {
 	srv := newTestServer(t)
 	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
 	id := createShared(t, srv, aliceC, `Fin"an;ce`, sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx", nil), http.StatusOK, "upload")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx", 1, nil), http.StatusOK, "upload")
 	rec := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil)
 	expectCode(t, rec, http.StatusOK, "download")
 	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="Fin-an-ce.kdbx"` {
@@ -719,7 +733,7 @@ func TestSharedHooksStaleAndSuspended(t *testing.T) {
 	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
 	invite(t, srv, aliceC, id, dave.ID, "reader", sealedKeyFor(0xD4), publishKey(t, srv, dave, 4))
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", nil), http.StatusOK, "owner upload")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", 1, nil), http.StatusOK, "owner upload")
 
 	// Bob replaces his user key through the route: his row goes stale, alice's does not.
 	bobMeta, err := srv.vault.GetMetadata(bob.ID)
@@ -737,7 +751,7 @@ func TestSharedHooksStaleAndSuspended(t *testing.T) {
 	for _, p := range []string{"/metadata", "/kdbx", "/history", "/conflicts"} {
 		expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id+p, bobC, nil), http.StatusOK, "stale GET "+p)
 	}
-	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "v2", nil), http.StatusForbidden, "stale upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "v2", 1, nil), http.StatusForbidden, "stale upload")
 	newBobFP := userkey.Fingerprint(bytes.Repeat([]byte{9}, userkey.PublicKeyBytes))
 	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xB3), "keyFingerprint": newBobFP}), http.StatusOK, "reseal")
 	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive {
@@ -1032,8 +1046,8 @@ func TestSharedWriterRemovedMidRequestIsRefused(t *testing.T) {
 	bobFP := publishKey(t, srv, bob, 2)
 	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", nil), http.StatusOK, "upload v1")
-	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "v2", nil), http.StatusOK, "upload v2")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", 1, nil), http.StatusOK, "upload v1")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "v2", 1, nil), http.StatusOK, "upload v2")
 	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", bobC, nil))
 	if len(hist) == 0 {
 		t.Fatal("no history")
@@ -1056,23 +1070,23 @@ func TestSharedWriterRemovedMidRequestIsRefused(t *testing.T) {
 		}
 	}
 	demote := func() error { return srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleReader) }
-	remove := func() error { return srv.shared.Remove(id, alice.ID, bob.ID) }
+	remove := func() error { return srv.shared.Remove(id, alice.ID, bob.ID, time.Now()) }
 
 	race(demote)
-	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", nil), http.StatusForbidden, "demoted upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", 1, nil), http.StatusForbidden, "demoted upload")
 	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor); err != nil {
 		t.Fatal(err)
 	}
 	race(demote)
-	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil), http.StatusForbidden, "demoted restore")
+	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil, epoch1), http.StatusForbidden, "demoted restore")
 	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor); err != nil {
 		t.Fatal(err)
 	}
 	race(remove)
-	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", nil), http.StatusNotFound, "removed upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", 1, nil), http.StatusNotFound, "removed upload")
 	rejoin()
 	race(remove)
-	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil), http.StatusNotFound, "removed restore")
+	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil, epoch1), http.StatusNotFound, "removed restore")
 	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
 		t.Fatalf("a refused write moved the vault to v%d", meta.Version)
 	}
@@ -1156,4 +1170,37 @@ func TestSharedHookIsQuietWhenNothingChanges(t *testing.T) {
 	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive {
 		t.Fatalf("bob = %s", m.State)
 	}
+}
+
+// Every shared write proves which key epoch its ciphertext was sealed under: a member
+// re-sealed by a rotation whose tab still holds the retired key would otherwise upload
+// ciphertext nobody left in the vault can open.
+func TestSharedWritesCarryTheKeyEpoch(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "first upload")
+
+	// A missing header is refused exactly like a stale one, and neither writes.
+	rec := uploadShared(srv, aliceC, id, `"1"`, "two", -1, nil)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "was rotated") {
+		t.Fatalf("missing epoch = %d %s", rec.Code, rec.Body.String())
+	}
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 0, nil), http.StatusConflict, "stale epoch")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 2, nil), http.StatusConflict, "future epoch")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", -1, map[string]string{sharedEpochHeader: "one"}), http.StatusConflict, "unparseable epoch")
+	if meta := sharedMeta(t, srv, id); meta.Version != 1 {
+		t.Fatalf("a refused write moved the vault to v%d", meta.Version)
+	}
+	if rec := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); rec.Body.String() != "one" {
+		t.Fatalf("vault body = %q", rec.Body.String())
+	}
+
+	// The history restore and the conflict discard carry it too.
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/history/nope/restore", aliceC, nil), http.StatusConflict, "restore without the epoch")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/conflicts/nope", aliceC, nil), http.StatusConflict, "discard without the epoch")
+
+	// Reads never carry it.
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/metadata", aliceC, nil), http.StatusOK, "metadata read")
 }

@@ -316,14 +316,23 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   the key in memory; every writer except `RemoveDeviceEnvelope` (personal ids only, never
   creates a directory) refuses a retired key (`ErrRetired`, an `ErrNotFound`) before creating
   directories, so a racing save cannot resurrect a deleted shared vault
-  (`TestMoveOutMovesDirectoryAndSaveDoesNotResurrect`).
+  (`TestMoveOutMovesDirectoryAndSaveDoesNotResurrect`). `vault.Store.ClearHistory(key)`
+  deletes every snapshot and preserved conflict for a key, leaving the current vault and
+  metadata intact, and refuses a retired key; a shared key rotation calls it after the
+  membership record commits, never inside the rotation's vault write, so a crash mid-rotation
+  still leaves a snapshot the old key opens (`TestClearHistoryRemovesSnapshotsAndConflicts`).
 
 - `internal/api/shared_handlers.go` and `shared_settings.go`: `sharedMember` resolves the
   caller's row (404 otherwise); `withSharedRead`/`withSharedWrite` apply the role and state
   gates and hand the ordinary vault data handlers a `vaultTarget` (`shared.StoreKey`,
   session `DeviceID`, download name `FilenameSafe(name).kdbx`). With `shared` set, envelope
   headers and `X-User-Key` are ignored, `X-Vault-Key-Rotated` is 400 and device revocation is
-  skipped; `auditAction` maps `vault.*` to `shared.*` (`shared.downloaded`,
+  skipped. Every write (upload, history restore, conflict discard, bearer tokens included)
+  must send `X-Shared-Key-Epoch` equal to the vault's current `keyEpoch` or it is refused
+  409 without writing, absent and unparseable alike, so a tab still holding a retired key
+  cannot save ciphertext the remaining members cannot open (checked after `sharedCSRF`, so
+  a missing CSRF token is still 403; `TestSharedWritesCarryTheKeyEpoch`).
+  `auditAction` maps `vault.*` to `shared.*` (`shared.downloaded`,
   `shared.rolled_back`, `shared.conflict_downloaded` renamed) and details lead with the
   vault key. Details carry ids, names and roles, never a sealed key. Create checks
   `CONFIG_DIR/shared.json` (`createRestrictedToAdmins`) and that the key fingerprint is the

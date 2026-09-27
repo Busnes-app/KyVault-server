@@ -772,6 +772,37 @@ func (s *Store) DiscardConflict(userID, conflictID string) error {
 	return os.Remove(conflictFile)
 }
 
+// ClearHistory removes every snapshot and preserved conflict for key, leaving the current
+// vault and its metadata intact. A shared vault's rotation calls it after the new record
+// commits: those files are still encrypted under the retired key, so they are unreadable
+// to every remaining member and readable only by whoever kept the old key, which is the
+// member the rotation locked out.
+func (s *Store) ClearHistory(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retired[key] {
+		return ErrRetired
+	}
+	for _, dir := range []string{s.historyDir(key), s.conflictsDir(key)} {
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".kdbx") {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Caller holds s.mu; bound history before the next writer can archive another copy.
 func (s *Store) pruneOldHistoryLocked(userID string) {
 	cutoff := time.Now().AddDate(0, 0, -s.retentionDays)

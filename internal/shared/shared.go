@@ -77,7 +77,8 @@ type Pending struct {
 }
 
 // SealedFor is one member's copy of a new vault key, sealed to the key fingerprint the
-// caller sealed against; Rotate refuses it unless that is still the member's current one.
+// caller sealed against; it overwrites the row's, and only the route can check it against
+// the member's current published key.
 type SealedFor struct {
 	UserID         string `json:"userId"`
 	SealedKey      string `json:"sealedKey"`
