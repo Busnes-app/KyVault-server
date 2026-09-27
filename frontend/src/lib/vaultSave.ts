@@ -4,7 +4,7 @@ import type { KeePassVault } from "./kdbx";
 export type SaveState =
   | { kind: "saved"; version: number }
   | { kind: "saving"; version: number }
-  | { kind: "error"; version: number; message: string; conflict?: boolean };
+  | { kind: "error"; version: number; message: string; conflict?: boolean; status?: number };
 
 export const PERSONAL_BASE = "/api/vault";
 
@@ -128,7 +128,7 @@ export class VaultSaveQueue {
         this.onlineRetry = () => { this.clearOnlineRetry(); void this.save(); };
         window.addEventListener("online", this.onlineRetry);
       }
-      this.publish({ kind: "error", version: this.state.version, conflict, message: conflict
+      this.publish({ kind: "error", version: this.state.version, conflict, status: err instanceof HttpError ? err.status : undefined, message: conflict
         ? "A newer vault exists on the server. Overwrite it with this copy (the server copy stays in Version History) or reload the server copy and lose these edits."
         : toErrorMessage(err, "Unable to save vault. Your edits are still here.") });
     } finally {

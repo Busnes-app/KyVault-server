@@ -224,6 +224,7 @@ test("a conflict is flagged and overwrite uploads with the server's current vers
   const result = await done;
   assert.equal(result.kind, "error");
   assert.equal(result.kind === "error" && result.conflict, true);
+  assert.equal(result.kind === "error" && result.status, 409, "the HTTP status travels with the error");
   await queue.save();
   assert.equal(queue.getSnapshot().kind, "error", "plain retry must not overwrite");
   await queue.save({ overwrite: true });

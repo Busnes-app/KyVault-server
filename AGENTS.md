@@ -452,6 +452,18 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.
   `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
 
+- `frontend/src/lib/appSelection.ts`, `components/VaultSwitcher.tsx` and `App.tsx`: one selected
+  vault at a time (`Selected`). `switchTo` confirms discard, closes the old queue, opens the next
+  vault and applies it only if no lock intervened; any failure falls back to the personal vault,
+  and if that fails too the tab locks. The personal vault, key, version and envelope stay in
+  `personalRef` while a shared vault is selected (re-fetched when its edits were discarded); the
+  shared key lives only in `sharedKeyRef` and is zeroed on switch and lock. `restorePlan` reopens
+  `#/shared/<id>` once per unlock after the list loads and the user key is ready; later vault-tab
+  routes follow. A save 403/404 on a shared vault (`lostAccess`) switches home without asking.
+  Readers get `readOnly` on `VaultPage`/`HistoryModal`: every mutating handler refuses. Security
+  hides master password, paper code, rotation, offline key and device cards while shared.
+  Drafts are scoped: pointer `kyvault.draft:<userId>[:<sharedId>]`. `appSelection.test.ts`.
+
 - `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
   appends the anchor and revokes the object URL a second later so Firefox and Safari do not
   cancel it.

@@ -55,9 +55,11 @@ type Props = {
   userKey: UserKeyState | null;
   onUserKeyReplaced: (state: UserKeyState, generation: number) => void;
   unlockGeneration: () => number;
+  // False while a shared vault is selected: the cards below act on the personal vault only.
+  personalOnly?: boolean;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration, personalOnly = true }: Props) {
   const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -514,6 +516,13 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </div>
       ) : null}
 
+      {!personalOnly ? (
+        <section className="field-card" style={{ marginBottom: "2rem" }}>
+          <p style={{ margin: 0 }}>Switch to My vault to change the master password, paper code, device key or rotate the vault key.</p>
+        </section>
+      ) : null}
+
+      {personalOnly ? <>
       {/* 1. Master Password Change */}
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
@@ -646,6 +655,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </button>
       </section>
 
+      </> : null}
+
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <KeyRound size={20} color="var(--accent)" />
@@ -671,12 +682,13 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>Created {formatWhen(userKey.record.createdAt)}</span>
           </div>
         )}
-        {userKey && userKey.kind !== "none" && userKey.kind !== "unavailable" ? (
+        {personalOnly && userKey && userKey.kind !== "none" && userKey.kind !== "unavailable" ? (
           <button type="button" className="btn btn-danger" onClick={() => void replaceUserKey()} disabled={busy || !currentPassword}
             title={currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
         ) : null}
       </section>
 
+      {personalOnly ? <>
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <RefreshCw size={20} color="var(--accent)" />
@@ -776,6 +788,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </button>
       </section>
 
+      </> : null}
+
       {/* 3. Single Sign-On */}
       {ssoConfig?.enabled ? (
         <section className="field-card" style={{ marginBottom: "2rem" }}>
@@ -808,7 +822,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       ) : null}
 
       {/* Local Device Vault & 1-Click SSO */}
-      <section className="field-card" style={{ marginBottom: "2rem" }}>
+      {personalOnly ? <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <KeyRound size={20} color="var(--accent)" />
           <h3 style={{ margin: 0 }}>This Device & 1-Click SSO</h3>
@@ -822,7 +836,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             Forget This Device & Sign Out
           </button>
         )}
-      </section>
+      </section> : null}
 
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>

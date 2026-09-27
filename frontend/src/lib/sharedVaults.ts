@@ -50,11 +50,14 @@ const REFRESH_MS = 60_000;
 export function useSharedVaults(enabled: boolean, api: SharedApi = sharedApi) {
   const [vaults, setVaults] = useState<SharedVaultSummary[]>([]);
   const [error, setError] = useState("");
+  // False until the first successful list, so a route restore never mistakes "not loaded" for "not a member".
+  const [loaded, setLoaded] = useState(false);
   const refresh = useCallback(async (): Promise<SharedVaultSummary[]> => {
     if (!enabled) return [];
     try {
       const list = await api.list();
       setVaults(list);
+      setLoaded(true);
       setError("");
       return list;
     } catch (err) {
@@ -63,12 +66,12 @@ export function useSharedVaults(enabled: boolean, api: SharedApi = sharedApi) {
     }
   }, [enabled, api]);
   useEffect(() => {
-    if (!enabled) { setVaults([]); setError(""); return; }
+    if (!enabled) { setVaults([]); setLoaded(false); setError(""); return; }
     void refresh();
     const tick = () => { if (document.visibilityState === "visible") void refresh(); };
     const timer = setInterval(tick, REFRESH_MS);
     document.addEventListener("visibilitychange", tick);
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", tick); };
   }, [enabled, refresh]);
-  return { vaults, refresh, error };
+  return { vaults, loaded, refresh, error };
 }
