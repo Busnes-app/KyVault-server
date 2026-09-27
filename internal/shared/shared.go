@@ -53,7 +53,36 @@ var (
 	ErrCorrupt   = errors.New("shared vault record is corrupt")
 	ErrState     = errors.New("member is not in the required state")
 	ErrForbidden = errors.New("only an active owner may do that")
+	ErrEpoch     = errors.New("the shared vault key was rotated")
 )
+
+// RotationReason records what departure left the vault needing a new key.
+type RotationReason string
+
+const (
+	ReasonRemoved  RotationReason = "removed"
+	ReasonLeft     RotationReason = "left"
+	ReasonDeclined RotationReason = "declined"
+)
+
+func validReason(r RotationReason) bool {
+	return r == ReasonRemoved || r == ReasonLeft || r == ReasonDeclined
+}
+
+// Pending marks a vault whose key a departed member still holds a working copy of.
+type Pending struct {
+	Since  time.Time      `json:"since"`
+	UserID string         `json:"userId"`
+	Reason RotationReason `json:"reason"`
+}
+
+// SealedFor is one member's copy of a new vault key, sealed to the key fingerprint the
+// caller sealed against; Rotate refuses it unless that is still the member's current one.
+type SealedFor struct {
+	UserID         string `json:"userId"`
+	SealedKey      string `json:"sealedKey"`
+	KeyFingerprint string `json:"keyFingerprint"`
+}
 
 type Member struct {
 	Role                Role       `json:"role"`
@@ -76,6 +105,8 @@ type Vault struct {
 	KeyEpoch  int               `json:"keyEpoch"`
 	Members   map[string]Member `json:"members"`
 	DeletedAt *time.Time        `json:"deletedAt,omitempty"`
+	// RotationPending is set by the departure that made the key stale and cleared by Rotate.
+	RotationPending *Pending `json:"rotationPending,omitempty"`
 }
 
 type SnapshotFile struct {
@@ -230,6 +261,9 @@ func (s *Store) loadLocked(id string) (Vault, error) {
 		if !validRole(m.Role) || !validState(m.State) || !validSuspendedFrom(m) {
 			return Vault{}, fmt.Errorf("%w: %s member %s has an unknown role or state", ErrCorrupt, id, uid)
 		}
+	}
+	if p := v.RotationPending; p != nil && (p.UserID == "" || !validReason(p.Reason)) {
+		return Vault{}, fmt.Errorf("%w: %s has an invalid rotationPending", ErrCorrupt, id)
 	}
 	return v, nil
 }
@@ -501,8 +535,9 @@ func (s *Store) Accept(id, userID string, now time.Time) error {
 
 // Remove deletes userID's row. actorID "" is an admin, who may remove the last owner;
 // a member may always remove their own row (leave, decline), under the last-owner rule;
-// anyone else must be an active owner.
-func (s *Store) Remove(id, actorID, userID string) error {
+// anyone else must be an active owner. Every departure flags a pending rotation: the row
+// is gone, but the copy of the vault key it held is not, and only Rotate retires that.
+func (s *Store) Remove(id, actorID, userID string, now time.Time) error {
 	authActor := actorID
 	if actorID == userID {
 		authActor = ""
@@ -516,8 +551,84 @@ func (s *Store) Remove(id, actorID, userID string) error {
 			return ErrLastOwner
 		}
 		delete(v.Members, userID)
+		reason := ReasonRemoved // an admin removal ("" != userID) is a removal too
+		if actorID == userID {
+			reason = ReasonLeft
+			if m.State == StateInvited {
+				reason = ReasonDeclined
+			}
+		}
+		v.RotationPending = &Pending{Since: now.UTC(), UserID: userID, Reason: reason}
 		return nil
 	})
+}
+
+// Rotate re-keys a shared vault: it takes one sealed copy of the new key per member the
+// caller could seal for, writes the re-encrypted vault through writeVault, bumps the epoch
+// and leaves everyone else at the old epoch as stale. It is the only thing that stops a
+// departed member's copy of the key from opening what the vault saves next, so it clears
+// the pending flag a departure set. Nothing is written unless writeVault succeeds, so a
+// refused vault write leaves the record, the sealed keys and the flag exactly as they were.
+// writeVault may be nil, which skips that step. epoch must be the vault's current one.
+func (s *Store) Rotate(id, actorID string, epoch int, sealed []SealedFor, writeVault func() error, now time.Time) (Vault, error) {
+	var out Vault
+	err := s.update(id, actorID, func(v *Vault) error {
+		if v.KeyEpoch != epoch {
+			return fmt.Errorf("%w: at epoch %d", ErrEpoch, v.KeyEpoch)
+		}
+		for _, sf := range sealed {
+			m, ok := v.Members[sf.UserID]
+			if !ok {
+				return fmt.Errorf("%w: %s is not a member", ErrShape, sf.UserID)
+			}
+			if err := ValidSealedKey(sf.SealedKey); err != nil {
+				return err
+			}
+			if sf.KeyFingerprint == "" || sf.KeyFingerprint != m.KeyFingerprint {
+				return fmt.Errorf("%w: keyFingerprint does not match %s's current key", ErrShape, sf.UserID)
+			}
+		}
+		if writeVault != nil {
+			if err := writeVault(); err != nil {
+				return err
+			}
+		}
+		actorFP := v.Members[actorID].KeyFingerprint // "" for an admin, who holds no row
+		next := v.KeyEpoch + 1
+		named := map[string]bool{}
+		for _, sf := range sealed {
+			m := v.Members[sf.UserID]
+			m.SealedKey, m.KeyFingerprint = sf.SealedKey, sf.KeyFingerprint
+			m.SealedBy, m.SealedByFingerprint = actorID, actorFP
+			m.KeyEpoch = next
+			// A fresh seal lands where a Reseal would: a member left behind by an earlier
+			// rotation, or stale from a user key replacement, comes back.
+			switch m.State {
+			case StateSuspended:
+				m.SuspendedFrom = freshState(m)
+			default:
+				m.State = freshState(m)
+			}
+			v.Members[sf.UserID] = m
+			named[sf.UserID] = true
+		}
+		for uid, m := range v.Members {
+			if named[uid] {
+				continue
+			}
+			if m.State == StateSuspended {
+				m.SuspendedFrom = StateStale
+			} else {
+				m.State = StateStale
+			}
+			v.Members[uid] = m
+		}
+		v.KeyEpoch = next
+		v.RotationPending = nil
+		out = *v
+		return nil
+	})
+	return out, err
 }
 
 // WithWriter runs fn, the vault write, under the store lock once userID's row is an

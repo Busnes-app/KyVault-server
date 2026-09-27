@@ -543,7 +543,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   only drills and restores may hold private recovery material.
 
 - `internal/shared/AGENTS.md`: shared vault membership records, roles, states, sealed keys,
-  owner authority at the write, deleted area and pruning.
+  owner authority at the write, the pending-rotation flag every departure sets and the
+  `Rotate` that retires the old key, deleted area and pruning.
 
 - `frontend/src/lib/storage.ts` and `frontend/src/lib/deviceKey.ts`: manages the IndexedDB
   `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)

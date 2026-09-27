@@ -9,8 +9,8 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
 ## Ownership
 
 - `shared.go`: record shape and validation, store, lifecycle, write gate (`WithWriter`),
-  hooks' store side (`SetSuspended`, `MarkStale`), deleted area and its reconcile, backup
-  `Snapshot`.
+  key rotation (`Rotate`, `RotationPending`), hooks' store side (`SetSuspended`,
+  `MarkStale`), deleted area and its reconcile, backup `Snapshot`.
 - `shared_test.go`: every transition and invariant.
 - HTTP gates, audit and hook call sites belong to `internal/api` (root `AGENTS.md`).
 
@@ -35,6 +35,21 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   check (leave, decline) but not the last-owner rule; only an admin removes the last owner.
   `Reseal` with `sealedBy == userID` on a `stale` row skips it too, so a sole owner who
   replaced their user key can recover the vault.
+- Every `Remove` (removal, leave, decline) stamps `rotationPending`
+  (`since`, `userId`, `reason` of `removed|left|declined`; a self-removal of an `invited`
+  row is `declined`, an admin removal is `removed`), because the departed row's copy of the
+  vault key still opens the vault. A non-empty flag whose reason or `userId` is invalid
+  fails the load with `ErrCorrupt`. Nothing else sets or clears it: a role change, a
+  suspension and a `MarkStale` leave it alone.
+- `Rotate(id, actorID, epoch, []SealedFor, writeVault, now)` is the only thing that retires
+  that copy. Under one hold of the lock it authorizes the actor, refuses a stale `epoch`
+  (`ErrEpoch`), validates every `SealedFor` (a current member, `ValidSealedKey`, the
+  fingerprint still the member's current one — otherwise `ErrShape` and nothing is
+  written), then calls `writeVault` (the re-encrypted vault; `nil` skips it) and returns
+  its error untouched, and only then re-seals, bumps `keyEpoch`, marks every unnamed member
+  `stale` at the old epoch (a suspended row takes `suspendedFrom: stale`) and clears the
+  flag. A named row lands on `freshState` like a `Reseal`, so a stale or left-behind member
+  who is re-sealed comes back.
 - `WithWriter(id, userID, fn)` runs `fn` (the vault write) under `shared.mu` only while the
   row is an active owner or editor (`ErrNotMember`, `ErrForbidden`), so a removal or
   demotion cannot land between the route's check and the write.
