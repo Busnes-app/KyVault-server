@@ -20,10 +20,25 @@ type Props = {
 const ROLES: Role[] = ["owner", "editor", "reader"];
 const NAME_OK = (v: string) => v.trim().length >= 1 && v.trim().length <= 64 && !/[\p{Cc}\p{Cf}]/u.test(v);
 
-const pinLabel = (p: PinStatus | undefined) =>
-  !p ? "" : p.state === "pinned" ? "Key pinned" : p.state === "unknown" ? "Key not verified" : "Key changed since you pinned it";
-const pinColor = (p: PinStatus | undefined) =>
-  !p ? undefined : p.state === "pinned" ? "var(--success)" : p.state === "unknown" ? "var(--warning)" : "var(--danger)";
+// What a member row knows about that member's published key. A row without a verdict must
+// not show m.keyFingerprint in its place: for a stale row that is the key they no longer hold.
+type KeyView = { key: PinStatus } | { problem: string };
+
+const pinLabel = (p: PinStatus) =>
+  p.state === "pinned" ? "Key pinned" : p.state === "unknown" ? "Key not verified" : "Key changed since you pinned it";
+const pinColor = (p: PinStatus) =>
+  p.state === "pinned" ? "var(--success)" : p.state === "unknown" ? "var(--warning)" : "var(--danger)";
+
+function MemberKey({ username, view }: { username: string; view: KeyView | undefined }) {
+  if (!view) return <span>Checking…</span>;
+  if ("problem" in view) return <span style={{ color: "var(--warning)" }}>{view.problem}</span>;
+  return (
+    <>
+      <code className="font-mono" style={{ overflowWrap: "anywhere" }} aria-label={`${username} key fingerprint`}>{view.key.fingerprint}</code>
+      <span style={{ color: pinColor(view.key) }}>{pinLabel(view.key)}</span>
+    </>
+  );
+}
 
 // A fresh-session refusal is the one error with a way out on screen.
 function ErrorLine({ text }: { text: string }) {
@@ -38,7 +53,7 @@ function ErrorLine({ text }: { text: string }) {
 export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, onChanged, onLeftOrDeleted, onClose }: Props) {
   const dialogs = useDialogs();
   const [detail, setDetail] = useState<SharedVaultDetail | null>(null);
-  const [pins, setPins] = useState<Record<string, PinStatus>>({});
+  const [keys, setKeys] = useState<Record<string, KeyView>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   // The loaded record is authoritative about my own role; the summary row may be a minute old.
@@ -46,24 +61,24 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
 
   const [username, setUsername] = useState("");
   const [invitee, setInvitee] = useState<{ user: LookupResult; pin: PinStatus } | null>(null);
-  const [role, setRole] = useState<Role>("editor");
+  const [role, setRole] = useState<Role>("reader");
   const [inviteError, setInviteError] = useState("");
 
   const load = async () => {
     const d = await deps.api.get(vaultId);
     setDetail(d);
     // One published-key read per member: the pin verdict is what makes the fingerprint
-    // on screen worth anything. A failed read leaves the row without a verdict.
-    const found = await Promise.all(d.members.map(async (m) => {
+    // on screen worth anything, so a read that failed says so instead of showing a key.
+    const found = await Promise.all(d.members.map(async (m): Promise<[string, KeyView]> => {
       try {
         const l = await deps.lookupKey(deps.pinVault, m.userId);
-        if (!l.published) return null;
-        return [m.userId, { state: l.state, fingerprint: l.published.fingerprint, publicKey: l.published.publicKey }] as const;
+        if (!l.published) return [m.userId, { problem: "No published key" }];
+        return [m.userId, { key: { state: l.state, fingerprint: l.published.fingerprint, publicKey: l.published.publicKey } }];
       } catch {
-        return null;
+        return [m.userId, { problem: "Could not check this key" }];
       }
     }));
-    setPins(Object.fromEntries(found.filter((e): e is NonNullable<typeof e> => e !== null)));
+    setKeys(Object.fromEntries(found));
   };
 
   useEffect(() => {
@@ -167,6 +182,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
       await inviteMember(vaultId, invitee, role, sharedKey, deps);
       setInvitee(null);
       setUsername("");
+      setRole("reader");
       onChanged();
       await load();
     } catch (err) {
@@ -185,6 +201,10 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
   };
 
   const changed = invitee?.pin.state === "changed";
+  const changedPin = (userId: string) => {
+    const v = keys[userId];
+    return !!v && "key" in v && v.key.state === "changed";
+  };
 
   return (
     <Dialog title={detail ? `Members of “${detail.name}”` : "Members"} onClose={onClose} size="lg">
@@ -207,8 +227,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
                     <span className={m.state === "active" ? "badge badge-green" : m.state === "invited" ? "badge badge-cyan" : "badge badge-warning"}>{m.state}</span>
                   </div>
                   <div style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.2rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <code className="font-mono" style={{ overflowWrap: "anywhere" }} aria-label={`${m.username} key fingerprint`}>{pins[m.userId]?.fingerprint || m.keyFingerprint}</code>
-                    {pins[m.userId] ? <span style={{ color: pinColor(pins[m.userId]) }}>{pinLabel(pins[m.userId])}</span> : null}
+                    <MemberKey username={m.username} view={keys[m.userId]} />
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
@@ -221,8 +240,8 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
                   ) : <span style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>{m.role}</span>}
                   {isOwner && m.state === "stale" ? (
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => reseal(m)}
-                      disabled={busy || !sharedKey || pins[m.userId]?.state === "changed"}
-                      title={pins[m.userId]?.state === "changed" ? REPIN_FIRST : !sharedKey ? "Open this vault first." : undefined}>Re-seal key</button>
+                      disabled={busy || !sharedKey || changedPin(m.userId)}
+                      title={changedPin(m.userId) ? REPIN_FIRST : !sharedKey ? "Open this vault first." : undefined}>Re-seal key</button>
                   ) : null}
                   {isOwner && m.userId !== myId ? (
                     <button type="button" className="btn btn-danger btn-sm" onClick={() => void removeMember(m)} disabled={busy}>Remove</button>

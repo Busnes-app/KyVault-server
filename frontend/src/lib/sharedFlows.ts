@@ -25,6 +25,7 @@ export type FlowDeps = {
 
 export const REPIN_FIRST = "This user's key changed since you pinned it. Re-pin it from Security → Known keys first.";
 const NO_KEY = "That user has no published key.";
+export const REPIN_CONFIRM = "Their key changed since you pinned it. Confirm re-pinning it before accepting.";
 
 export async function createSharedVault(name: string, deps: FlowDeps): Promise<{ id: string; key: Uint8Array }> {
   const key = newSharedKey();
@@ -85,9 +86,11 @@ export async function inviterStatus(row: SharedVaultSummary, deps: FlowDeps): Pr
   return status;
 }
 
-export async function acceptInvitation(row: SharedVaultSummary, status: PinStatus, deps: FlowDeps): Promise<void> {
+// Replacing a pin is a decision, so it lives here with the same weight as the refusal in
+// sealFor: the dialog may only pass repinConfirmed once its second confirm resolved true.
+export async function acceptInvitation(row: SharedVaultSummary, status: PinStatus, deps: FlowDeps, opts: { repinConfirmed?: boolean } = {}): Promise<void> {
+  if (status.state === "changed" && !opts.repinConfirmed) throw new Error(REPIN_CONFIRM);
   const userId = row.invitedBy?.userId;
-  // A "changed" pin is only overwritten here because the dialog made the user confirm it.
   if (userId && status.state !== "pinned" && status.publicKey.length > 0) {
     await deps.pinKey(deps.pinVault, userId, status.publicKey, deps.onPinChanged);
   }

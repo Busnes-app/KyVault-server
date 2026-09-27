@@ -28,15 +28,19 @@ export function AcceptInvitationDialog({ row, deps, onDone }: Props) {
   const accept = async () => {
     if (!status || busy) return;
     setError("");
-    if (status.state === "changed" && !(await dialogs.confirm({
-      title: "Re-pin this key?",
-      message: "You are about to trust a new key for this user. Only do this after verifying the fingerprint with them.",
-      danger: true,
-      confirmLabel: "Re-pin and accept",
-    }))) return;
+    let repinConfirmed = false;
+    if (status.state === "changed") {
+      repinConfirmed = await dialogs.confirm({
+        title: "Re-pin this key?",
+        message: "You are about to trust a new key for this user. Only do this after verifying the fingerprint with them.",
+        danger: true,
+        confirmLabel: "Re-pin and accept",
+      });
+      if (!repinConfirmed) return;
+    }
     setBusy(true);
     try {
-      await acceptInvitation(row, status, deps);
+      await acceptInvitation(row, status, deps, { repinConfirmed });
       onDone(true);
     } catch (err) {
       setError(toErrorMessage(err, "Could not accept the invitation."));

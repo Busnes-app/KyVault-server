@@ -126,6 +126,35 @@ test("accept reports inviter pin status and pins on accept", async () => {
   assert.equal((await inviterStatus(row, s.deps)).state, "pinned");
 });
 
+test("accepting a changed key needs the dialog's confirmation", async () => {
+  const s = await setup();
+  const row = invitation(s);
+  await pinKey(s.pinVault, "u-bob", s.alice.publicKey, () => {}); // wrong key pinned
+  const before = readPin(s.pinVault, "u-bob");
+  const status = await inviterStatus(row, s.deps);
+  assert.equal(status.state, "changed");
+
+  await assert.rejects(acceptInvitation(row, status, s.deps), /changed/);
+  assert.deepEqual(readPin(s.pinVault, "u-bob"), before);
+  assert.equal(s.calls.find((c) => c[0] === "accept"), undefined);
+
+  await acceptInvitation(row, status, s.deps, { repinConfirmed: true });
+  assert.equal(readPin(s.pinVault, "u-bob")?.fingerprint, s.published["u-bob"].fingerprint);
+  assert.deepEqual(s.calls.at(-1), ["accept", row.id]);
+});
+
+test("inviting an already pinned user writes no new pin", async () => {
+  const s = await setup();
+  await pinKey(s.pinVault, "u-bob", s.bob.publicKey, () => {});
+  const invitee = await resolveInvitee("bob", s.deps);
+  assert.equal(invitee?.pin.state, "pinned");
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  await inviteMember("sv_abcdefghijklmnopqrstuv", invitee!, "reader", key, s.deps);
+  assert.equal(s.pinSaves(), 0);
+  const sealed = s.calls.find((c) => c[0] === "invite")![4] as string;
+  assert.deepEqual([...(await openSharedKey(s.bob.seed, sealed))], [...key]);
+});
+
 test("inviter status reports the key that signed the invitation changing", async () => {
   const s = await setup();
   const row = invitation(s, "AAAA BBBB CCCC DDDD EEEE");

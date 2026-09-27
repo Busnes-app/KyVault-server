@@ -479,11 +479,15 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   an unknown key first and refuses a changed one everywhere (invite and re-seal) until it is
   re-pinned from Security → Known keys. Accept shows the inviter's fingerprint, the pin
   verdict and the invitation's own `invitedBy.fingerprint` (a drift from the published key is
-  `changed` too), warns that KyVault trusts the server for who is in a vault and never for
-  its contents, and re-pins only after a second confirm. The members dialog carries rename,
-  delete, leave, remove, role changes (own row disabled, last-owner 409 shown inline), re-seal
-  for stale rows and the invite form; a 400 fingerprint refusal re-runs the lookup so the new
-  fingerprint is compared again, and a 403 shows the "Sign in again" link. No "sealed by"
+  `changed` too), and warns that KyVault trusts the server for who is in a vault and never
+  for its contents; `acceptInvitation` refuses a changed pin unless the dialog's second
+  confirm passed `repinConfirmed`. Accepting does not open the vault: the joined row appears
+  in the switcher. The members dialog carries rename, delete, leave, remove, role changes
+  (own row disabled, last-owner 409 shown inline), re-seal for stale rows and the invite form
+  (default `reader`, reset after each invite); a 400 fingerprint refusal re-runs the lookup so
+  the new fingerprint is compared again, and a 403 shows the "Sign in again" link. A member
+  whose published key could not be read says so instead of showing the fingerprint their
+  sealed copy was made against. No "sealed by"
   column: the server reports `sealedByFingerprint` only for my own row, which the switcher
   shows in its title. `closeVault` closes both dialogs, matching the lock-cancels-questions
   rule. Known keys lists the pins in the personal vault with Re-pin (both fingerprints, then

@@ -3,7 +3,7 @@ import { useDialogs } from "./DialogHost";
 import { toErrorMessage } from "../lib/api";
 import { formatWhen } from "../lib/format";
 import type { KeePassVault } from "../lib/kdbx";
-import { fetchPublishedKey, pinKey, pinKeyFor, readPin, type Pin } from "../lib/keyPins";
+import { lookupKey, pinKey, pinKeyFor, readPin, type Pin } from "../lib/keyPins";
 import { KeyRound } from "lucide-react";
 
 type Props = { vault: KeePassVault; onChanged: () => void };
@@ -46,9 +46,11 @@ export function KnownKeys({ vault, onChanged }: Props) {
     setError("");
     setBusy(true);
     try {
-      const published = await fetchPublishedKey(row.userId);
-      if (!published) { await dialogs.notify({ title: "No published key", message: "That user has no published key right now, so there is nothing to pin." }); return; }
-      if (published.fingerprint === row.pin.fingerprint) {
+      // The same verdict sealing uses: the pinned key's bytes, not its fingerprint.
+      const found = await lookupKey(vault, row.userId);
+      if (!found.published) { await dialogs.notify({ title: "No published key", message: "That user has no published key right now, so there is nothing to pin." }); return; }
+      const published = found.published;
+      if (found.state === "pinned") {
         await dialogs.notify({ title: "Key unchanged", message: "The published key still matches the one you pinned." });
         return;
       }

@@ -699,7 +699,9 @@ export function App() {
       const made = await createSharedVault(name.trim(), flowDeps);
       made.key.fill(0);
       const rows = await shared.refresh();
-      await switchVault({ kind: "shared", id: made.id }, rows.find((r) => r.id === made.id));
+      const row = rows.find((r) => r.id === made.id);
+      if (!row) { setLockNotice(`Shared vault “${name.trim()}” was created but could not be opened yet. Select it from the vault switcher.`); return; }
+      await switchVault({ kind: "shared", id: made.id }, row);
     } catch (err) {
       setLockNotice(toErrorMessage(err, "Could not create the shared vault."));
     }
@@ -711,10 +713,11 @@ export function App() {
     void shared.refresh();
   };
 
-  const invitationSettled = async (row: SharedVaultSummary, accepted: boolean) => {
+  // Accepting does not open the vault: the joined vault appears in the switcher and the
+  // user picks when to leave whatever they are working on.
+  const invitationSettled = async () => {
     setAcceptRow(null);
-    const rows = await shared.refresh();
-    if (accepted) await switchVault({ kind: "shared", id: row.id }, rows.find((r) => r.id === row.id));
+    await shared.refresh();
   };
 
   // Route restore: once per unlock, reopen the #/shared/<id> the tab was on, after the list
@@ -1151,7 +1154,7 @@ export function App() {
       ) : null}
 
       {acceptRow && flowDeps ? (
-        <AcceptInvitationDialog key={acceptRow.id} row={acceptRow} deps={flowDeps} onDone={(accepted) => void invitationSettled(acceptRow, accepted)} />
+        <AcceptInvitationDialog key={acceptRow.id} row={acceptRow} deps={flowDeps} onDone={() => void invitationSettled()} />
       ) : null}
 
       {showMembers && flowDeps && selected.kind === "shared" ? (
