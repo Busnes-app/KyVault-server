@@ -80,7 +80,10 @@ func TestAnonymousRejectionsAreBoundedAndFolded(t *testing.T) {
 			for i := 0; i < flood; i++ {
 				rec := httptest.NewRecorder()
 				handler.ServeHTTP(rec, tc.newReq())
-				if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusBadRequest {
+				// 429 is the pairing limiter refusing the caller after three wrong codes
+				// (pairing_limit.go); that refusal is audited under the same action, so
+				// it belongs in the count. The budget itself never changes the answer.
+				if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusBadRequest && rec.Code != http.StatusTooManyRequests {
 					t.Fatalf("rejection %d = %d; the budget folds the record, it must not change the answer", i, rec.Code)
 				}
 			}

@@ -118,6 +118,15 @@ func (s *Store) CreatePairingSession(userID, origin string) (PairingSession, err
 	_, _ = rand.Read(secBytes)
 	secret := hex.EncodeToString(secBytes)
 
+	// Expired codes are otherwise only removed on redeem or cancellation.
+	now := time.Now().UTC()
+	for p, old := range s.pairingPINs {
+		if now.After(old.ExpiresAt) {
+			delete(s.pairingPINs, p)
+			delete(s.pairingCodes, old.Secret)
+		}
+	}
+
 	session := PairingSession{
 		PIN:       pin,
 		UserID:    userID,

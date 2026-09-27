@@ -354,7 +354,7 @@ func TestSSOLoginRequiresSidWhenIssuerSupportsSessionLogout(t *testing.T) {
 	f.idp.set("sid", "sid-1")
 	cookie := f.login(t)
 	f.srv.sessMu.RLock()
-	sess := f.srv.sessions[cookie.Value]
+	sess := f.srv.sessions[sessionKey(cookie.Value)]
 	f.srv.sessMu.RUnlock()
 	if sess.SSO.SessionID != "sid-1" || sess.SSO.Subject != "alice-sub" || sess.SSO.Issuer != f.idp.URL || sess.SSO.ClientID != "kyvault-app" || sess.SSO.IssuedAt.IsZero() {
 		t.Errorf("session identity not recorded: %+v", sess.SSO)
@@ -386,7 +386,7 @@ func TestSessionMintingRequiresRevocableIdentity(t *testing.T) {
 	cookie := f.login(t)
 	user, _ := f.srv.users.GetBySSOSub("alice-sub")
 	for name, id := range map[string]sso.Identity{"empty": {}, "no subject": {Issuer: f.idp.URL, ClientID: "kyvault-app"}, "no issuer": {ClientID: "kyvault-app", Subject: "alice-sub"}} {
-		if _, err := f.srv.startSessionWithToken(user.ID, "", "", id); err == nil {
+		if _, err := f.srv.startSessionWithToken(user.ID, "", "", id, ""); err == nil {
 			t.Errorf("%s identity minted an unrevocable device session", name)
 		}
 		if err := f.srv.startSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), user.ID, id, time.Now()); err == nil {
@@ -397,7 +397,7 @@ func TestSessionMintingRequiresRevocableIdentity(t *testing.T) {
 	// A pairing started by a session that is gone by the time the handler runs is refused,
 	// not recorded with an empty identity.
 	f.srv.sessMu.Lock()
-	delete(f.srv.sessions, cookie.Value)
+	delete(f.srv.sessions, sessionKey(cookie.Value))
 	f.srv.sessMu.Unlock()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/start", nil)

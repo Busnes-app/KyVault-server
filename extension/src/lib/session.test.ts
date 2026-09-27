@@ -29,7 +29,7 @@ test("bearer, no cookies, no redirects", async () => {
 test("401 forgets the session and says the device was revoked", async () => {
   const fake = io(401);
   await assert.rejects(serverFetch(fake, "/api/vault/metadata", { method: "GET" }), RevokedError);
-  await assert.rejects(serverFetch(fake, "/api/vault/metadata", { method: "GET" }), /This device was revoked\. Pair again from the KyVault options page\./);
+  await assert.rejects(serverFetch(fake, "/api/vault/metadata", { method: "GET" }), /KyVault no longer accepts this pairing\. Sign in to KyVault, then pair this extension again/);
   assert.equal(fake.seen.forgot, 2);
 });
 

@@ -237,6 +237,7 @@ func (s *Server) revokeDirectorySessions(id string) {
 			delete(s.sessions, token)
 		}
 	}
+	s.saveSessionsLocked()
 }
 
 // Equality lookups are deliberately limited to the shared client's supported attributes.

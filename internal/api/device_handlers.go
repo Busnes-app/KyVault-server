@@ -66,14 +66,22 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := clientIP(r)
+	src := sourceKey(r)
+	if !s.pairings.allow(src) {
+		s.recordAnonymousRejection(r, "device.pairing_failed", ip, "pairing redeem refused: too many wrong codes from this source")
+		http.Error(w, "too many wrong pairing codes; try again later", http.StatusTooManyRequests)
+		return
+	}
 	dev, origin, err := s.devices.RedeemPairing(req.CodeOrPIN, req.DeviceName, req.Platform, ip)
 	if err != nil {
+		s.pairings.fail(src)
 		// Within the source's audit budget: redeem takes no credential, and a wrong
 		// code costs the store nothing until this record. See audit_budget.go.
 		s.recordAnonymousRejection(r, "device.pairing_failed", ip, "failed pairing redeem: "+err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.pairings.reset(src)
 
 	// Mint only while the directory account is still active and the browser session
 	// that started the pairing has not been logged out by KySignOn meanwhile.
@@ -83,7 +91,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid pairing origin", http.StatusBadRequest)
 		return
 	}
-	tokBytes, err := s.startSessionWithToken(dev.UserID, dev.ID, po.IssuerDeviceID, po.SSO)
+	tokBytes, err := s.startSessionWithToken(dev.UserID, dev.ID, po.IssuerDeviceID, po.SSO, ip)
 	if err != nil {
 		_ = s.devices.Revoke(dev.ID)
 		http.Error(w, "account is inactive or signed out", http.StatusUnauthorized)
@@ -114,7 +122,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 // session started the pairing (empty for a browser session); if that device has been
 // revoked meanwhile, for example by a key rotation, the pairing cannot mint anything.
 // The check shares sessMu with revokeAllDevices, so no interleaving slips past it.
-func (s *Server) startSessionWithToken(userID, deviceID, issuerDeviceID string, id sso.Identity) (string, error) {
+func (s *Server) startSessionWithToken(userID, deviceID, issuerDeviceID string, id sso.Identity, ip string) (string, error) {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
 	if u, err := s.users.Get(userID); err != nil || !u.Active {
@@ -141,14 +149,18 @@ func (s *Server) startSessionWithToken(userID, deviceID, issuerDeviceID string, 
 	csrfBytes := randomHex(24)
 
 	now := time.Now().UTC()
-	s.sessions[tokBytes] = Session{
+	s.pruneSessionsLocked(now)
+	s.sessions[sessionKey(tokBytes)] = Session{
+		ID:        randomHex(16),
 		UserID:    userID,
+		IP:        ip,
 		IssuedAt:  now,
 		ExpiresAt: now.Add(90 * 24 * time.Hour), // 90-day device session
 		CSRFToken: csrfBytes,
 		SSO:       id,
 		DeviceID:  deviceID,
 	}
+	s.saveSessionsLocked()
 	return tokBytes, nil
 }
 
@@ -202,6 +214,7 @@ func (s *Server) revokeDeviceLocked(dev devices.Device) {
 			delete(s.sessions, tok)
 		}
 	}
+	s.saveSessionsLocked()
 }
 
 // revokeAllDevices ends every device of the user in one critical section: pending

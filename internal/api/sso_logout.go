@@ -129,5 +129,8 @@ func (s *Server) applySSOLogout(c oidcverify.LogoutClaims, clientID string) (int
 			n++
 		}
 	}
+	if n > 0 {
+		s.saveSessionsLocked()
+	}
 	return n, nil
 }

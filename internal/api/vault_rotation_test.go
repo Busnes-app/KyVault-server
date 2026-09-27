@@ -362,7 +362,7 @@ func TestRotationRefusesPairingsIssuedByRevokedDevice(t *testing.T) {
 	// Interleaving 2: the code is issued but not yet redeemed when the rotation runs.
 	// Re-issue it after the cancel by hand, exactly as a start that resolved its session
 	// before the sweep would: the origin still names the issuing device.
-	origin, _ := json.Marshal(pairingOrigin{SSO: srv.sessions[token].SSO, IssuerDeviceID: deviceID})
+	origin, _ := json.Marshal(pairingOrigin{SSO: srv.sessions[sessionKey(token)].SSO, IssuerDeviceID: deviceID})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/vault/upload", bytes.NewReader([]byte("new vault")))
 	req.Header.Set("Content-Type", "application/octet-stream")

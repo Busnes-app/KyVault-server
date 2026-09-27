@@ -313,7 +313,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, u users.User) 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.User) {
 	if cookie, err := r.Cookie("kypass_session"); err == nil && cookie.Value != "" {
 		s.sessMu.Lock()
-		delete(s.sessions, cookie.Value)
+		delete(s.sessions, sessionKey(cookie.Value))
+		s.saveSessionsLocked()
 		s.sessMu.Unlock()
 	}
 

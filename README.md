@@ -100,7 +100,7 @@ over anything saved in `config/sso.json`. The admin UI will refuse to overwrite 
 | `KYVAULT_OIDC_REDIRECT_URI` | no | defaults to `<scheme>://<host>/api/auth/oidc/callback` |
 | `KYVAULT_OIDC_AUTO_PROVISION` | no | defaults to `true` |
 | `PORT` | no | defaults to `5877` |
-| `DATA_DIR` | no | defaults to `./data` — vaults, history, audit log |
+| `DATA_DIR` | no | defaults to `./data` — vaults, history, audit log, `sessions.json` (token hashes only, so sessions survive a restart) |
 | `CONFIG_DIR` | no | defaults to `./config` — `users.json`, `sso.json`, pairing secret, audit key and chain state |
 | `RETENTION_DAYS` | no | defaults to `90` |
 | `KYVAULT_SCIM_TOKEN` | no | Dedicated random provisioning token, 32–512 characters; unset disables SCIM unless a restored `CONFIG_DIR/scim.token` exists |
@@ -348,6 +348,12 @@ device registrations stay, and the person signs in again through KySignOn. Accep
 are recorded in `DATA_DIR/sso-logout.json` for the token's replay window so a repeat
 delivery is refused even across a restart; a 200 means the named sessions no longer
 exist on this server, not that the person's other products have signed out.
+
+Sessions themselves survive a restart: `DATA_DIR/sessions.json` holds each session's token
+hash, never the token, so a deploy signs nobody out and does not unpair extensions. Security →
+Signed-in Sessions lists every browser and device session with its address and lets the
+person end any other one; ending a device session unpairs that device. Pairing redeem is
+closed to a peer address for 15 minutes after three wrong codes.
 
 Local backup directories must not overlap `CONFIG_DIR` or `DATA_DIR/vaults`,
 `DATA_DIR/audit`, or `DATA_DIR/drill` (including symlink aliases). Startup rejects overlaps.

@@ -110,3 +110,29 @@ func TestStoreRename(t *testing.T) {
 		t.Errorf("Rename of unknown device = %v, want ErrNotFound", err)
 	}
 }
+
+func TestCreatePairingSessionSweepsExpiredCodes(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	old, _ := store.CreatePairingSession("usr_1", "")
+	store.mu.Lock()
+	expired := store.pairingPINs[old.PIN]
+	expired.ExpiresAt = time.Now().Add(-time.Minute)
+	store.pairingPINs[old.PIN] = expired
+	store.mu.Unlock()
+
+	store.CreatePairingSession("usr_2", "")
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if _, ok := store.pairingPINs[old.PIN]; ok {
+		t.Fatal("expired PIN survived the next pairing start")
+	}
+	if _, ok := store.pairingCodes[old.Secret]; ok {
+		t.Fatal("expired secret survived the next pairing start")
+	}
+	if len(store.pairingPINs) != 1 || len(store.pairingCodes) != 1 {
+		t.Fatalf("pairing maps = %d/%d, want 1/1", len(store.pairingPINs), len(store.pairingCodes))
+	}
+}

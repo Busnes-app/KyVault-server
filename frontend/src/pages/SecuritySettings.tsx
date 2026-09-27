@@ -27,6 +27,18 @@ type Device = {
   current?: boolean;
 };
 
+type SessionRow = {
+  id: string;
+  kind: "browser" | "device";
+  deviceId?: string;
+  deviceName?: string;
+  ip?: string;
+  issuedAt: string;
+  authenticatedAt?: string;
+  expiresAt: string;
+  current: boolean;
+};
+
 type Props = {
   user: any;
   vaultKey: Uint8Array;
@@ -45,6 +57,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [confirmPassword, setConfirmPassword] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
+  const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [endingSession, setEndingSession] = useState<string | null>(null);
   const [paperCode, setPaperCode] = useState<string | null>(null);
   const [ssoConfig, setSsoConfig] = useState<{ enabled: boolean; issuerUrl: string } | null>(null);
   const [showPairing, setShowPairing] = useState(false);
@@ -95,8 +109,17 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     }
   };
 
+  const loadSessions = async () => {
+    try {
+      setSessions((await getJSON<SessionRow[]>("/api/auth/sessions")) || []);
+    } catch (err) {
+      setError(toErrorMessage(err, "Could not load signed-in sessions."));
+    }
+  };
+
   useEffect(() => {
     loadDevices();
+    loadSessions();
     getJSON<{ enabled: boolean; issuerUrl: string }>("/api/auth/sso-config")
       .then((cfg) => setSsoConfig(cfg))
       .catch(() => {});
@@ -326,6 +349,32 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       setError(toErrorMessage(err, "Failed to revoke device"));
     } finally {
       setRevoking(null);
+    }
+  };
+
+  // Ending a device session revokes the device too (the server does both), so the
+  // devices list is reloaded as well.
+  const handleEndSession = async (row: SessionRow) => {
+    if (endingSession) return;
+    const what = row.kind === "device" ? `the pairing for "${row.deviceName || row.deviceId}"` : `the browser session from ${row.ip || "an unknown address"}`;
+    if (!await dialogs.confirm({
+      title: "Sign out this session?",
+      message: `This ends ${what}. ${row.kind === "device" ? "That app or extension must pair again." : "That browser must sign in again."} Your vault data is not changed.`,
+      confirmLabel: "Sign out",
+      danger: true,
+    })) return;
+    setEndingSession(row.id);
+    setError("");
+    setMessage("");
+    try {
+      await deleteJSON(`/api/auth/sessions/${row.id}`);
+      setSessions((prev) => prev.filter((s) => s.id !== row.id));
+      if (row.kind === "device") await loadDevices();
+      setMessage("Session signed out.");
+    } catch (err) {
+      setError(toErrorMessage(err, "Could not sign out that session."));
+    } finally {
+      setEndingSession(null);
     }
   };
 
@@ -693,6 +742,55 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           <button className="btn btn-danger btn-sm" onClick={onForgetDevice}>
             Forget This Device & Sign Out
           </button>
+        )}
+      </section>
+
+      <section className="field-card" style={{ marginBottom: "2rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+          <Shield size={20} color="var(--accent)" />
+          <h3 style={{ margin: 0 }}>Signed-in Sessions</h3>
+        </div>
+        <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+          Every browser and paired device that can currently reach your vault. Signing out a session you do not recognise ends it now; a device session also unpairs that device.
+        </p>
+        {sessions.length === 0 ? (
+          <p style={{ color: "var(--ink-muted)", fontSize: "0.9rem" }}>No sessions to show.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {sessions.map((s) => (
+              <div
+                key={s.id}
+                style={{
+                  background: "var(--bg)",
+                  border: "1px solid var(--line)",
+                  borderRadius: "6px",
+                  padding: "0.75rem 1rem",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    {s.kind === "device" ? (s.deviceName || "Paired device") : "Browser"}
+                    {s.current ? <span className="badge badge-cyan">This session</span> : null}
+                  </div>
+                  <div style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.2rem" }}>
+                    Signed in {formatWhen(s.issuedAt)} from {s.ip || "—"} • Expires {formatWhen(s.expiresAt)}
+                  </div>
+                </div>
+                {s.current ? null : (
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => handleEndSession(s)}
+                    disabled={endingSession !== null}
+                  >
+                    Sign out
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </section>
 
