@@ -53,7 +53,7 @@ test("a running action marks its own row busy and no other", () => {
 });
 
 test("a busy row disables its destructive controls; an expanded row lists members", () => {
-  const props = { vault: vault(), expanded: true, onToggle: () => {}, onDelete: () => {}, onRemoveMember: () => {} };
+  const props = { vault: vault(), expanded: true, busy: false, onToggle: () => {}, onDelete: () => {}, onRemoveMember: () => {} };
   const busy = renderToStaticMarkup(createElement(VaultRow, { ...props, busy: true }));
   assert.equal(busy.match(/<button[^>]*disabled/g)?.length, 3, "delete vault and both member removals");
   assert.match(busy, /dana/);
