@@ -14,6 +14,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
 8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps. Installable as a PWA through `frontend/public/manifest.webmanifest` (icons from `logo.png` and a 512px export of `KyVault.png`; no service worker, so nothing works offline). `pwa.test.ts` validates the manifest and the `index.html` references; `static.go` serves `.webmanifest` as `application/manifest+json`.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
+10. **Shared Vaults (server side)**: `internal/shared` keeps membership (roles, states, each member's copy of the vault key HPKE-sealed to their user key); the KDBX lives in `internal/vault` under key `shared/<id>`. Roles are enforced server-side; neither the server nor an admin can read contents. No UI yet. See `internal/shared/AGENTS.md`.
 
 ## Authentication
 
@@ -94,6 +95,16 @@ yourself adding one, the design has been misread.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.
+- Shared vaults (`/api/shared/*`, `withAuth`): any `{id}` route answers 404 unless the
+  caller has a row, and `GET /api/shared/{id}` is 404 to an invited row too. Rename, delete,
+  invite, member update and removing someone else need an active owner (403); anyone removes
+  their own row (leave). Accept and decline need an invited row (409 otherwise). Data reads
+  (metadata, kdbx, history, conflicts) admit active and stale rows; writes (upload, history
+  restore, conflict discard) admit active owners and editors; other rows get 403. Every
+  state-changing shared and admin-shared route checks `validCSRF` (bearer tokens pass).
+  Owner delete (`requireFresh`) and admin delete, admin member removal and
+  `PUT /api/admin/shared/settings` (`withFreshAdmin`) need a fresh session; all three
+  gates call `sessionIsFresh`. `GET /api/admin/shared` and its settings GET are `withAdmin`.
 - SSO settings come from `KYVAULT_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`
   (optional `_REDIRECT_URI`, `_AUTO_PROVISION`) and take precedence over
   `config/sso.json`. `PUT /api/admin/sso` answers 409 while they are set. Without an
@@ -286,6 +297,30 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   LimitReader previously saved a truncated raw vault and returned 200. The streaming
   regression in `vault_upload_limit_test.go` proves oversized uploads preserve the current
   bytes/version and that a boundary-sized upload round-trips intact.
+  `vault.Store.MoveOut(key, dst)` renames a vault directory under the store lock and retires
+  the key in memory; every writer refuses a retired key (`ErrRetired`, an `ErrNotFound`)
+  before creating directories, so a racing save cannot resurrect a deleted shared vault
+  (`TestMoveOutMovesDirectoryAndSaveDoesNotResurrect`).
+
+- `internal/api/shared_handlers.go` and `shared_settings.go`: `sharedMember` resolves the
+  caller's row (404 otherwise); `withSharedRead`/`withSharedWrite` apply the role and state
+  gates and hand the ordinary vault data handlers a `vaultTarget` (`shared.StoreKey`,
+  session `DeviceID`, download name `FilenameSafe(name).kdbx`). With `shared` set, envelope
+  headers and `X-User-Key` are ignored, `X-Vault-Key-Rotated` is 400 and device revocation is
+  skipped; `auditAction` maps `vault.*` to `shared.*` (`shared.downloaded`,
+  `shared.rolled_back`, `shared.conflict_downloaded` renamed) and details lead with the
+  vault key. Details carry ids, names and roles, never a sealed key. Create checks
+  `CONFIG_DIR/shared.json` (`createRestrictedToAdmins`) and that the key fingerprint is the
+  caller's current one; invite and reseal check the target's. Hooks: `userActiveChanged`
+  (admin deactivate/reactivate, SCIM, sync webhook) and `userKeyReplaced`
+  (`handleUserKeyPut` on replace) audit one row per touched vault and `shared.hook_failed`
+  on error; the offline `kyvault-server deactivate` does not run it. Admin list flags
+  `ownerless`; an ownerless vault takes no invites or accepts and only an admin deletes it.
+  Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut`: lock order `shared.mu` then
+  `vault.mu`, never the reverse. `shared_test.go` covers routes, CSRF, roles, hooks and a
+  mid-request owner removal. Not built (3b/3c/3d): no UI, no shared key rotation, extension
+  and KyAuth unaware; a removed member's copy of the key is only invalidated by the 3c
+  rotation.
 
 - `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
   History reads native KeePass history in the unlocked browser. Changed Apply Edits
@@ -420,6 +455,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
   only drills and restores may hold private recovery material.
+
+- `internal/shared/AGENTS.md`: shared vault membership records, roles, states, sealed keys,
+  owner authority at the write, deleted area and pruning.
 
 - `frontend/src/lib/storage.ts` and `frontend/src/lib/deviceKey.ts`: manages the IndexedDB
   `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)

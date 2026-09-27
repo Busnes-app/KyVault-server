@@ -521,7 +521,7 @@ func (s *Server) requireFresh(w http.ResponseWriter, sess Session) bool {
 	return true
 }
 
-// withFreshAdmin is withAdmin for destructive backup routes.
+// withFreshAdmin is withAdmin plus requireFresh, for destructive admin routes.
 func (s *Server) withFreshAdmin(next func(http.ResponseWriter, *http.Request, users.User)) http.HandlerFunc {
 	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, u users.User) {
 		sess, _ := s.currentSession(r)

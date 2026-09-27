@@ -71,6 +71,9 @@ atomically (tmp + rename) under a per-store mutex.
 - At least one `active` owner: the last one cannot be removed, demoted, leave, or be
   suspended by *this package* (deactivation of the last owner still suspends the row; the
   vault becomes ownerless, see Admin).
+- Owner-only store methods take an `actorID` re-checked inside the locked update (`""` is
+  an admin; removing one's own row skips the owner check). `Remove` has no
+  `allowLastOwner` flag: only the admin actor may remove the last owner.
 - A member row exists only with a `sealedKey` and `keyFingerprint`.
 - Roles and states are closed enums; unknown values are rejected on read and write.
 
@@ -168,7 +171,7 @@ Detail = vault id (+ target user id / role where relevant), never a sealed key:
 `shared.member_accepted`, `shared.member_declined`, `shared.member_role_changed`,
 `shared.member_resealed`, `shared.member_removed`, `shared.member_left`,
 `shared.member_stale`, `shared.member_suspended`, `shared.member_restored`,
-`shared.saved`, `shared.conflict_rejected`, `shared.rolled_back`,
+`shared.saved`, `shared.conflict_rejected`, `shared.downloaded`, `shared.rolled_back`,
 `shared.snapshot_downloaded`, `shared.conflict_downloaded`, `shared.conflict_discarded`,
 `admin.shared_deleted`, `admin.shared_member_removed`, `admin.shared_settings_updated`,
 `shared.hook_failed`.
