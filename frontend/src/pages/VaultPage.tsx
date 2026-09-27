@@ -187,7 +187,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     if (newDraft) return; // draft has no route entry; do not let this effect close it
     if (route.tab !== "vault" || route.entry === selectedEntryUuid) return;
     if (route.entry && !entries.some((e) => e.uuid === route.entry)) return;
-    if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault" }); return; }
+    if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault", shared: route.shared }); return; }
     (async () => {
       if (await canChangeEntry()) {
         if (route.entry && !filteredEntries.some((e) => e.uuid === route.entry)) {
@@ -199,7 +199,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         setSelectedEntryUuid(route.entry ?? null);
         setPane(route.entry ? "detail" : "list");
       } else {
-        navigate({ tab: "vault", entry: selectedEntryUuid ?? undefined });
+        navigate({ tab: "vault", shared: route.shared, entry: selectedEntryUuid ?? undefined });
       }
     })();
   }, [route.tab, route.entry, entries, recycledIds, selectedEntryUuid, newDraft]);
@@ -292,7 +292,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       setNewDraft(null);
       setIsEditing(false);
       setSelectedEntryUuid(entry.uuid);
-      navigate({ tab: "vault", entry: entry.uuid });
+      navigate({ tab: "vault", shared: route.shared, entry: entry.uuid });
       return;
     }
     if (!selectedEntryUuid) return;
@@ -335,7 +335,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     if (selectedGroupUuid === "recycle") setSelectedGroupUuid("all");
     setSelectedEntryUuid(null);
     setNewDraft({ groupUuid });
-    navigate({ tab: "vault" });
+    navigate({ tab: "vault", shared: route.shared });
     setPane("detail");
     setEditTitle(""); setEditUsername(""); setEditPassword(""); setEditUrl(""); setEditNotes(""); setEditTotp("");
     setEditGroupUuid(groupUuid);
@@ -359,7 +359,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     vault.deleteEntry(selectedEntryUuid);
     onChanged();
     setSelectedEntryUuid(null);
-    navigate({ tab: "vault", entry: undefined });
+    navigate({ tab: "vault", shared: route.shared, entry: undefined });
     setPane("list");
     refreshVaultData();
   };
@@ -390,7 +390,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     ) : true;
     if (!inFolder) {
       setSelectedEntryUuid(null);
-      navigate({ tab: "vault", entry: undefined });
+      navigate({ tab: "vault", shared: route.shared, entry: undefined });
     }
     setSelectedGroupUuid(uuid);
     if (uuid === "recycle") clearSmartViews();
@@ -486,7 +486,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       vault.deleteGroup(selectedFolder.uuid);
       if (selectedEntry && subtreeIds.has(selectedEntry.groupUuid)) {
         setSelectedEntryUuid(null);
-        navigate({ tab: "vault", entry: undefined });
+        navigate({ tab: "vault", shared: route.shared, entry: undefined });
       }
       setSelectedGroupUuid("all");
       onChanged();
@@ -836,7 +836,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setNewDraft(null); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); setPane("detail"); } }}
+                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setNewDraft(null); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", shared: route.shared, entry: e.uuid }); setPane("detail"); } }}
               >
                 <div className="entry-title">
                   {e.favorite ? <Star size={14} fill="var(--warning)" color="var(--warning)" aria-label="Favourite" /> : null}
@@ -1345,7 +1345,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             setSelectedGroupUuid("all");
             clearSmartViews();
             setSelectedEntryUuid(uuid);
-            navigate({ tab: "vault", entry: uuid });
+            navigate({ tab: "vault", shared: route.shared, entry: uuid });
             setPane("detail");
           } }}
           onClose={() => setShowHistory(false)}
