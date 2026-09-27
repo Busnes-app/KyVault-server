@@ -349,7 +349,16 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `ownerless`; an ownerless vault takes no invites or accepts and only an admin deletes it.
   Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut` (the mover `NewStore` gets):
   lock order `shared.mu` then `vault.mu`, never the reverse; `writeTarget` keeps the same
-  order for shared data writes. `shared_test.go` covers routes, CSRF, roles, hooks,
+  order for shared data writes. `GET /api/shared`, `GET /api/shared/{id}` and
+  `GET /api/admin/shared` all carry `rotationPending` (reusing `shared.Pending` as-is),
+  omitted once a rotation clears it. A self-reseal (`PUT …/members/{self}` on a `stale` row)
+  is refused 409 (`the shared vault key was rotated; ask an owner to re-seal your copy`) when
+  the row's `keyEpoch` is not the vault's current one — a row a rotation left behind, not one
+  `MarkStale` alone made stale — checked early in the handler for that message and again
+  inside `shared.Store.Reseal` (`ErrEpoch`, mapped by `sharedErr`) so the rule holds even if a
+  future caller skips the handler's own check; an owner re-sealing that same row is
+  unaffected, since that is the documented recovery path (`TestSelfResealNeedsTheCurrentEpoch`).
+  `shared_test.go` covers routes, CSRF, roles, hooks,
   mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3d): the extension
   and KyAuth are unaware of shared vaults.
 

@@ -244,6 +244,8 @@ func sharedErr(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, shared.ErrAlreadyMember), errors.Is(err, shared.ErrLastOwner), errors.Is(err, shared.ErrMemberCap), errors.Is(err, shared.ErrOwnedCap), errors.Is(err, shared.ErrState):
 		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, shared.ErrEpoch):
+		http.Error(w, "the shared vault key was rotated; ask an owner to re-seal your copy", http.StatusConflict)
 	default:
 		log.Printf("shared vault error: %v", err)
 		http.Error(w, "shared vault error", http.StatusInternalServerError)
@@ -361,19 +363,21 @@ func (s *Server) handleSharedList(w http.ResponseWriter, r *http.Request, u user
 		return
 	}
 	type row struct {
-		ID        string       `json:"id"`
-		Name      string       `json:"name"`
-		Role      shared.Role  `json:"role"`
-		State     shared.State `json:"state"`
-		KeyEpoch  int          `json:"keyEpoch"`
-		MyKey     myKeyView    `json:"myKey"`
-		InvitedBy *inviterView `json:"invitedBy,omitempty"`
+		ID              string          `json:"id"`
+		Name            string          `json:"name"`
+		Role            shared.Role     `json:"role"`
+		State           shared.State    `json:"state"`
+		KeyEpoch        int             `json:"keyEpoch"`
+		MyKey           myKeyView       `json:"myKey"`
+		InvitedBy       *inviterView    `json:"invitedBy,omitempty"`
+		RotationPending *shared.Pending `json:"rotationPending,omitempty"`
 	}
 	out := make([]row, 0, len(vaults))
 	for _, v := range vaults {
 		m := v.Members[u.ID]
 		rw := row{ID: v.ID, Name: v.Name, Role: m.Role, State: m.State, KeyEpoch: v.KeyEpoch,
-			MyKey: myKeyView{SealedKey: m.SealedKey, KeyFingerprint: m.KeyFingerprint, KeyEpoch: m.KeyEpoch, SealedBy: m.SealedBy, SealedByFingerprint: m.SealedByFingerprint}}
+			MyKey:           myKeyView{SealedKey: m.SealedKey, KeyFingerprint: m.KeyFingerprint, KeyEpoch: m.KeyEpoch, SealedBy: m.SealedBy, SealedByFingerprint: m.SealedByFingerprint},
+			RotationPending: v.RotationPending}
 		if m.State == shared.StateInvited {
 			rw.InvitedBy = &inviterView{UserID: m.SealedBy, Username: s.username(m.SealedBy), Fingerprint: m.SealedByFingerprint}
 		}
@@ -392,10 +396,14 @@ func (s *Server) handleSharedGet(w http.ResponseWriter, r *http.Request, u users
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"id": c.vault.ID, "name": c.vault.Name, "createdBy": c.vault.CreatedBy, "createdAt": c.vault.CreatedAt,
 		"keyEpoch": c.vault.KeyEpoch, "members": s.memberViews(c.vault),
-	})
+	}
+	if c.vault.RotationPending != nil {
+		resp["rotationPending"] = c.vault.RotationPending
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // PATCH /api/shared/{id}
@@ -520,6 +528,10 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 	selfReseal := r.PathValue("userId") == u.ID && c.me.State == shared.StateStale
 	if !c.activeOwner() && !selfReseal {
 		http.Error(w, "only an owner can change members", http.StatusForbidden)
+		return
+	}
+	if selfReseal && c.me.KeyEpoch != c.vault.KeyEpoch {
+		http.Error(w, "the shared vault key was rotated; ask an owner to re-seal your copy", http.StatusConflict)
 		return
 	}
 	target, _, found := targetRow(w, r, c)
@@ -665,17 +677,19 @@ func (s *Server) handleAdminSharedList(w http.ResponseWriter, r *http.Request, _
 		return
 	}
 	type row struct {
-		ID        string       `json:"id"`
-		Name      string       `json:"name"`
-		CreatedBy string       `json:"createdBy"`
-		CreatedAt time.Time    `json:"createdAt"`
-		KeyEpoch  int          `json:"keyEpoch"`
-		Ownerless bool         `json:"ownerless"`
-		Members   []memberView `json:"members"`
+		ID              string          `json:"id"`
+		Name            string          `json:"name"`
+		CreatedBy       string          `json:"createdBy"`
+		CreatedAt       time.Time       `json:"createdAt"`
+		KeyEpoch        int             `json:"keyEpoch"`
+		Ownerless       bool            `json:"ownerless"`
+		Members         []memberView    `json:"members"`
+		RotationPending *shared.Pending `json:"rotationPending,omitempty"`
 	}
 	out := make([]row, 0, len(vaults))
 	for _, v := range vaults {
-		out = append(out, row{ID: v.ID, Name: v.Name, CreatedBy: v.CreatedBy, CreatedAt: v.CreatedAt, KeyEpoch: v.KeyEpoch, Ownerless: ownerless(v), Members: s.memberViews(v)})
+		out = append(out, row{ID: v.ID, Name: v.Name, CreatedBy: v.CreatedBy, CreatedAt: v.CreatedAt, KeyEpoch: v.KeyEpoch,
+			Ownerless: ownerless(v), Members: s.memberViews(v), RotationPending: v.RotationPending})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

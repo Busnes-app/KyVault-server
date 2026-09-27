@@ -34,7 +34,12 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   active owner row (`ErrForbidden`, `ErrNotMember`). `Remove` of one's own row skips that
   check (leave, decline) but not the last-owner rule; only an admin removes the last owner.
   `Reseal` with `sealedBy == userID` on a `stale` row skips it too, so a sole owner who
-  replaced their user key can recover the vault.
+  replaced their user key can recover the vault. A self-reseal first checks the row's
+  `keyEpoch` against the vault's: a row a rotation left behind is stale at the *old* epoch,
+  and sealing it forward would republish that retired copy as current, so it is refused
+  (`ErrEpoch`) regardless of state. Only someone who holds the current key — an owner —
+  can bring that row back; a row made stale by `MarkStale` alone shares the vault's current
+  epoch and self-reseals normally.
 - Every `Remove` (removal, leave, decline) stamps `rotationPending`
   (`since`, `userId`, `reason` of `removed|left|declined`; a self-removal of an `invited`
   row is `declined`, an admin removal is `removed`), because the departed row's copy of the

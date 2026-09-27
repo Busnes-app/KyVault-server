@@ -491,9 +491,17 @@ func (s *Store) Reseal(id, userID, sealedKey, fingerprint, sealedBy, sealerFP st
 		if !ok {
 			return ErrNotMember
 		}
-		if self && m.State != StateStale {
-			if err := authorize(*v, sealedBy); err != nil {
-				return err
+		if self {
+			// A row a rotation left behind holds a copy of a retired key: sealing it
+			// forward would republish that stale copy as current, so the row must first
+			// be re-sealed by someone who holds the current key (an owner).
+			if m.KeyEpoch != v.KeyEpoch {
+				return fmt.Errorf("%w: at epoch %d", ErrEpoch, v.KeyEpoch)
+			}
+			if m.State != StateStale {
+				if err := authorize(*v, sealedBy); err != nil {
+					return err
+				}
 			}
 		}
 		m.SealedKey, m.KeyFingerprint, m.SealedBy, m.SealedByFingerprint, m.KeyEpoch = sealedKey, fingerprint, sealedBy, sealerFP, v.KeyEpoch

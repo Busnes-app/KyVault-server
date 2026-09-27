@@ -1325,6 +1325,14 @@ func TestSharedRotate(t *testing.T) {
 	if p := sharedRecord(t, srv, id).RotationPending; p == nil || p.UserID != carol.ID || p.Reason != shared.ReasonLeft {
 		t.Fatalf("departure did not flag a rotation: %+v", p)
 	}
+	// The pending flag reaches a member's list and the admin list.
+	if got := do(t, srv, http.MethodGet, "/api/shared", aliceC, nil); !strings.Contains(got.Body.String(), `"rotationPending"`) {
+		t.Fatalf("list does not carry the pending flag: %s", got.Body.String())
+	}
+	_, adminC := signedInUser(t, srv, "root", users.RoleAdmin)
+	if got := do(t, srv, http.MethodGet, "/api/admin/shared", adminC, nil); !strings.Contains(got.Body.String(), `"rotationPending"`) {
+		t.Fatalf("admin list does not carry the pending flag: %s", got.Body.String())
+	}
 
 	newKey := sealedKeyFor(9)
 	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{
@@ -1642,5 +1650,47 @@ func TestSharedRotateLeavesRetiredSnapshotsUnrestorable(t *testing.T) {
 	}
 	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "rekeyed" {
 		t.Fatalf("a refused rollback changed the vault: %q", got.Body.String())
+	}
+}
+
+// A row a rotation left behind holds a copy of the retired key. Self-resealing with it
+// would republish that stale copy as current; only an owner, who holds the new key, can
+// bring the row back.
+func TestSelfResealNeedsTheCurrentEpoch(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bobFP := publishKey(t, srv, bob, 2)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(1), bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+
+	// Alice rotates without bob: he is left behind, stale at epoch 1.
+	newKey := sealedKeyFor(9)
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, newKey, aliceFP)})
+	expectCode(t, rotate(srv, aliceC, id, `"1"`, body, ct), http.StatusOK, "rotate")
+
+	// Bob cannot self-reseal: he does not hold the epoch-2 key, so sealing his own row
+	// would publish a copy of a key nobody can open.
+	rec := do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, bobC,
+		map[string]any{"sealedKey": sealedKeyFor(4), "keyFingerprint": bobFP})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("epoch-stale self-reseal = %d %s", rec.Code, rec.Body.String())
+	}
+	if m := memberState(t, srv, id, bob.ID); m.SealedKey != sealedKeyFor(1) || m.KeyEpoch != 1 {
+		t.Fatalf("refused self-reseal changed bob: %+v", m)
+	}
+	// An owner can still re-seal him.
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC,
+		map[string]any{"sealedKey": newKey, "keyFingerprint": bobFP}), http.StatusOK, "owner reseal")
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive || m.KeyEpoch != 2 || m.SealedKey != newKey {
+		t.Fatalf("bob after owner reseal: %+v", m)
+	}
+
+	// A rotated-and-recovered vault carries no pending flag.
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id, aliceC, nil); strings.Contains(got.Body.String(), `"rotationPending"`) {
+		t.Fatalf("a rotated vault carries no flag: %s", got.Body.String())
 	}
 }
