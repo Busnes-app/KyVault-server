@@ -86,9 +86,27 @@ export type ReplaceSteps = {
   confirm: (message: string) => Promise<boolean>;
   // Creates and publishes the new key; returns who the vaults must be sealed to.
   publish: (version: number) => Promise<SealIdentity>;
+  // Re-reads what the server publishes after `publish` rejected: the identity when the key
+  // publish generated is the one now published, null when the old key still is.
+  publishedIdentity?: () => Promise<SealIdentity | null>;
   openKey?: typeof openSharedKey;
   seal?: typeof sealSharedKey;
 };
+
+// A publish whose response was lost still replaced the key: the server holds the new public
+// key, so the next unlock adopts the new seed and every shared row goes stale. Zeroing the
+// held keys then is the one unrecoverable outcome — a vault the user owns alone is gone — so
+// a rejection is checked against the server before it is believed. A check that cannot be
+// made keeps the original failure, which is also what the user is told.
+async function publishedOrThrow(steps: ReplaceSteps, version: number): Promise<SealIdentity> {
+  try {
+    return await steps.publish(version);
+  } catch (err) {
+    const landed = steps.publishedIdentity ? await steps.publishedIdentity().catch(() => null) : null;
+    if (!landed) throw err;
+    return landed;
+  }
+}
 
 // The order is the safety property: plan (and so the warning) before the proof, the confirm
 // before the publish, the re-seal after it. Anything the caller is not handed is zeroed,
@@ -102,7 +120,7 @@ export async function runKeyReplace(steps: ReplaceSteps): Promise<{ replaced: bo
     if (!await steps.confirm([REPLACE_KEY_MESSAGE, replaceWarning(plan)].filter(Boolean).join("\n\n"))) {
       return { replaced: false, pending: null };
     }
-    const me = await steps.publish(version);
+    const me = await publishedOrThrow(steps, version);
     const { failed } = await resealHeld(plan.held, me, steps.api, steps.seal);
     if (failed.length) keep = { failed, held: plan.held.filter((h) => failed.some((f) => f.id === h.id)), me };
     return { replaced: true, pending: keep };

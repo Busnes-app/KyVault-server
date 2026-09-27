@@ -145,6 +145,7 @@ const steps = (over: any) => ({
   prove: over.prove ?? (async () => 7),
   confirm: over.confirm ?? (async () => true),
   publish: over.publish ?? (async () => { throw new Error("publish must not run"); }),
+  publishedIdentity: over.publishedIdentity,
 });
 
 test("runKeyReplace never publishes when the list cannot be read", async () => {
@@ -230,6 +231,44 @@ test("runKeyReplace wipes held keys when publishing throws", async () => {
     return key;
   };
   await assert.rejects(() => runKeyReplace({ ...steps({ seed: me.seed, api: fakeApi(vaults), publish: async () => { throw new Error("409"); } }), openKey }), /409/);
+  assert.deepEqual([...opened[0].key], new Array(32).fill(0));
+});
+
+test("runKeyReplace re-seals when a lost response had published the new key", async () => {
+  const me = await generateUserKey();
+  const next = await generateUserKey();
+  const k1 = newSharedKey();
+  const vaults = [row(A, "Finance", "owner", await sealSharedKey(me.publicKey, k1))];
+  const patches: any[] = [];
+  const api = fakeApi(vaults, noMembers, async (id: string, userId: string, patch: any) => { patches.push([id, userId, patch]); });
+  const identity: SealIdentity = { id: "me", publicKey: next.publicKey, fingerprint: await fingerprint(next.publicKey) };
+  const out = await runKeyReplace(steps({
+    seed: me.seed, api,
+    publish: async () => { throw new Error("network error"); },
+    publishedIdentity: async () => identity,
+  }));
+  assert.deepEqual(out, { replaced: true, pending: null });
+  // The held key survived long enough to re-seal the row to the key the server already holds.
+  assert.deepEqual(patches.map((p) => p[0]), [A]);
+  assert.deepEqual([...(await openSharedKey(next.seed, patches[0][2].sealedKey))], [...k1]);
+});
+
+test("runKeyReplace wipes the held keys when the old key is still published", async () => {
+  const me = await generateUserKey();
+  const vaults = [row(A, "Finance", "owner", await sealSharedKey(me.publicKey, newSharedKey()))];
+  const opened: HeldKey[] = [];
+  const openKey = async (seed: Uint8Array, sealed: string) => {
+    const key = await openSharedKey(seed, sealed);
+    opened.push({ id: A, name: "Finance", key });
+    return key;
+  };
+  let patched = 0;
+  const api = fakeApi(vaults, noMembers, async () => { patched++; });
+  await assert.rejects(() => runKeyReplace({
+    ...steps({ seed: me.seed, api, publish: async () => { throw new Error("409"); }, publishedIdentity: async () => null }),
+    openKey,
+  }), /409/);
+  assert.equal(patched, 0);
   assert.deepEqual([...opened[0].key], new Array(32).fill(0));
 });
 

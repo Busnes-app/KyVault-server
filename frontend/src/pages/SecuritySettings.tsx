@@ -14,7 +14,8 @@ import { generatePaperCode } from "../lib/paperCode";
 import { revokeDevices } from "../lib/keyRotation";
 import { newUserKeyRecord } from "../lib/userKeyState";
 import type { UserKeyState } from "../lib/userKeyState";
-import { fingerprint } from "../lib/userKey";
+import { fingerprint, b64 } from "../lib/userKey";
+import { fetchPublishedKey } from "../lib/keyPins";
 import { KnownKeys } from "../components/KnownKeys";
 import { handOff, runKeyReplace, type ResealPending } from "../lib/keyReplaceReseal";
 import { sharedApi as defaultSharedApi, type SharedApi } from "../lib/sharedVaults";
@@ -369,6 +370,15 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setBusy(true);
     // True once the server holds the new key: after that a failure is not "nothing changed".
     let published = false;
+    // The key this click generated, kept so a lost PUT response can be checked against the
+    // server instead of being taken for a failure.
+    let made: Awaited<ReturnType<typeof newUserKeyRecord>> | null = null;
+    const adopt = async (m: NonNullable<typeof made>) => {
+      published = true;
+      onUserKeyReplaced({ kind: "ready", seed: m.seed, publicKey: m.publicKey, record: m.record }, generation);
+      if (alive.current) setCurrentPassword("");
+      return { id: user.id, publicKey: m.publicKey, fingerprint: await fingerprint(m.publicKey) };
+    };
     try {
       const { pending } = await runKeyReplace({
         api,
@@ -376,12 +386,20 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         prove: () => proveCurrentPassword("password"),
         confirm: (message) => dialogs.confirm({ title: "Replace your key?", message, confirmLabel: "Replace key", danger: true }),
         publish: async (version) => {
-          const made = await newUserKeyRecord(vaultKey, user.id);
-          await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
-          published = true;
-          onUserKeyReplaced({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record }, generation);
-          if (alive.current) setCurrentPassword("");
-          return { id: user.id, publicKey: made.publicKey, fingerprint: await fingerprint(made.publicKey) };
+          const m = await newUserKeyRecord(vaultKey, user.id);
+          made = m;
+          await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(m.record) });
+          return adopt(m);
+        },
+        // A dropped connection can still have delivered the write. Only the old key still
+        // being published means the replace did not happen; the new key being published
+        // means it did, and the shared vaults must be re-sealed to it.
+        publishedIdentity: async () => {
+          const m = made;
+          if (!m) return null;
+          const now = await fetchPublishedKey(user.id);
+          if (!now || b64.encode(now.publicKey) !== b64.encode(m.publicKey)) return null;
+          return adopt(m);
         },
       });
       // App owns the pending re-seal: its keys must outlive this page, which any in-app
