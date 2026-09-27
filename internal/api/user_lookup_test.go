@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Busnes-app/kyvault-server/internal/users"
@@ -62,6 +63,11 @@ func TestUserLookup(t *testing.T) {
 	if rec := lookup(h, aliceC, "", "bob"); rec.Code != http.StatusNotFound {
 		t.Fatalf("inactive bob = %d", rec.Code)
 	}
+	// A hit is not rate limited, so the audited name must be bounded or a session could grow
+	// the hash chain at request rate.
+	if rec := lookup(h, aliceC, "", strings.Repeat("a", 500)); rec.Code != http.StatusNotFound {
+		t.Fatalf("long name = %d", rec.Code)
+	}
 	entries, err := srv.audit.List(50)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +77,9 @@ func TestUserLookup(t *testing.T) {
 		switch e.Action {
 		case "user.lookup":
 			found++
+			if len(e.Details) > 64 {
+				t.Fatalf("audited lookup name is unbounded: %d bytes", len(e.Details))
+			}
 		case "user.lookup_limited":
 			limited++
 		}

@@ -27,7 +27,9 @@ func (s *Server) handleUserLookup(w http.ResponseWriter, r *http.Request, u user
 		return
 	}
 	name := strings.TrimSpace(r.URL.Query().Get("username"))
-	s.record(r, "user.lookup", u.ID, "", clientIP(r), name)
+	// The audited detail is caller-supplied and a hit is not rate limited, so it is bounded
+	// before it reaches the hash chain: a session must not be able to grow the log by request.
+	s.record(r, "user.lookup", u.ID, "", clientIP(r), truncate(name, 64))
 	target, err := s.users.GetByUsername(name)
 	if err != nil && !errors.Is(err, users.ErrNotFound) {
 		http.Error(w, "lookup failed", http.StatusInternalServerError)
