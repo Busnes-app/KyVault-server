@@ -62,9 +62,10 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   still in history, so a member rolls back with the key they hold and the rotation is run
   again. Nothing may delete history inside `writeVault`. The closure runs under `shared.mu`
   and must never re-enter this store (`Get`, `WithWriter`, any method): it self-deadlocks.
-- `WithWriter(id, userID, fn)` runs `fn` (the vault write) under `shared.mu` only while the
-  row is an active owner or editor (`ErrNotMember`, `ErrForbidden`), so a removal or
-  demotion cannot land between the route's check and the write.
+- `WithWriter(id, userID, epoch, fn)` runs `fn` (the vault write) under `shared.mu` only
+  while the row is an active owner or editor (`ErrNotMember`, `ErrForbidden`) and the vault
+  is still at `epoch` (`ErrEpoch`), so a removal, a demotion or a rotation cannot land
+  between the route's check and the write.
 - Invariants: `SetRole`, non-admin `Remove` and `Rotate` keep one active owner (`ErrLastOwner`);
   `MaxMembers` 100 at `Invite`; `MaxOwnedVaults` 20 at `Create` only; every row carries a
   sealed key. `Accept` requires `invited` and refuses an ownerless vault (`ErrState`).

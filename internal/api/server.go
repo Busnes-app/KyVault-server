@@ -269,6 +269,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/shared/{id}/members/{userId}", s.withAuth(s.handleSharedMemberRemove))
 	mux.HandleFunc("POST /api/shared/{id}/accept", s.withAuth(s.handleSharedAccept))
 	mux.HandleFunc("POST /api/shared/{id}/decline", s.withAuth(s.handleSharedDecline))
+	mux.HandleFunc("POST /api/shared/{id}/rotate", s.withAuth(s.handleSharedRotate))
 	mux.HandleFunc("GET /api/shared/{id}/metadata", s.withAuth(s.withSharedRead(s.vaultMetadata)))
 	mux.HandleFunc("GET /api/shared/{id}/kdbx", s.withAuth(s.withSharedRead(s.vaultDownload)))
 	mux.HandleFunc("POST /api/shared/{id}/upload", s.withAuth(s.withSharedWrite(s.vaultUpload)))

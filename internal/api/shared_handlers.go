@@ -109,11 +109,14 @@ func (s *Server) withSharedWrite(next func(http.ResponseWriter, *http.Request, v
 		if !s.sharedCSRF(w, r) {
 			return
 		}
-		if epoch, ok := sharedEpoch(r); !ok || epoch != c.vault.KeyEpoch {
+		epoch, ok := sharedEpoch(r)
+		if !ok || epoch != c.vault.KeyEpoch {
 			http.Error(w, "the shared vault key was rotated; reload the vault", http.StatusConflict)
 			return
 		}
-		next(w, r, sharedTarget(r, c))
+		t := sharedTarget(r, c)
+		t.epoch = epoch
+		next(w, r, t)
 	}
 }
 
@@ -132,12 +135,13 @@ func sharedEpoch(r *http.Request) (int, bool) {
 }
 
 // writeTarget runs a vault store write; for a shared target, only while the caller's row
-// still permits writing, checked under the membership lock (shared.Store.WithWriter).
+// still permits writing and the key epoch it claimed is still the vault's, both checked
+// under the membership lock (shared.Store.WithWriter).
 func (s *Server) writeTarget(t vaultTarget, fn func() error) error {
 	if !t.shared {
 		return fn()
 	}
-	return s.shared.WithWriter(t.sharedID, t.user.ID, fn)
+	return s.shared.WithWriter(t.sharedID, t.user.ID, t.epoch, fn)
 }
 
 // sharedRefused answers a WithWriter refusal and reports whether it did.
@@ -147,6 +151,9 @@ func sharedRefused(w http.ResponseWriter, err error) bool {
 		http.Error(w, "this shared vault is read-only for you", http.StatusForbidden)
 	case errors.Is(err, shared.ErrNotFound), errors.Is(err, shared.ErrNotMember), errors.Is(err, shared.ErrCorrupt):
 		sharedErr(w, err)
+	case errors.Is(err, shared.ErrEpoch):
+		// A rotation committed between the gate and the write.
+		http.Error(w, "the shared vault key was rotated; reload the vault", http.StatusConflict)
 	default:
 		return false
 	}

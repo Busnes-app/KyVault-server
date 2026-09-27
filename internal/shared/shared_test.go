@@ -626,8 +626,8 @@ func TestStaleSelfReseal(t *testing.T) {
 	}
 }
 
-// WithWriter re-checks the row under the lock and does not run fn for anyone but an
-// active owner or editor.
+// WithWriter re-checks the row and the key epoch under the lock and does not run fn for
+// anyone but an active owner or editor writing at the vault's current epoch.
 func TestWithWriter(t *testing.T) {
 	s := newStore(t)
 	v, err := s.Create("w", "u-1", sealed(), fp(1), t0)
@@ -639,26 +639,37 @@ func TestWithWriter(t *testing.T) {
 	}
 	ran := 0
 	fn := func() error { ran++; return nil }
-	if err := s.WithWriter(v.ID, "u-1", fn); err != nil || ran != 1 {
+	if err := s.WithWriter(v.ID, "u-1", 1, fn); err != nil || ran != 1 {
 		t.Fatalf("owner: %v ran=%d", err, ran)
 	}
-	if err := s.WithWriter(v.ID, "u-2", fn); !errors.Is(err, ErrForbidden) {
+	if err := s.WithWriter(v.ID, "u-2", 1, fn); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("invited reader: %v", err)
 	}
 	if err := s.Accept(v.ID, "u-2", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithWriter(v.ID, "u-2", fn); !errors.Is(err, ErrForbidden) {
+	if err := s.WithWriter(v.ID, "u-2", 1, fn); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("active reader: %v", err)
 	}
-	if err := s.WithWriter(v.ID, "u-9", fn); !errors.Is(err, ErrNotMember) {
+	if err := s.WithWriter(v.ID, "u-9", 1, fn); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("stranger: %v", err)
 	}
 	if ran != 1 {
 		t.Fatalf("fn ran for a refused caller: %d", ran)
 	}
+	// A rotation that commits between the route's check and the write is ErrEpoch, and fn
+	// never runs: the write was prepared under a key the vault has retired.
+	if err := s.WithWriter(v.ID, "u-1", 0, fn); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("stale epoch: %v", err)
+	}
+	if err := s.WithWriter(v.ID, "u-1", 2, fn); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("future epoch: %v", err)
+	}
+	if ran != 1 {
+		t.Fatalf("fn ran at the wrong epoch: %d", ran)
+	}
 	sentinel := errors.New("vault write failed")
-	if err := s.WithWriter(v.ID, "u-1", func() error { return sentinel }); !errors.Is(err, sentinel) {
+	if err := s.WithWriter(v.ID, "u-1", 1, func() error { return sentinel }); !errors.Is(err, sentinel) {
 		t.Fatalf("fn error not returned: %v", err)
 	}
 }

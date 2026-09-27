@@ -658,10 +658,12 @@ func postRotationOwners(v Vault, named map[string]bool) int {
 	return n
 }
 
-// WithWriter runs fn, the vault write, under the store lock once userID's row is an
-// active owner or editor, so a removal or demotion cannot land between the check and the
-// write. fn takes vault.mu: lock order shared.mu then vault.mu.
-func (s *Store) WithWriter(id, userID string, fn func() error) error {
+// WithWriter runs fn, the vault write, under the store lock once userID's row is an active
+// owner or editor and the vault is still at epoch, so a removal, a demotion or a rotation
+// cannot land between the route's check and the write: a write prepared under a retired key
+// would otherwise land as ciphertext no remaining member can open. fn takes vault.mu: lock
+// order shared.mu then vault.mu.
+func (s *Store) WithWriter(id, userID string, epoch int, fn func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, err := s.loadLocked(id)
@@ -674,6 +676,9 @@ func (s *Store) WithWriter(id, userID string, fn func() error) error {
 	}
 	if m.State != StateActive || (m.Role != RoleOwner && m.Role != RoleEditor) {
 		return ErrForbidden
+	}
+	if v.KeyEpoch != epoch {
+		return fmt.Errorf("%w: at epoch %d", ErrEpoch, v.KeyEpoch)
 	}
 	return fn()
 }

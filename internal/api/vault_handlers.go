@@ -24,6 +24,7 @@ type vaultTarget struct {
 	sharedID  string     // shared vault id; writes go through writeTarget
 	filename  string     // Content-Disposition base name
 	fileParam string     // PathValue name of a history/conflict id: "id" personal, "hid"/"cid" shared
+	epoch     int        // shared key epoch the write claims, re-checked at the write
 }
 
 // auditAction maps a personal audit action to its shared equivalent.

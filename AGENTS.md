@@ -331,7 +331,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   must send `X-Shared-Key-Epoch` equal to the vault's current `keyEpoch` or it is refused
   409 without writing, absent and unparseable alike, so a tab still holding a retired key
   cannot save ciphertext the remaining members cannot open (checked after `sharedCSRF`, so
-  a missing CSRF token is still 403; `TestSharedWritesCarryTheKeyEpoch`).
+  a missing CSRF token is still 403; `TestSharedWritesCarryTheKeyEpoch`). That epoch rides on
+  the `vaultTarget` and `shared.Store.WithWriter` re-checks it under the membership lock, so a
+  rotation that commits after the gate refuses the write too rather than letting a pre-rotation
+  snapshot land on the live vault (`TestSharedWriteIsRefusedWhenARotationCommitsMidRequest`).
   `auditAction` maps `vault.*` to `shared.*` (`shared.downloaded`,
   `shared.rolled_back`, `shared.conflict_downloaded` renamed) and details lead with the
   vault key. Details carry ids, names and roles, never a sealed key. Create checks
@@ -347,9 +350,30 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut` (the mover `NewStore` gets):
   lock order `shared.mu` then `vault.mu`, never the reverse; `writeTarget` keeps the same
   order for shared data writes. `shared_test.go` covers routes, CSRF, roles, hooks,
-  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3c/3d): no shared key rotation, extension
-  and KyAuth unaware; a removed member's copy of the key is only invalidated by the 3c
-  rotation.
+  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3d): the extension
+  and KyAuth are unaware of shared vaults.
+
+- `internal/api/shared_rotate.go`: `POST /api/shared/{id}/rotate` retires a departed
+  member's copy of the vault key. `sharedCSRF`, then the caller's own active-owner row, then
+  `requireFresh` (a device token carries no authentication timestamp, so it can never
+  rotate). The body is `multipart/form-data`, read as a stream in order: `kdbx` (the
+  re-encrypted vault) then `keys` (`{"epoch": N, "sealed": [{userId, sealedKey,
+  keyFingerprint}]}`), each part bounded on its own (`rotateKdbxLimit`, `rotateKeysLimit`)
+  and refused, never truncated, when over; the whole body is capped at their sum. `epoch` is
+  the epoch being rotated **from** and `If-Match` the vault data version. Every
+  `keyFingerprint` must equal that member's current published key (400 otherwise): the store
+  trusts the route for that, as invite and reseal do. `shared.Store.Rotate` validates and
+  commits the record around the vault write, which re-reads the metadata and refuses a
+  version mismatch (409) *before* `SaveVault`, so no refusal leaves the re-encrypted bytes
+  behind as a conflict nobody can open. `vault.Store.ClearHistory` runs after the commit,
+  outside the lock: snapshots and conflicts are ciphertext under the retired key, and a crash
+  before the record lands leaves the pre-rotation snapshot to roll back to (a failure to clear
+  is logged and audited `shared.hook_failed`, not a failed rotation). Audit
+  `shared.key_rotated`, detail `<id>: rotated to epoch N, sealed to X members, Y left
+  behind`; the response is `{ok, metadata, keyEpoch, leftBehind}`. `shared_test.go` covers
+  the rotation, every refusal leaving record/ciphertext/history/conflicts untouched,
+  oversized parts and four simultaneous rotations leaving exactly one winner. The client is
+  Task 5 of 3c and is not wired yet.
 
 - `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
   History reads native KeePass history in the unlocked browser. Changed Apply Edits
