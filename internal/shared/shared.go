@@ -110,6 +110,30 @@ func validState(s State) bool {
 	return s == StateInvited || s == StateActive || s == StateStale || s == StateSuspended
 }
 
+// validSuspendedFrom holds when SuspendedFrom is empty for a non-suspended row, or one of
+// invited/active/stale for a suspended one; a suspended row can never resume as suspended
+// or as an unrecorded (empty) state.
+func validSuspendedFrom(m Member) bool {
+	if m.State != StateSuspended {
+		return m.SuspendedFrom == ""
+	}
+	switch m.SuspendedFrom {
+	case StateInvited, StateActive, StateStale:
+		return true
+	default:
+		return false
+	}
+}
+
+// freshState is the state a newly sealed row lands on: active if it was ever accepted,
+// else invited. Reseal and an unsuspend with no usable SuspendedFrom both use this.
+func freshState(m Member) State {
+	if m.AcceptedAt != nil {
+		return StateActive
+	}
+	return StateInvited
+}
+
 // StoreKey is the internal/vault key that holds a shared vault's KDBX and history.
 func StoreKey(id string) string { return "shared/" + id }
 
@@ -158,7 +182,7 @@ func (s *Store) loadLocked(id string) (Vault, error) {
 		return Vault{}, fmt.Errorf("%w: shared record %s is inconsistent", ErrShape, id)
 	}
 	for uid, m := range v.Members {
-		if !validRole(m.Role) || !validState(m.State) {
+		if !validRole(m.Role) || !validState(m.State) || !validSuspendedFrom(m) {
 			return Vault{}, fmt.Errorf("%w: shared record %s member %s has an unknown role or state", ErrShape, id, uid)
 		}
 	}
@@ -342,15 +366,11 @@ func (s *Store) Reseal(id, userID, sealedKey, fingerprint, sealedBy string) erro
 			return ErrNotMember
 		}
 		m.SealedKey, m.KeyFingerprint, m.SealedBy, m.KeyEpoch = sealedKey, fingerprint, sealedBy, v.KeyEpoch
-		freshState := StateInvited
-		if m.AcceptedAt != nil {
-			freshState = StateActive
-		}
 		switch m.State {
 		case StateStale:
-			m.State = freshState
+			m.State = freshState(m)
 		case StateSuspended:
-			m.SuspendedFrom = freshState
+			m.SuspendedFrom = freshState(m)
 		}
 		v.Members[userID] = m
 		return nil
@@ -477,10 +497,14 @@ func (s *Store) SetSuspended(userID string, suspended bool) ([]string, error) {
 		case suspended && m.State != StateSuspended:
 			m.SuspendedFrom, m.State = m.State, StateSuspended
 		case !suspended && m.State == StateSuspended:
-			m.State, m.SuspendedFrom = m.SuspendedFrom, ""
-			if m.State == "" {
-				m.State = StateActive
+			if m.SuspendedFrom == "" {
+				// No recorded prior state (a corrupt or pre-validation record):
+				// resume as a fresh seal would, never straight to active.
+				m.State = freshState(m)
+			} else {
+				m.State = m.SuspendedFrom
 			}
+			m.SuspendedFrom = ""
 		default:
 			continue
 		}

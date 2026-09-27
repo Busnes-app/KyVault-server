@@ -25,6 +25,15 @@ func newStore(t *testing.T) *Store {
 	return s
 }
 
+func mustGet(t *testing.T, s *Store, id string) Vault {
+	t.Helper()
+	v, err := s.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
 func TestValidation(t *testing.T) {
 	if !ValidID("sv_"+"abcdefghijklmnopqrstuv") || ValidID("sv_../x") || ValidID("u-1") || ValidID("") {
 		t.Fatal("ValidID")
@@ -50,8 +59,8 @@ func TestCreateListAndCaps(t *testing.T) {
 	if m.Role != RoleOwner || m.State != StateActive || m.AcceptedAt == nil || m.KeyEpoch != 1 {
 		t.Fatalf("owner row: %+v", m)
 	}
-	if n, _ := s.CountOwned("u-1"); n != 1 {
-		t.Fatalf("CountOwned = %d", n)
+	if n, err := s.CountOwned("u-1"); err != nil || n != 1 {
+		t.Fatalf("CountOwned = %d, %v", n, err)
 	}
 	for i := 1; i < MaxOwnedVaults; i++ {
 		if _, err := s.Create("v", "u-1", sealed(), fp(1), t0); err != nil {
@@ -61,9 +70,18 @@ func TestCreateListAndCaps(t *testing.T) {
 	if _, err := s.Create("one too many", "u-1", sealed(), fp(1), t0); !errors.Is(err, ErrOwnedCap) {
 		t.Fatalf("owned cap: %v", err)
 	}
-	all, _ := s.List()
-	mine, _ := s.ListFor("u-1")
-	none, _ := s.ListFor("u-9")
+	all, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, err := s.ListFor("u-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	none, err := s.ListFor("u-9")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(all) != MaxOwnedVaults || len(mine) != MaxOwnedVaults || len(none) != 0 {
 		t.Fatalf("lists: %d %d %d", len(all), len(mine), len(none))
 	}
@@ -87,7 +105,7 @@ func TestMembershipLifecycle(t *testing.T) {
 	if err := s.Invite(v.ID, "u-3", Role("god"), sealed(), fp(3), "u-1", t0); !errors.Is(err, ErrShape) {
 		t.Fatalf("bad role: %v", err)
 	}
-	got, _ := s.Get(v.ID)
+	got := mustGet(t, s, v.ID)
 	if got.Members["u-2"].State != StateInvited || got.Members["u-2"].SealedBy != "u-1" {
 		t.Fatalf("invited row: %+v", got.Members["u-2"])
 	}
@@ -98,7 +116,7 @@ func TestMembershipLifecycle(t *testing.T) {
 	if err := s.Accept(v.ID, "u-2", t0.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.Get(v.ID)
+	got = mustGet(t, s, v.ID)
 	if got.Members["u-2"].State != StateActive || got.Members["u-2"].AcceptedAt == nil {
 		t.Fatalf("accepted row: %+v", got.Members["u-2"])
 	}
@@ -118,7 +136,7 @@ func TestMembershipLifecycle(t *testing.T) {
 	if err := s.Remove(v.ID, "u-2", true); err != nil {
 		t.Fatalf("admin removes last owner: %v", err)
 	}
-	got, _ = s.Get(v.ID)
+	got = mustGet(t, s, v.ID)
 	if _, ok := got.Members["u-2"]; ok {
 		t.Fatal("u-2 still present")
 	}
@@ -151,21 +169,28 @@ func TestConcurrentInvitesYieldOneRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
-	var okCount int32
+	var okCount, otherErrCount int32
 	var mu sync.Mutex
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", t0); err == nil {
-				mu.Lock()
+			err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", t0)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
 				okCount++
-				mu.Unlock()
+			case !errors.Is(err, ErrAlreadyMember):
+				otherErrCount++
 			}
 		}()
 	}
 	wg.Wait()
-	got, _ := s.Get(v.ID)
+	if otherErrCount != 0 {
+		t.Fatalf("losing calls returned something other than ErrAlreadyMember: %d", otherErrCount)
+	}
+	got := mustGet(t, s, v.ID)
 	if okCount != 1 || len(got.Members) != 2 {
 		t.Fatalf("ok=%d members=%d", okCount, len(got.Members))
 	}
@@ -196,8 +221,8 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 	if err != nil || len(ids) != 2 {
 		t.Fatalf("suspend: %v %v", ids, err)
 	}
-	gv, _ := s.Get(v.ID)
-	gw, _ := s.Get(w.ID)
+	gv := mustGet(t, s, v.ID)
+	gw := mustGet(t, s, w.ID)
 	if gv.Members["u-2"].State != StateSuspended || gv.Members["u-2"].SuspendedFrom != StateInvited ||
 		gw.Members["u-2"].State != StateSuspended || gw.Members["u-2"].SuspendedFrom != StateActive {
 		t.Fatalf("suspended rows: %+v %+v", gv.Members["u-2"], gw.Members["u-2"])
@@ -205,8 +230,8 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 	if _, err := s.SetSuspended("u-2", false); err != nil {
 		t.Fatal(err)
 	}
-	gv, _ = s.Get(v.ID)
-	gw, _ = s.Get(w.ID)
+	gv = mustGet(t, s, v.ID)
+	gw = mustGet(t, s, w.ID)
 	if gv.Members["u-2"].State != StateInvited || gw.Members["u-2"].State != StateActive || gw.Members["u-2"].SuspendedFrom != "" {
 		t.Fatalf("restored rows: %+v %+v", gv.Members["u-2"], gw.Members["u-2"])
 	}
@@ -219,14 +244,14 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 	if len(ids) != 2 {
 		t.Fatalf("stale ids: %v", ids)
 	}
-	gw, _ = s.Get(w.ID)
+	gw = mustGet(t, s, w.ID)
 	if gw.Members["u-2"].State != StateStale {
 		t.Fatalf("stale row: %+v", gw.Members["u-2"])
 	}
 	if err := s.Reseal(w.ID, "u-2", sealed(), fp(9), "u-1"); err != nil {
 		t.Fatal(err)
 	}
-	gw, _ = s.Get(w.ID)
+	gw = mustGet(t, s, w.ID)
 	if gw.Members["u-2"].State != StateActive || gw.Members["u-2"].KeyFingerprint != fp(9) {
 		t.Fatalf("resealed row: %+v", gw.Members["u-2"])
 	}
@@ -234,7 +259,7 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 	if err := s.Reseal(v.ID, "u-2", sealed(), fp(9), "u-1"); err != nil {
 		t.Fatal(err)
 	}
-	gv, _ = s.Get(v.ID)
+	gv = mustGet(t, s, v.ID)
 	if gv.Members["u-2"].State != StateInvited {
 		t.Fatalf("resealed invited row: %+v", gv.Members["u-2"])
 	}
@@ -242,7 +267,7 @@ func TestSuspendRestoreAndStale(t *testing.T) {
 	if _, err := s.SetSuspended("u-1", true); err != nil {
 		t.Fatal(err)
 	}
-	gv, _ = s.Get(v.ID)
+	gv = mustGet(t, s, v.ID)
 	if gv.Members["u-1"].State != StateSuspended || gv.Members["u-1"].SuspendedFrom != StateActive {
 		t.Fatalf("suspended owner row: %+v", gv.Members["u-1"])
 	}
@@ -278,7 +303,7 @@ func TestResealWhileSuspended(t *testing.T) {
 	if err := s.Reseal(v.ID, "u-3", sealed(), fp(9), "u-1"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := s.Get(v.ID)
+	got := mustGet(t, s, v.ID)
 	if got.Members["u-2"].State != StateSuspended || got.Members["u-2"].SuspendedFrom != StateActive {
 		t.Fatalf("resealed accepted suspended row: %+v", got.Members["u-2"])
 	}
@@ -293,7 +318,7 @@ func TestResealWhileSuspended(t *testing.T) {
 	if _, err := s.SetSuspended("u-3", false); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = s.Get(v.ID)
+	got = mustGet(t, s, v.ID)
 	if got.Members["u-2"].State != StateActive {
 		t.Fatalf("unsuspended accepted row: %+v", got.Members["u-2"])
 	}
@@ -336,11 +361,11 @@ func TestDeleteMovesAndPrunes(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(moved, "vault.kdbx")); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := s.PruneDeleted(t0.Add(12 * time.Hour)); n != 0 {
-		t.Fatalf("pruned early: %d", n)
+	if n, err := s.PruneDeleted(t0.Add(12 * time.Hour)); err != nil || n != 0 {
+		t.Fatalf("pruned early: %d, %v", n, err)
 	}
-	if n, _ := s.PruneDeleted(t0.Add(25 * time.Hour)); n != 1 {
-		t.Fatalf("pruned: %d", n)
+	if n, err := s.PruneDeleted(t0.Add(25 * time.Hour)); err != nil || n != 1 {
+		t.Fatalf("pruned: %d, %v", n, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "deleted", v.ID)); !os.IsNotExist(err) {
 		t.Fatal("deleted dir survives prune")
@@ -377,37 +402,90 @@ func TestAtomicWriteIgnoresTmp(t *testing.T) {
 	}
 }
 
-// A record on disk with an unknown role or state is rejected on read.
+// A record on disk with an unknown role or state is rejected on read. Each corruption is
+// applied to the original clean bytes, never stacked on the previous corruption, so a pass
+// on the state check cannot be explained by the still-broken role from the first write.
 func TestUnknownEnumOnDiskIsRejected(t *testing.T) {
 	s := newStore(t)
 	v, err := s.Create("x", "u-1", sealed(), fp(1), t0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(s.path(v.ID))
+	original, err := os.ReadFile(s.path(v.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	corrupt := strings.Replace(string(raw), `"role": "owner"`, `"role": "superowner"`, 1)
-	if corrupt == string(raw) {
-		t.Fatal("replacement did not match record contents")
+
+	badRole := strings.Replace(string(original), `"role": "owner"`, `"role": "superowner"`, 1)
+	if badRole == string(original) {
+		t.Fatal("role replacement did not match record contents")
 	}
-	if err := os.WriteFile(s.path(v.ID), []byte(corrupt), 0o600); err != nil {
+	if err := os.WriteFile(s.path(v.ID), []byte(badRole), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
 		t.Fatalf("unknown role: %v", err)
 	}
 
-	raw, err = os.ReadFile(s.path(v.ID))
-	if err != nil {
-		t.Fatal(err)
+	badState := strings.Replace(string(original), `"state": "active"`, `"state": "zombie"`, 1)
+	if badState == string(original) {
+		t.Fatal("state replacement did not match record contents")
 	}
-	corrupt = strings.Replace(string(raw), `"state": "active"`, `"state": "zombie"`, 1)
-	if err := os.WriteFile(s.path(v.ID), []byte(corrupt), 0o600); err != nil {
+	if err := os.WriteFile(s.path(v.ID), []byte(badState), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
 		t.Fatalf("unknown state: %v", err)
+	}
+}
+
+// A suspended row's SuspendedFrom must be invited, active or stale; empty (no recorded
+// prior state) or any other value is rejected on read, same as an unknown role or state.
+func TestSuspendedFromOnDiskIsValidated(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("x", "u-1", sealed(), fp(1), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetSuspended("u-1", true); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(s.path(v.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	emptyFrom := strings.Replace(string(original), `"suspendedFrom": "active",`, "", 1)
+	if emptyFrom == string(original) {
+		t.Fatal("suspendedFrom removal did not match record contents")
+	}
+	if err := os.WriteFile(s.path(v.ID), []byte(emptyFrom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
+		t.Fatalf("empty suspendedFrom: %v", err)
+	}
+
+	badFrom := strings.Replace(string(original), `"suspendedFrom": "active"`, `"suspendedFrom": "owner"`, 1)
+	if badFrom == string(original) {
+		t.Fatal("suspendedFrom replacement did not match record contents")
+	}
+	if err := os.WriteFile(s.path(v.ID), []byte(badFrom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrShape) {
+		t.Fatalf("bad suspendedFrom: %v", err)
+	}
+}
+
+// freshState is the fallback both Reseal and SetSuspended use when a row has no usable
+// prior state to resume from: active only if the member was ever accepted, else invited.
+func TestFreshStateFollowsAcceptedAt(t *testing.T) {
+	at := t0
+	if got := freshState(Member{AcceptedAt: &at}); got != StateActive {
+		t.Fatalf("accepted: %v", got)
+	}
+	if got := freshState(Member{}); got != StateInvited {
+		t.Fatalf("unaccepted: %v", got)
 	}
 }
