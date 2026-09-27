@@ -170,6 +170,18 @@ func freshState(m Member) State {
 	return StateInvited
 }
 
+// landOn moves a row to state s, except that a suspended row keeps suspended and records s
+// as the state it will resume to. Every re-seal (Reseal, Rotate) and every stale-marking
+// (MarkStale, the members a Rotate leaves behind) goes through it.
+func landOn(m Member, s State) Member {
+	if m.State == StateSuspended {
+		m.SuspendedFrom = s
+	} else {
+		m.State = s
+	}
+	return m
+}
+
 // StoreKey is the internal/vault key that holds a shared vault's KDBX and history.
 func StoreKey(id string) string { return "shared/" + id }
 
@@ -484,13 +496,7 @@ func (s *Store) Reseal(id, userID, sealedKey, fingerprint, sealedBy, sealerFP st
 			}
 		}
 		m.SealedKey, m.KeyFingerprint, m.SealedBy, m.SealedByFingerprint, m.KeyEpoch = sealedKey, fingerprint, sealedBy, sealerFP, v.KeyEpoch
-		switch m.State {
-		case StateStale:
-			m.State = freshState(m)
-		case StateSuspended:
-			m.SuspendedFrom = freshState(m)
-		}
-		v.Members[userID] = m
+		v.Members[userID] = landOn(m, freshState(m))
 		return nil
 	})
 }
@@ -567,35 +573,53 @@ func (s *Store) Remove(id, actorID, userID string, now time.Time) error {
 // caller could seal for, writes the re-encrypted vault through writeVault, bumps the epoch
 // and leaves everyone else at the old epoch as stale. It is the only thing that stops a
 // departed member's copy of the key from opening what the vault saves next, so it clears
-// the pending flag a departure set. Nothing is written unless writeVault succeeds, so a
-// refused vault write leaves the record, the sealed keys and the flag exactly as they were.
-// writeVault may be nil, which skips that step. epoch must be the vault's current one.
-func (s *Store) Rotate(id, actorID string, epoch int, sealed []SealedFor, writeVault func() error, now time.Time) (Vault, error) {
+// the pending flag a departure set.
+//
+// The caller must name their own row: a rotation that locked the last active owner out of
+// their own vault would leave nobody who could invite, accept or re-seal. Each SealedFor
+// needs a non-empty KeyFingerprint, which overwrites the row's, exactly as Reseal does;
+// checking it against the member's current published key is the route's job, because only
+// the route can read published keys. epoch must be the vault's current one.
+//
+// writeVault (nil to skip it) writes the re-encrypted vault and runs under the store lock,
+// so it must never re-enter this store: it would deadlock on a lock it already holds.
+// Nothing here is written unless it succeeds, so a refused vault write leaves the record,
+// the sealed keys and the flag exactly as they were and the rotation can be retried.
+func (s *Store) Rotate(id, actorID string, epoch int, sealed []SealedFor, writeVault func() error) (Vault, error) {
 	var out Vault
 	err := s.update(id, actorID, func(v *Vault) error {
+		if activeOwners(*v) == 0 {
+			return fmt.Errorf("%w: the vault has no owner", ErrState)
+		}
 		if v.KeyEpoch != epoch {
 			return fmt.Errorf("%w: at epoch %d", ErrEpoch, v.KeyEpoch)
 		}
+		named := map[string]bool{}
 		for _, sf := range sealed {
-			m, ok := v.Members[sf.UserID]
-			if !ok {
+			if _, ok := v.Members[sf.UserID]; !ok {
 				return fmt.Errorf("%w: %s is not a member", ErrShape, sf.UserID)
 			}
 			if err := ValidSealedKey(sf.SealedKey); err != nil {
 				return err
 			}
-			if sf.KeyFingerprint == "" || sf.KeyFingerprint != m.KeyFingerprint {
-				return fmt.Errorf("%w: keyFingerprint does not match %s's current key", ErrShape, sf.UserID)
+			if sf.KeyFingerprint == "" {
+				return fmt.Errorf("%w: %s has no keyFingerprint", ErrShape, sf.UserID)
 			}
+			named[sf.UserID] = true
+		}
+		if !named[actorID] {
+			return fmt.Errorf("%w: a rotation must seal the new key for the caller's own row", ErrShape)
+		}
+		if postRotationOwners(*v, named) == 0 {
+			return ErrLastOwner
 		}
 		if writeVault != nil {
 			if err := writeVault(); err != nil {
 				return err
 			}
 		}
-		actorFP := v.Members[actorID].KeyFingerprint // "" for an admin, who holds no row
+		actorFP := v.Members[actorID].KeyFingerprint
 		next := v.KeyEpoch + 1
-		named := map[string]bool{}
 		for _, sf := range sealed {
 			m := v.Members[sf.UserID]
 			m.SealedKey, m.KeyFingerprint = sf.SealedKey, sf.KeyFingerprint
@@ -603,32 +627,34 @@ func (s *Store) Rotate(id, actorID string, epoch int, sealed []SealedFor, writeV
 			m.KeyEpoch = next
 			// A fresh seal lands where a Reseal would: a member left behind by an earlier
 			// rotation, or stale from a user key replacement, comes back.
-			switch m.State {
-			case StateSuspended:
-				m.SuspendedFrom = freshState(m)
-			default:
-				m.State = freshState(m)
-			}
-			v.Members[sf.UserID] = m
-			named[sf.UserID] = true
+			v.Members[sf.UserID] = landOn(m, freshState(m))
 		}
 		for uid, m := range v.Members {
-			if named[uid] {
-				continue
+			if !named[uid] {
+				v.Members[uid] = landOn(m, StateStale)
 			}
-			if m.State == StateSuspended {
-				m.SuspendedFrom = StateStale
-			} else {
-				m.State = StateStale
-			}
-			v.Members[uid] = m
 		}
 		v.KeyEpoch = next
 		v.RotationPending = nil
 		out = *v
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return Vault{}, err
+	}
+	return out, nil
+}
+
+// postRotationOwners counts the active owners a rotation sealing for named would leave:
+// every unnamed row goes stale, and a named row lands on freshState.
+func postRotationOwners(v Vault, named map[string]bool) int {
+	n := 0
+	for uid, m := range v.Members {
+		if named[uid] && m.Role == RoleOwner && m.State != StateSuspended && freshState(m) == StateActive {
+			n++
+		}
+	}
+	return n
 }
 
 // WithWriter runs fn, the vault write, under the store lock once userID's row is an
@@ -764,13 +790,8 @@ func (s *Store) MarkStale(userID, currentFingerprint string) ([]string, error) {
 		if !ok || m.KeyFingerprint == currentFingerprint || m.State == StateStale {
 			continue
 		}
-		switch m.State {
-		case StateSuspended:
-			m.SuspendedFrom = StateStale
-		default: // active and invited both need a re-seal before the key is usable
-			m.State = StateStale
-		}
-		v.Members[userID] = m
+		// Active and invited both need a re-seal before the key is usable.
+		v.Members[userID] = landOn(m, StateStale)
 		if err := s.saveLocked(v); err != nil {
 			return touched, err
 		}

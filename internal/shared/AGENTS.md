@@ -41,27 +41,39 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   vault key still opens the vault. A non-empty flag whose reason or `userId` is invalid
   fails the load with `ErrCorrupt`. Nothing else sets or clears it: a role change, a
   suspension and a `MarkStale` leave it alone.
-- `Rotate(id, actorID, epoch, []SealedFor, writeVault, now)` is the only thing that retires
-  that copy. Under one hold of the lock it authorizes the actor, refuses a stale `epoch`
-  (`ErrEpoch`), validates every `SealedFor` (a current member, `ValidSealedKey`, the
-  fingerprint still the member's current one — otherwise `ErrShape` and nothing is
-  written), then calls `writeVault` (the re-encrypted vault; `nil` skips it) and returns
-  its error untouched, and only then re-seals, bumps `keyEpoch`, marks every unnamed member
-  `stale` at the old epoch (a suspended row takes `suspendedFrom: stale`) and clears the
-  flag. A named row lands on `freshState` like a `Reseal`, so a stale or left-behind member
-  who is re-sealed comes back.
+- `Rotate(id, actorID, epoch, []SealedFor, writeVault)` is the only thing that retires that
+  copy. Under one hold of the lock it authorizes the actor, refuses an ownerless vault
+  (`ErrState`) and a stale `epoch` (`ErrEpoch`), validates every `SealedFor` (a current
+  member, `ValidSealedKey`, a non-empty `keyFingerprint`), refuses a rotation that does not
+  seal for the actor's own row or would leave no active owner (`ErrShape`, `ErrLastOwner`),
+  then calls `writeVault` and returns its error untouched, and only then re-seals, bumps
+  `keyEpoch`, marks every unnamed member `stale` at the old epoch and clears the flag. Any
+  refusal writes nothing. A named row lands on `freshState` like a `Reseal`, so a stale or
+  left-behind member who is re-sealed comes back.
+- `Rotate` does **not** compare the supplied `keyFingerprint` to the row's: `MarkStale`
+  leaves the retired fingerprint on the row, so a member who replaced their user key is
+  re-sealed to a fingerprint the row has never held. It overwrites the row's value, exactly
+  as `Reseal` does; checking it against the member's current published key is the route's
+  job, since only the route can read published keys.
+- Rotation commit order: the re-encrypted ciphertext is written inside `writeVault`, before
+  the record commits. A crash between them leaves the live vault under the new key while
+  the record still carries the old epoch and old sealed keys — the pre-rotation snapshot is
+  still in history, so a member rolls back with the key they hold and the rotation is run
+  again. Nothing may delete history inside `writeVault`. The closure runs under `shared.mu`
+  and must never re-enter this store (`Get`, `WithWriter`, any method): it self-deadlocks.
 - `WithWriter(id, userID, fn)` runs `fn` (the vault write) under `shared.mu` only while the
   row is an active owner or editor (`ErrNotMember`, `ErrForbidden`), so a removal or
   demotion cannot land between the route's check and the write.
-- Invariants: `SetRole` and non-admin `Remove` keep one active owner (`ErrLastOwner`);
+- Invariants: `SetRole`, non-admin `Remove` and `Rotate` keep one active owner (`ErrLastOwner`);
   `MaxMembers` 100 at `Invite`; `MaxOwnedVaults` 20 at `Create` only; every row carries a
   sealed key. `Accept` requires `invited` and refuses an ownerless vault (`ErrState`).
 - `SetSuspended` mirrors the account: suspending keeps the prior state in `suspendedFrom`;
   restoring returns to it, or to `freshState` (active if `AcceptedAt`, else invited) when
-  none is recorded. `MarkStale` flags active and invited rows sealed to another
-  fingerprint; a suspended row gets `suspendedFrom: stale`. `Reseal` returns a stale row to
-  `freshState`; on a suspended row it sets `suspendedFrom` to `freshState`. Both hooks
-  return the ids they touched even on error.
+  none is recorded. `landOn(m, state)` is the one place a row changes state: a suspended
+  row keeps `suspended` and records the target in `suspendedFrom` instead.
+  `MarkStale` flags active and invited rows sealed to another fingerprint; a suspended row
+  gets `suspendedFrom: stale`. `Reseal` lands a row on `freshState`. Both hooks return the
+  ids they touched even on error.
 - `NewStore` takes a `VaultMover` (the API passes `vault.Store.MoveOut`; `nil` for the
   offline backup, where `Delete` fails). `Delete` writes `deleted/<id>/record.json` with
   `deletedAt`, removes the live record, then moves the vault directory; lock order is
