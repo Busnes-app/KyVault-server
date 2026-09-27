@@ -13,6 +13,9 @@
     "pretest": "node src/ky-ui/check-vendor.mjs"
   },
   "dependencies": {
+    "@zxcvbn-ts/core": "4.2.0",
+    "@zxcvbn-ts/language-common": "4.1.3",
+    "@zxcvbn-ts/language-en": "4.1.1",
     "hash-wasm": "^4.12.0",
     "kdbxweb": "^2.1.1",
     "lucide-react": "^1.47.0",
