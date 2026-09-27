@@ -59,11 +59,15 @@ each. When the breach check has not run, breached contributes 0 and the UI label
 ## Computation cost
 
 - zxcvbn-ts and the 2FA list are dynamic imports loaded when the Watchtower tab first
-  renders while unlocked; neither is in the entry chunk.
+  renders while unlocked; neither is in the entry chunk. Measured: the zxcvbn chunk with
+  common + en dictionaries is ~1.66 MB minified, ~850 KB gzip, downloaded once and cached.
+- zxcvbn runs with `l33tMaxSubstitutions: 10`. Measured on 300 mixed passwords: default
+  (100) costs ~18 ms per password, 10 costs ~2.7 ms, with identical scores on the probe set
+  (`Password1234!`, `qwertyuiop123`, `p@ssw0rd2024` → 1; passphrases → 4).
+  zxcvbn scores `Summer2026!!!` 3, so it is not reported weak; that is zxcvbn's judgment.
 - Scoring runs in async chunks that yield to the event loop after ~10 ms of work.
-- An in-memory cache keyed by entry UUID + `times.lastModTime` holds per-entry zxcvbn
-  results for the unlocked session; edits re-score only changed entries. Lock and key change
-  clear it.
+- An in-memory cache keyed by entry UUID + `updatedAt` holds per-entry zxcvbn results
+  for the unlocked session; edits re-score only changed entries. Lock clears it.
 - ponytail: no Web Worker. If chunked scoring is too slow on very large vaults, move the
   scorer into a module worker (`default-src 'self'` already permits it).
 
@@ -76,13 +80,16 @@ each. When the breach check has not run, breached contributes 0 and the UI label
     breaches button with progress.
   - Category cards with count and severity colour from existing tokens; zero is muted.
   - Selecting a card lists its findings below; a row navigates to `#/vault/<uuid>`.
-    Selected category is component state held by `App.tsx`, so returning to the tab keeps it.
+    `WatchtowerPage` stays mounted while unlocked (`hidden` prop, like `VaultPage`), so its
+    state (selected category, cache, breach results) survives tab switches and is dropped
+    when lock unmounts it. Opening an entry resets the vault's folder/smart view/search if
+    the entry would otherwise be filtered out of the list.
   - Under 900px the grid is one column (`useMediaQuery`).
 - Breach auto-check: checkbox "Check automatically when I open Watchtower", `localStorage`
   key `kyvault.watchtower.autoBreach`, default off. Enabling shows the existing HIBP
   disclosure via `useDialogs().confirm`; declining leaves it off.
-- Breach results live in `App.tsx` memory for the unlocked session; lock and key change
-  drop them, and in-flight checks abort on lock (existing abort pattern).
+- Breach results are keyed by entry UUID + `updatedAt`; an entry edited after the check is
+  no longer reported breached until checked again. In-flight checks abort on unmount.
 - Remove the Health button from `VaultPage` and delete `components/HealthReport.tsx`.
 
 ## 2FA list
