@@ -384,3 +384,57 @@ func TestDrillChecksDeletedSharedVaultRecords(t *testing.T) {
 		t.Fatal("drill did not run the shared vault records check")
 	}
 }
+
+func sharedRecordsCheck(t *testing.T, root string) Check {
+	t.Helper()
+	result := validateRestore(t.Context(), root, capsule.Manifest{})
+	for _, c := range result.Checks {
+		if c.Name == "shared vault records" {
+			return c
+		}
+	}
+	t.Fatal("no shared vault records check in result")
+	return Check{}
+}
+
+func TestDrillFailsLiveSharedRecordIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data", "shared")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sv_1.json"), []byte(`{"id":"sv_2","members":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if c := sharedRecordsCheck(t, root); c.Passed {
+		t.Fatal("expected failure on live record ID mismatch")
+	}
+}
+
+func TestDrillFailsDeletedSharedRecordIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data", "shared", "deleted", "sv_1")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "record.json"), []byte(`{"id":"sv_2","members":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if c := sharedRecordsCheck(t, root); c.Passed {
+		t.Fatal("expected failure on deleted record ID mismatch")
+	}
+}
+
+func TestDrillFailsUnexpectedFileUnderSharedDir(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "data", "shared")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a record"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if c := sharedRecordsCheck(t, root); c.Passed {
+		t.Fatal("expected failure on unexpected file under data/shared")
+	}
+}

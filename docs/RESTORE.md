@@ -173,6 +173,8 @@ and audit files from the table above plus one directory per user under `restored
 and, for any shared vaults, one directory per shared vault under
 `restored/data/vaults/shared/<id>`. An instance that never had a user has no `vaults` entries,
 and one that never had a shared vault has no `restored/data/shared/*.json`; neither is an error.
+`restored/config/shared.json` is present only if it was set on the old server, the same as
+`scim.token`.
 
 `cat restored/config/restore-manifest.json` shows the version the old server ran and states
 `vaultDecryptionKey: not held by server`.
@@ -311,11 +313,19 @@ until it ages out, and moving it back is a host-side file operation.
 
 1. Stop the server.
 2. Move `data/shared/deleted/<id>/record.json` back to `data/shared/<id>.json`, and
-   `data/shared/deleted/<id>/vault/` back to `data/vaults/shared/<id>/`.
+   `data/shared/deleted/<id>/vault/` back to `data/vaults/shared/<id>/`. Remove the
+   now-empty `data/shared/deleted/<id>/` directory.
 3. Start the server.
 
-Nothing was rotated, so the members' sealed keys are still valid and every member can open
-the vault exactly as before it was deleted.
+Nothing was rotated, so no member's sealed key was invalidated by the deletion itself. But
+the record reflects membership exactly as it was at the moment of deletion, and nothing
+reconciles it against what changed afterward: a member who replaced their user key while the
+vault was deleted comes back with a sealed copy for a key they no longer hold and cannot open
+the vault until an owner re-shares it (`PUT /api/shared/{id}/members/{userId}` with a fresh
+`sealedKey`); a member deactivated in the directory while the vault was deleted comes back
+`active` instead of `suspended`, and is corrected at the next directory change (SCIM update or
+webhook), not immediately. Tell affected members, and check membership against the directory
+before trusting it.
 
 ## Afterwards
 

@@ -157,16 +157,16 @@ func validateRestore(_ context.Context, root string, manifest capsule.Manifest) 
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
+		segments := strings.Split(rel, "/")
 		switch {
-		case strings.HasPrefix(rel, "deleted/") && strings.HasSuffix(rel, "/record.json"):
-			id := strings.TrimSuffix(strings.TrimPrefix(rel, "deleted/"), "/record.json")
-			return checkSharedRecord(path, id)
-		case strings.HasPrefix(rel, "deleted/") && strings.Contains(rel, "/vault/"):
+		case len(segments) == 3 && segments[0] == "deleted" && segments[2] == "record.json":
+			return checkSharedRecord(path, segments[1])
+		case len(segments) >= 3 && segments[0] == "deleted" && segments[2] == "vault":
 			if !entry.Type().IsRegular() {
 				return fmt.Errorf("shared deleted vault file %s is not regular", rel)
 			}
 			return nil
-		case !strings.HasPrefix(rel, "deleted/") && strings.HasSuffix(rel, ".json"):
+		case len(segments) == 1 && strings.HasSuffix(rel, ".json"):
 			return checkSharedRecord(path, strings.TrimSuffix(rel, ".json"))
 		default:
 			return fmt.Errorf("unexpected shared backup file %s", rel)

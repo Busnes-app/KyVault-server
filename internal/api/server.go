@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -166,7 +167,7 @@ func NewServer(cfg Config) (*Server, error) {
 	collector := backup.Collector{
 		Vault: vStore, Audit: aStore, Users: uStore, Devices: dStore, SSO: ssoSt, Shared: shStore,
 		State: backupState, PairingSecret: cfg.PairingSecret, SCIMToken: cfg.SCIMToken, RetentionDays: cfg.RetentionDays,
-		AppVersion: cfg.AppVersion, DataDir: cfg.DataDir, SharedSettingsPath: cfg.ConfigDir + "/shared.json",
+		AppVersion: cfg.AppVersion, DataDir: cfg.DataDir, SharedSettingsPath: filepath.Join(cfg.ConfigDir, "shared.json"),
 	}
 
 	s := &Server{
