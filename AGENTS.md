@@ -14,7 +14,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
 8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps. Installable as a PWA through `frontend/public/manifest.webmanifest` (icons from `logo.png` and a 512px export of `KyVault.png`; no service worker, so nothing works offline). `pwa.test.ts` validates the manifest and the `index.html` references; `static.go` serves `.webmanifest` as `application/manifest+json`.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
-10. **Shared Vaults (server side)**: `internal/shared` keeps membership (roles, states, each member's copy of the vault key HPKE-sealed to their user key); the KDBX lives in `internal/vault` under key `shared/<id>`. Roles are enforced server-side; neither the server nor an admin can read contents. No UI yet. See `internal/shared/AGENTS.md`.
+10. **Shared Vaults (server side)**: `internal/shared` keeps membership (roles, states, each member's copy of the vault key HPKE-sealed to their user key); the KDBX lives in `internal/vault` under key `shared/<id>`. Roles are enforced server-side; neither the server nor an admin can read contents. The web client is the vault switcher, the Accept and Members dialogs, Security → Known keys and Admin → Shared vaults; see the Child DOX Index. See `internal/shared/AGENTS.md`.
 
 ## Authentication
 
@@ -84,6 +84,12 @@ yourself adding one, the design has been misread.
   the browser against the stored envelope (`verifyMasterPassword`). A session also reaches
   `PUT /api/vault/user-key` (publish/rotate/replace the user key record) and
   `GET /api/users/{id}/key` (any user's public key and fingerprint).
+  `GET /api/users/lookup?username=` (any session or device token) answers
+  `{userId, username, fingerprint}` for an active user with a published key and 404
+  otherwise; misses are limited per source (20 in 15 minutes → 429,
+  `user.lookup_limited`), every call is audited `user.lookup` with the name truncated to 64
+  characters: a hit is not limited, so an unbounded detail would let a session grow the hash
+  chain at request rate (`user_lookup_test.go`).
 - A version-0 vault shows a create dialog with a confirm field (`lib/unlockMode.ts`); the unlock dialog auto-opens only on the vault tab.
 - Paper recovery unlocks the vault, not the site. The unlock dialog tries the password envelope and then the recovery envelope with whatever was typed (`unwrapVaultKeyFromEnvelopes`).
 - Key rotation (`keyRotation.ts`, Security → Rotate Vault Key) proves the current master password (the paper code is refused there, since the typed value becomes the new password envelope secret), generates a new vault key, re-encrypts the KDBX and sends it with both new envelopes in one `POST /api/vault/upload` with `If-Match`, so `SaveVault` writes vault and envelopes under one lock; `PUT /api/vault/envelopes` is never used for rotation. It runs inside the save queue's serializer (`VaultSaveQueue.exclusive`) and is refused while edits are unsaved. A server error restores the old key in memory; a lost response is adopted only if the stored envelopes are ours at exactly the expected version + 1; otherwise (unreadable, or ours with a later save on top) the tab locks. On success the tab swaps key and queue, re-caches the device key, shows the new paper code with type-it-back, and revokes every device best effort (404 counts as done, failures offer Retry revoking). The server already revoked them: a successful rotation upload cancels the user's outstanding pairing codes and revokes every device, its envelope and its sessions in one critical section under the session lock (`revokeAllDevices`); a pairing code also names the device session that issued it (`pairingOrigin.issuerDeviceId`), and minting checks under the same lock that this device still exists, so a code issued by a device that a rotation later revoked cannot mint a replacement session (`TestRotationRefusesPairingsIssuedByRevokedDevice`), auditing `vault.key_rotated` and one `device.revoked` (`key_rotated`) per device, so the browser loop is only a safety net. A locked draft sealed under the pre-rotation key is unreadable after unlock, so the existing checkpoint path deletes it and reports it. A cached device key that fails with `InvalidKey` on a passwordless unlock is cleared before the error shows. Every device-key cache write goes through `lib/deviceKeyCache.ts`, which re-checks the unlock generation after the write and undoes a write that lost a race with Forget This Device or a lock (`deviceKeyCache.test.ts`). Snapshots and conflicts older than a rotation are encrypted with a retired key. The rotation upload sends `X-Vault-Key-Rotated: 1` (both envelope headers required, else 400) and `RotateVault` records its version as `Metadata.KeyEpochSince`; `ListHistory` flags older snapshots `staleKey` and `RestoreHistory` refuses them with 409 (`ErrStaleKey`), so every client, locked or not, is refused without decrypting. Password changes (`PUT /api/vault/envelopes`) and rollbacks never move the epoch; that PUT requires `If-Match` with the version `proveCurrentPassword` verified against (missing counts as 0, like uploads) and answers 409 without writing on mismatch; `vault_rotation_test.go` pins it. `keyRotation.test.ts` proves old key refused, new key and both envelopes open, one upload, rollback on failure and the reconcile; `vault_rotation_test.go` pins that a stale upload changes nothing, a current one replaces vault and both envelopes, rotation ends device tokens and envelopes, and a stale envelope PUT is 409.
@@ -190,6 +196,7 @@ the user's, not the directory's.
 - Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`. Run them before `npm ci` in `extension/`: a Go package inside `extension/node_modules` is otherwise picked up by `go vet ./...`.
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
 - UI without KySignOn: `npm run dev:mock` in `frontend/` serves the app with an in-process mock of the API (`frontend/mock/api.ts`, dev only, never built) for manual and screenshot checks.
+  It serves the shared-vault routes with the status codes the client branches on (404 not a member, 403 a reader write or an unaccepted row, 409 the last owner, 400 a fingerprint that moved), seeds two invitations from `dana` (u-2) — one matching her published key, one sealed by a key she no longer publishes — and generates a real X-Wing key pair for her at startup, so sealing from the browser is real HPKE. One admin delete answers a plain-text `re-authenticate to continue` so that refusal and its link are reachable. `POST /api/mock/role` has no server counterpart: it sets the mock user's role in a vault, which the UI cannot do and a reader's read-only screen needs.
 - Extension: `npm test && npm run build && npm run lint` in `extension/` (`build` runs `tsc` first, so it is the typecheck gate too; `lint` is `web-ext lint --source-dir dist/firefox` and must report 0 errors). See `extension/AGENTS.md`.
 - Daemon build: `go build -o ./kyvault-server ./cmd/server`
 - Docker build: `docker build -t kyvault-server:latest .`
@@ -331,7 +338,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut` (the mover `NewStore` gets):
   lock order `shared.mu` then `vault.mu`, never the reverse; `writeTarget` keeps the same
   order for shared data writes. `shared_test.go` covers routes, CSRF, roles, hooks,
-  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3b/3c/3d): no UI, no shared key rotation, extension
+  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3c/3d): no shared key rotation, extension
   and KyAuth unaware; a removed member's copy of the key is only invalidated by the 3c
   rotation.
 
@@ -448,6 +455,72 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.
   `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
 
+- `frontend/src/lib/appSelection.ts`, `components/VaultSwitcher.tsx` and `App.tsx`: one selected
+  vault at a time (`Selected`). `switchTo` confirms discard, closes the old queue, opens the next
+  vault and applies it only if no lock intervened; any failure falls back to the personal vault,
+  and if that fails too the tab locks. The personal vault, key, version and envelope stay in
+  `personalRef` while a shared vault is selected (re-fetched when its edits were discarded); the
+  shared key lives only in `sharedKeyRef` and is zeroed on switch and lock. `restorePlan` reopens
+  `#/shared/<id>` once per unlock after the list loads and the user key is ready (a user key that
+  settled unusable shows a notice instead); later vault-tab routes follow. A finished rotation
+  replaces the live vault only if no switch took over (`applyRotation`); the switcher is busy
+  meanwhile. The idle lock fires mid-switch too, with no checkpoint. A save 403/404 on a shared vault (`lostAccess`) switches home without asking.
+  Readers get `readOnly` on `VaultPage`/`HistoryModal`: every mutating handler refuses. Security
+  hides master password, paper code, rotation, offline key and device cards while shared; Forget
+  This Device stays in the replacement card.
+  Drafts are scoped: pointer `kyvault.draft:<userId>[:<sharedId>]`. `appSelection.test.ts`.
+
+- `frontend/src/lib/sharedFlows.ts`, `components/AcceptInvitationDialog.tsx`,
+  `SharedMembersDialog.tsx` and `KnownKeys.tsx`: the shared-vault flows take a `FlowDeps`
+  (api, the personal vault the pins live in, the pin saver, `lookupKey`/`pinKey`, my own
+  public key and fingerprint — never the seed), so they are tested without a browser
+  (`sharedFlows.test.ts`). `App.tsx` rebuilds `flowDeps` with `useMemo` over the user key, the `personalRef` vault object and
+  `savePersonalPins`, and every entry point needs `userKey.kind === "ready"`; pins written by
+  a flow save through `savePersonalPins`, which reports mid-switch failures rather than
+  dropping the pin. Create seals a fresh key to myself, then selects the vault from the row
+  `shared.refresh()` returned, never from the pre-refresh list. Sealing for someone else pins
+  an unknown key first and refuses a changed one everywhere (invite and re-seal) until it is
+  re-pinned from Security → Known keys. Accept shows the inviter's fingerprint, the pin
+  verdict and the invitation's own `invitedBy.fingerprint` (a drift from the published key is
+  `changed` too), and warns that KyVault trusts the server for who is in a vault and never
+  for its contents; `acceptInvitation` refuses a changed pin unless the dialog's second
+  confirm passed `repinConfirmed`. Accepting does not open the vault: the joined row appears
+  in the switcher. The members dialog carries rename, delete, leave, remove, role changes
+  (own row disabled, last-owner 409 shown inline), re-seal for stale rows and the invite form
+  (default `reader`, reset after each invite); a 400 fingerprint refusal re-runs the lookup so
+  the new fingerprint is compared again, and a 403 shows the "Sign in again" link. A member
+  whose published key could not be read says so instead of showing the fingerprint their
+  sealed copy was made against, and re-seal seals the key that row displayed, never a fresh
+  lookup at click time. My own row is never "Key not verified" — a pin for yourself is never
+  written, so it is compared against the key this tab holds and reads "Your key", or the
+  danger-coloured "Not the key this browser holds" (`selfView`, `SharedMembersDialog.test.ts`).
+  No "sealed by"
+  column: the server reports `sealedByFingerprint` only for my own row, which the switcher
+  shows in its title. `closeVault` closes both dialogs, matching the lock-cancels-questions
+  rule. Known keys lists the pins in the personal vault with Re-pin (both fingerprints, then
+  confirm) and Forget.
+
+- `frontend/src/lib/sharedVaults.ts`, `sharedKey.ts`, `vaultSelection.ts` and
+  `components/AdminShared.tsx`: `sharedApi`/`adminSharedApi` are the whole shared surface, and
+  `useSharedVaults` reloads the list after unlock and while the tab is visible (`loaded` stays
+  false until the first success, so a route restore never reads "not loaded" as "not a member").
+  A shared vault key is 32 random bytes sealed with `seal(pk, "kyvault/shared-vault-key/1", key)`;
+  the blob is exactly 1168 bytes, and both helpers refuse any other length. `openShared` opens my
+  own sealed copy, and a copy that will not open says to ask an owner to re-seal it rather than
+  guessing why; an empty vault is created and uploaded by an owner or editor and refused to a
+  reader. Vault transport is `basePath`-relative (`/api/vault` or `/api/shared/<id>`) through
+  `vaultSave.ts`, `HistoryModal` and `ConflictComparison`, and locked drafts are scoped by
+  selection, so two vaults never share a checkpoint. A reader's recovered draft is never applied:
+  the server copy opens instead, with a notice, because those edits could never be uploaded.
+  Admin → Shared vaults lists every vault with its members, flags `ownerless`, deletes a vault,
+  removes a member and owns the create-restriction setting; it never sees key material, its
+  optimistic setting toggle puts the server's value back when the PUT is refused
+  (`saveRestricted`), a running action marks only its own vault's row busy (`rowBusy`), and a
+  fresh-session 403 renders the "Sign in again" link through `components/ErrorLine.tsx`, which
+  the members dialog uses too. `AdminShared.test.ts` pins those three.
+  Invite lookup is `GET /api/users/lookup?username=` (exact username, 404 for a miss).
+  Not built: shared key rotation (3c), the extension and KyAuth (3d).
+
 - `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
   appends the anchor and revokes the object URL a second later so Firefox and Safari do not
   cancel it.
@@ -532,7 +605,32 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   seed and sends it as `X-User-Key` in the same upload; the server refuses a rotation that drops or
   swaps an existing key. Replace needs the master password in the browser and, because the server cannot check that, a KySignOn sign-in within `freshSessionWindow` (403 `re-authenticate…` otherwise; the page offers "Sign in again"); it appends the old public key to
   `previous` (max 5); the callback is generation-guarded like `settleUserKey`/`rotateKey` so a lock
-  during the async publish cannot resurrect a stale key into app state. `PUT /api/vault/user-key` is
+  during the async publish cannot resurrect a stale key into app state. Replace carries the shared
+  vaults with it, in `lib/keyReplaceReseal.ts`: `runKeyReplace` plans, proves, confirms,
+  publishes and re-seals in that order. `planReplace` fetches `GET /api/shared` itself —
+  never a cached list, whose emptiness would strand every vault — opens each active row's
+  sealed key with the seed about to be retired, and a list failure refuses the replace
+  instead of planning nothing. `replaceWarning` names what the old key already cannot open
+  and adds that the contents are lost where no other active owner remains (an unreadable
+  member list counts as sole ownership; a `mismatch` key opens nothing, so every active row
+  is named; invited, stale and suspended rows are skipped, no key opens them today).
+  `resealHeld` then writes one self-reseal per held vault and never throws. Every held key
+  the caller is not handed back is zeroed (`zeroKeys`). A failure becomes a `ResealPending`
+  owned by `App.tsx`, not the page: `components/ResealPanel.tsx` renders in the app shell
+  beside the lock notice, with `retryPending` behind its Retry, because the held keys are the
+  last copies and any in-app navigation unmounts Security. `handOff` is the whole gate on that
+  hand-off — the unlock generation, never whether the page is still mounted — and `checkAuth`
+  losing the session drops the pending like `closeVault` does. `closeVault` and the state setter
+  are the only things that zero them, Replace is disabled while a pending exists, and the
+  panel's re-auth link opens in a new tab so the document never navigates. The held keys are
+  this tab's memory and nothing else: a lock, a sign-out or a reload loses them, and the rows
+  still sealed to the retired key stay stale until another owner re-seals them.
+  A `publish` that rejects is re-read before it is believed (`publishedIdentity`): a lost
+  response over a delivered write leaves the new key published, and zeroing the held keys then
+  is the one unrecoverable outcome, so the replace continues to the re-seal when the server
+  publishes the key this click generated and only zeroes them when the old key still is.
+  `keyReplaceReseal.test.ts` covers the order, the list failure publishing nothing, the
+  warning branches, the zeroing and both sides of that re-read. `PUT /api/vault/user-key` is
   refused with 403 for a device-session bearer token (a stolen extension token must not be able to
   swap the published key); only a browser session may publish or replace. `GET /api/users/{id}/key`
   serves the public half to any session or device token, never `wrappedSeed`; readers trust their own

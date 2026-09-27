@@ -18,3 +18,14 @@ test("routes round-trip and unknown input falls back to the vault", () => {
   assert.equal(formatRoute({ tab: "admin", admin: "users" }), "#/admin/users");
   assert.equal(formatRoute(parseRoute("#/vault/x%20y")), "#/vault/x%20y");
 });
+
+test("shared vault routes", () => {
+  assert.deepEqual(parseRoute("#/shared/sv_abcdefghijklmnopqrstuv"), { tab: "vault", shared: "sv_abcdefghijklmnopqrstuv" });
+  assert.deepEqual(parseRoute("#/shared/sv_abcdefghijklmnopqrstuv/e%201"), { tab: "vault", shared: "sv_abcdefghijklmnopqrstuv", entry: "e 1" });
+  assert.deepEqual(parseRoute("#/shared/../x"), { tab: "vault" });
+  assert.deepEqual(parseRoute("#/shared/u-1"), { tab: "vault" });
+  assert.equal(formatRoute({ tab: "vault", shared: "sv_abcdefghijklmnopqrstuv" }), "#/shared/sv_abcdefghijklmnopqrstuv");
+  assert.equal(formatRoute({ tab: "vault", shared: "sv_abcdefghijklmnopqrstuv", entry: "e 1" }), "#/shared/sv_abcdefghijklmnopqrstuv/e%201");
+  assert.deepEqual(parseRoute("#/admin/shared"), { tab: "admin", admin: "shared" });
+  assert.equal(formatRoute({ tab: "admin", admin: "shared" }), "#/admin/shared");
+});

@@ -57,6 +57,7 @@ type Server struct {
 	scimToken     string
 	dataDir       string
 	pairings      *pairingLimiter
+	lookupLimit   *pairingLimiter
 
 	// shared is shared-vault membership; sharedSettings is CONFIG_DIR/shared.json.
 	shared         *shared.Store
@@ -185,6 +186,7 @@ func NewServer(cfg Config) (*Server, error) {
 		scimToken:      cfg.SCIMToken,
 		dataDir:        cfg.DataDir,
 		pairings:       newPairingLimiter(),
+		lookupLimit:    newLimiter(lookupMaxMisses, lookupLockout),
 		shared:         shStore,
 		sharedSettings: newSharedSettings(cfg.ConfigDir),
 		trustedProxies: cfg.TrustedProxies,
@@ -236,6 +238,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/vault/upload", s.withAuth(s.handleVaultUpload))
 	mux.HandleFunc("PUT /api/vault/envelopes", s.withAuth(s.handleVaultEnvelopes))
 	mux.HandleFunc("PUT /api/vault/user-key", s.withAuth(s.handleUserKeyPut))
+	mux.HandleFunc("GET /api/users/lookup", s.withAuth(s.handleUserLookup))
 	mux.HandleFunc("GET /api/users/{id}/key", s.withAuth(s.handleUserKeyGet))
 	mux.HandleFunc("GET /api/vault/history", s.withAuth(s.handleVaultHistory))
 	mux.HandleFunc("GET /api/vault/history/{id}", s.withAuth(s.handleVaultHistoryDownload))

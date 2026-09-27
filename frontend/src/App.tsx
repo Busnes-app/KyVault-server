@@ -1,14 +1,16 @@
 import { ThemeSwitcher } from './components/ThemeSwitcher';
-import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback } from "react";
-import { getJSON, postJSON, putJSON, requestJSON, toErrorMessage, HttpError } from "./lib/api";
-import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
+import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback, useMemo } from "react";
+import { getBinary, getJSON, postJSON, putJSON, requestJSON, toErrorMessage, HttpError } from "./lib/api";
+import { VaultSaveQueue, uploadVault, canDiscardVault, PERSONAL_BASE, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
-import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
+import { sealDraft, openDraft, openDraftCompat, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, draftAccount, draftId, type DraftScope, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault, isWrongVaultKey } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
 import { rotateAndUpload, RotationUnconfirmedError, uploadRotatedVault } from "./lib/keyRotation";
 import { adoptUserKey, newUserKeyRecord, type UserKeyState } from "./lib/userKeyState";
-import type { UserKeyRecord } from "./lib/userKey";
+import { fingerprint, type UserKeyRecord } from "./lib/userKey";
+import { lookupKey, pinKey } from "./lib/keyPins";
+import { createSharedVault, type FlowDeps } from "./lib/sharedFlows";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
@@ -21,6 +23,14 @@ import { unlockMode, checkCreatePassword } from "./lib/unlockMode";
 import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
 import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
+import { personal, selectionScope, selectionBase, sameSelection, resolveSelection, openShared, type Selected } from "./lib/vaultSelection";
+import { switchTo, lostAccess, restorePlan, applyRotation, resolveDraft, type OpenedPersonal } from "./lib/appSelection";
+import { useSharedVaults, sharedApi, sharedNameError, type SharedVaultSummary } from "./lib/sharedVaults";
+import { retryPending, zeroKeys, type ResealPending } from "./lib/keyReplaceReseal";
+import { ResealPanel } from "./components/ResealPanel";
+import { VaultSwitcher } from "./components/VaultSwitcher";
+import { AcceptInvitationDialog } from "./components/AcceptInvitationDialog";
+import { SharedMembersDialog } from "./components/SharedMembersDialog";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
 import { WatchtowerPage } from "./pages/WatchtowerPage";
@@ -54,6 +64,20 @@ type VaultMetadata = {
 };
 
 const idleSave: SaveState = { kind: "saved", version: 0 };
+// Personal pointers keep their original key; shared scopes add the vault id.
+const pointerOwner = (userId: string, scope: DraftScope) => (scope === "personal" ? userId : `${userId}:${scope}`);
+// Every draft pointer this tab holds for userId, personal and shared.
+const draftPointerKeys = (userId: string): string[] => {
+  const keys: string[] = [];
+  try {
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      if (k && [`kyvault.draft:${userId}`, `kypassword.draft:${userId}`].some((prefix) => k === prefix || k.startsWith(`${prefix}:`))) keys.push(k);
+    }
+  } catch {}
+  return keys;
+};
+type PendingOpen = { dirty: boolean; entry: EntryDraft | null; recovered: boolean; notices: string[]; settle: (current: () => boolean) => Promise<boolean> };
 const noSubscribe = () => () => {};
 const idleSnapshot = () => idleSave;
 
@@ -62,6 +86,8 @@ export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [route, navigate] = useRoute();
+  const routeRef = useRef(route);
+  routeRef.current = route;
   const navTab = route.tab;
   const lastVault = useRef<Route>({ tab: "vault" });
   useEffect(() => {
@@ -81,15 +107,79 @@ export function App() {
   const [autoLockMinutes, setAutoLockMinutes] = useState(loadAutoLockMinutes);
   const unlockGeneration = useRef(0);
   const checkpoint = useRef<Promise<void>>(Promise.resolve());
-  const memoryDraft = useRef<LockedDraft | undefined>(undefined);
+  const memoryDraft = useRef(new Map<DraftScope, LockedDraft>());
   const [lockNotice, setLockNotice] = useState("");
   const restoreNotice = useRef("");
   const [sessionNotice, setSessionNotice] = useState("");
-  const recoveryId = (u: User): string | undefined => {
-    try { return draftPointer(sessionStorage, u.id); } catch { return undefined; }
+  const recoveryId = (u: User, scope: DraftScope = "personal"): string | undefined => {
+    try { return draftPointer(sessionStorage, pointerOwner(u.id, scope)); } catch { return undefined; }
   };
   const [recoveryPending, setRecoveryPending] = useState(false);
   const unsaved = recoveryPending || hasDraft || saveState.kind !== "saved";
+
+  // One selected vault at a time. The personal vault and key stay in memory while a shared
+  // vault is selected; the shared key lives only in sharedKeyRef and is zeroed on leave.
+  const [selected, setSelected] = useState<Selected>(personal);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const queueRef = useRef(saveQueue);
+  queueRef.current = saveQueue;
+  const [readOnly, setReadOnly] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const switchingRef = useRef(false);
+  const [rotating, setRotating] = useState(false);
+  const rotatingRef = useRef(false);
+  const personalRef = useRef<(OpenedPersonal & { stale?: boolean }) | null>(null);
+  const sharedKeyRef = useRef<Uint8Array | null>(null);
+  const pendingOpen = useRef<PendingOpen | null>(null);
+  const restored = useRef(-1);
+  const pinChain = useRef<Promise<void>>(Promise.resolve());
+  const shared = useSharedVaults(!!vault && !!user);
+  // A re-seal that failed after a user-key replace. The held shared vault keys are the only
+  // copies left, so they live here, above every page, and only a landed re-seal or closeVault
+  // wipes them.
+  const [reseal, setReseal] = useState<ResealPending | null>(null);
+  const [resealing, setResealing] = useState(false);
+  const resealRef = useRef<ResealPending | null>(null);
+  const setResealPending = useCallback((next: ResealPending | null) => {
+    const prev = resealRef.current;
+    // Whatever the next pending does not carry is a key nobody can use again.
+    if (prev) zeroKeys(prev.held.filter((h) => !next?.held.includes(h)));
+    resealRef.current = next;
+    setReseal(next);
+  }, []);
+  const retryReseal = useCallback(async () => {
+    const pending = resealRef.current;
+    if (!pending) return;
+    setResealing(true);
+    try {
+      setResealPending(await retryPending(pending, sharedApi));
+      void shared.refresh();
+    } catch (err) {
+      // retryPending is not supposed to throw; if it ever does, the keys stay held and the
+      // user hears about it instead of the browser swallowing a rejection.
+      setLockNotice(toErrorMessage(err, "Could not re-seal the shared vaults. Try again."));
+    } finally {
+      setResealing(false);
+    }
+  }, [setResealPending, shared]);
+  const [acceptRow, setAcceptRow] = useState<SharedVaultSummary | null>(null);
+  const [showMembers, setShowMembers] = useState(false);
+  // My own fingerprint: the server checks it against my published key on every seal.
+  const [myFingerprint, setMyFingerprint] = useState("");
+  useEffect(() => {
+    if (userKey?.kind !== "ready") { setMyFingerprint(""); return; }
+    let live = true;
+    void fingerprint(userKey.publicKey).then((f) => { if (live) setMyFingerprint(f); });
+    return () => { live = false; };
+  }, [userKey]);
+  const resetSelection = () => {
+    sharedKeyRef.current?.fill(0);
+    sharedKeyRef.current = null;
+    pendingOpen.current = null;
+    setSelected(personal);
+    setReadOnly(false);
+  };
 
   useEffect(() => {
     if (!unsaved) return;
@@ -135,6 +225,9 @@ export function App() {
         setUserKey(null);
         setSaveQueue(null);
         setHasDraft(false);
+        // No session, so the held shared vault keys belong to nobody: a pending must never
+        // outlive the account it was replaced for.
+        setResealPending(null);
       }
     } catch {
       setUser(null);
@@ -143,6 +236,7 @@ export function App() {
       setUserKey(null);
       setSaveQueue(null);
       setHasDraft(false);
+      setResealPending(null);
     } finally {
       setLoading(false);
     }
@@ -153,7 +247,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!loading && user && route.tab === "admin" && user.role !== "admin") navigate({ tab: "vault" });
+    if (!loading && user && route.tab === "admin" && user.role !== "admin") navigate(lastVault.current);
   }, [loading, route.tab, user?.role]);
 
   useEffect(() => {
@@ -204,6 +298,46 @@ export function App() {
     }
   };
 
+  // Opens scope's vault from this tab's locked checkpoint when one exists, else from the server
+  // copy. settle() retires the checkpoint once the caller has applied the vault; it returns
+  // false when a lock landed first, leaving the in-memory copy for the next unlock.
+  const restoreDraft = async (u: User, scope: DraftScope, server: ArrayBuffer | KeePassVault, key: Uint8Array, version: number, notices: string[]) => {
+    const id = recoveryId(u, scope);
+    const inMemory = memoryDraft.current.get(scope);
+    const local = inMemory ? { kind: "available" as const, draft: inMemory } : await readDraft(id);
+    const stored = local.kind === "available" ? local.draft : undefined;
+    if (local.kind === "unavailable") notices.push("Opened the server copy. Could not read the local recovery copy; retry unlocking when browser storage is available to recover local edits.");
+    let recovered: Awaited<ReturnType<typeof openDraft>> | undefined;
+    if (stored) {
+      try {
+        recovered = scope === "personal" ? await openDraftCompat(stored, key, u.id) : await openDraft(stored, key, draftAccount(u.id, scope));
+      } catch {
+        notices.push("Opened the server copy. The local recovery copy could not be read and was discarded.");
+        if (!await removeDraft(id)) notices.push("Could not remove the unreadable recovery copy from browser storage.");
+      }
+    }
+    const opened = recovered ? await KeePassVault.open(recovered.binary, key)
+      : server instanceof KeePassVault ? server : await KeePassVault.open(server, key);
+    const settle = async (current: () => boolean): Promise<boolean> => {
+      if (recovered && stored) {
+        memoryDraft.current.set(scope, stored);
+        setRecoveryPending(true);
+        if (!await removeDraft(id)) notices.push("Recovered local edits, but could not remove the old encrypted recovery copy from browser storage.");
+      }
+      if (local.kind === "available") {
+        try {
+          sessionStorage.removeItem(`kyvault.draft:${pointerOwner(u.id, scope)}`);
+          sessionStorage.removeItem(`kypassword.draft:${pointerOwner(u.id, scope)}`);
+        } catch {}
+      }
+      if (!current()) return false;
+      memoryDraft.current.delete(scope);
+      setRecoveryPending(local.kind === "unavailable");
+      return true;
+    };
+    return { id, vault: opened, version: recovered?.metadata.version ?? version, dirty: !!recovered?.metadata.dirty, entry: recovered?.metadata.entry ?? null, recovered: !!recovered, settle };
+  };
+
   const initVault = async (u: User, masterPassword?: string) => {
     const generation = ++unlockGeneration.current;
     const current = () => generation === unlockGeneration.current;
@@ -244,6 +378,8 @@ export function App() {
         setVaultKey(key);
         void settleUserKey(u, key, undefined, version, generation);
         setVault(newVault);
+        personalRef.current = { vault: newVault, key, version, passwordEnvelope: pwEnvelope };
+        resetSelection();
         setLockedReason(null);
         setShowUnlockModal(false);
         setLockNotice(["Vault created. Generate a paper recovery code from Security so a forgotten password does not lock you out.", ...notices].join(" "));
@@ -283,20 +419,8 @@ export function App() {
       const kdbxBytes = await kdbxRes.arrayBuffer();
 
       // Open zero-knowledge vault client-side
-      const id = recoveryId(u);
-      const local = memoryDraft.current ? { kind: "available", draft: memoryDraft.current } : await readDraft(id);
-      const stored = "draft" in local ? local.draft : undefined;
-      if (local.kind === "unavailable") notices.push("Opened the server copy. Could not read the local recovery copy; retry unlocking when browser storage is available to recover local edits.");
-      let recovered: Awaited<ReturnType<typeof openDraft>> | undefined;
-      if (stored) {
-        try {
-          recovered = await openDraft(stored, key, u.id);
-        } catch {
-          notices.push("Opened the server copy. The local recovery copy could not be read and was discarded.");
-          if (!await removeDraft(id)) notices.push("Could not remove the unreadable recovery copy from browser storage.");
-        }
-      }
-      const loadedVault = await KeePassVault.open(recovered?.binary ?? kdbxBytes, key);
+      const restoredDraft = await restoreDraft(u, "personal", kdbxBytes, key, meta.version, notices);
+      const loadedVault = restoredDraft.vault;
       if (!current()) return;
       if (!masterPassword) {
         try {
@@ -313,31 +437,20 @@ export function App() {
         if (cached === "failed") notices.push("Could not cache the device key; you may need your master password again.");
         if (!current()) return;
       }
-      if (recovered) {
-        memoryDraft.current = stored;
-        setRecoveryPending(true);
-        if (!await removeDraft(id)) notices.push("Recovered local edits, but could not remove the old encrypted recovery copy from browser storage.");
-      }
-      if (local.kind === "available") {
-        try {
-          sessionStorage.removeItem(`kyvault.draft:${u.id}`);
-          sessionStorage.removeItem(`kypassword.draft:${u.id}`);
-        } catch {}
-      }
-      if (!current()) return;
-      memoryDraft.current = undefined;
-      setRecoveryPending(local.kind === "unavailable");
-      const queue = new VaultSaveQueue(loadedVault, recovered?.metadata.version ?? meta.version, meta.passwordEnvelope);
-      if (recovered?.metadata.dirty) queue.recoverUnsaved();
-      setInitialDraft(recovered?.metadata.entry ?? null);
+      if (!await restoredDraft.settle(current)) return;
+      const queue = new VaultSaveQueue(loadedVault, restoredDraft.version, meta.passwordEnvelope);
+      if (restoredDraft.dirty) queue.recoverUnsaved();
+      setInitialDraft(restoredDraft.entry);
       setSaveQueue(queue);
       setVaultKey(key);
-      void settleUserKey(u, key, meta.userKey, recovered?.metadata.version ?? meta.version, generation);
+      void settleUserKey(u, key, meta.userKey, restoredDraft.version, generation);
       setVault(loadedVault);
-      if (recovered) notices.unshift("Recovered local edits. Review them before saving.");
+      personalRef.current = { vault: loadedVault, key, version: restoredDraft.version, passwordEnvelope: meta.passwordEnvelope };
+      resetSelection();
+      if (restoredDraft.recovered) notices.unshift("Recovered local edits. Review them before saving.");
       setLockNotice(notices.join(" "));
       if (masterPassword) { try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {} }
-      void pruneDrafts(u.id, id);
+      void pruneDrafts(u.id, restoredDraft.id);
       setLockedReason(null);
       setShowUnlockModal(false);
     } catch (err) {
@@ -380,7 +493,8 @@ export function App() {
   const handleExportKdbx = async () => {
     if (!saveQueue || saveState.kind === "saving") return;
     const binary = await saveQueue.exportBinary();
-    downloadBlob(new Blob([binary], { type: "application/x-keepass2" }), `${user?.username || "vault"}.kdbx`);
+    const name = selected.kind === "shared" ? shared.vaults.find((v) => v.id === selected.id)?.name || "shared-vault" : user?.username || "vault";
+    downloadBlob(new Blob([binary], { type: "application/x-keepass2" }), `${name}.kdbx`);
   };
 
   // Key rotation. Runs inside the queue's serializer so no download or autosave can export
@@ -388,7 +502,10 @@ export function App() {
   const rotateKey = async (password: string, paperCode: string): Promise<void> => {
     const queue = saveQueue, oldKey = vaultKey, u = user, generation = unlockGeneration.current;
     if (!vault || !queue || !oldKey || !u) throw new Error("Unlock the vault first.");
+    if (selected.kind !== "personal") throw new Error("Switch to My vault to rotate the vault key.");
     let rotated: { key: Uint8Array; version: number; passwordEnvelope: string; userKeyRecord?: UserKeyRecord };
+    rotatingRef.current = true;
+    setRotating(true);
     try {
       rotated = await queue.exclusive((live) => {
         if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
@@ -405,6 +522,9 @@ export function App() {
         setLockNotice("Could not confirm whether the new vault key reached the server, so the vault is locked. Unlock with your master password, then generate a new paper code from Security.");
       }
       throw err;
+    } finally {
+      rotatingRef.current = false;
+      setRotating(false);
     }
     queue.discard();
     const recache = clearDeviceVaultKey(u.username);
@@ -414,9 +534,13 @@ export function App() {
       setLockNotice("The vault key was rotated while the vault locked. Unlock with your master password, then generate a new paper code from Security.");
       return;
     }
-    setVaultKey(rotated.key);
     if (rotated.userKeyRecord && userKey?.kind === "ready") setUserKey({ ...userKey, record: rotated.userKeyRecord });
-    setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
+    personalRef.current = { vault, key: rotated.key, version: rotated.version, passwordEnvelope: rotated.passwordEnvelope };
+    // A switch that closed this queue owns the screen; the personal copy above is what it reopens.
+    if (applyRotation(selectedRef.current, queue, queueRef.current)) {
+      setVaultKey(rotated.key);
+      setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
+    }
     // Forget This Device or a lock can land while this write is pending; the helper
     // undoes a write that lost that race so the forgotten device keeps nothing.
     const cached = await recache.then(() => cacheDeviceKey({
@@ -437,6 +561,8 @@ export function App() {
       try { localStorage.setItem(`kyvault.locked:${user.id}`, "1"); } catch {}
     }
     saveQueue?.discard();
+    // The held shared vault keys go with the vault key.
+    setResealPending(null);
     draft.current = null;
     setInitialDraft(null);
     setSaveQueue(null);
@@ -448,22 +574,245 @@ export function App() {
     setUnlockConfirm("");
     setShowUnlockModal(false);
     setShowHistoryModal(false);
+    setAcceptRow(null);
+    setShowMembers(false);
+    resetSelection();
+    personalRef.current = null;
+    switchingRef.current = false;
+    setSwitching(false);
     setLockedReason(meta?.version ? "locked" : "new");
   };
 
+  // Reopens the retained personal vault. After its unsaved edits were discarded, or the
+  // server copy moved on under a pin upload, the in-memory copy is stale: fetch the server's.
+  const openPersonal = async (): Promise<OpenedPersonal> => {
+    await pinChain.current;
+    const p = personalRef.current;
+    if (!p) throw new Error("Vault is locked.");
+    if (!p.stale) return p;
+    const meta = await getJSON<VaultMetadata>("/api/vault/metadata");
+    const fresh = { vault: await KeePassVault.open(await getBinary("/api/vault/kdbx"), p.key), key: p.key, version: meta.version, passwordEnvelope: meta.passwordEnvelope };
+    if (personalRef.current === p) personalRef.current = fresh;
+    return fresh;
+  };
+
+  // Pins live in the personal vault. While it is selected its queue saves them; otherwise
+  // they upload on their own chain against the retained personal version.
+  const savePersonalPins = useCallback((): Promise<void> => {
+    if (selectedRef.current.kind === "personal") { queueRef.current?.changed(); return Promise.resolve(); }
+    const run = pinChain.current.then(async () => {
+      const p = personalRef.current;
+      if (!p) return;
+      if (p.stale) { setLockNotice("Your personal vault has discarded edits in this tab; the pin was not saved. Switch to My vault and try again."); return; }
+      try {
+        p.version = await uploadVault(await p.vault.exportBinary(), p.version, undefined, undefined, undefined, false, undefined, PERSONAL_BASE);
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 409) {
+          p.stale = true;
+          setLockNotice("Your personal vault changed on the server; the pin was not saved. Switch to My vault and try again.");
+        } else {
+          setLockNotice(toErrorMessage(err, "Could not save the pin."));
+        }
+      }
+    });
+    pinChain.current = run.catch(() => {});
+    return run;
+  }, []);
+
+  // The shared-vault flows take their world as an argument. Recomputing it whenever the
+  // user key, the personal vault object or the pin saver changes is what stops a dialog
+  // capturing a key from a previous unlock.
+  const pinVault = personalRef.current?.vault;
+  const flowDeps = useMemo<FlowDeps | null>(() => {
+    if (!user || !pinVault || userKey?.kind !== "ready" || !myFingerprint) return null;
+    return {
+      api: sharedApi,
+      pinVault,
+      onPinChanged: () => { void savePersonalPins(); },
+      lookupKey: (v, id) => lookupKey(v, id),
+      pinKey,
+      me: { id: user.id, publicKey: userKey.publicKey, fingerprint: myFingerprint },
+    };
+  }, [user, pinVault, userKey, myFingerprint, savePersonalPins]);
+
+  const switchVault = async (target: Selected, row?: SharedVaultSummary, opts: { force?: boolean } = {}): Promise<boolean> => {
+    const u = user;
+    if (!u || !personalRef.current || switchingRef.current || rotatingRef.current) return false;
+    switchingRef.current = true;
+    setSwitching(true);
+    const from = selected, queue = saveQueue, discarding = saveState.kind !== "saved" || hasDraft;
+    const generation = unlockGeneration.current;
+    let applied = false;
+    try {
+      const ok = await switchTo(target, row, {
+        confirmDiscard: opts.force ? async () => true : confirmDiscardVault,
+        closeQueue: () => {
+          const p = personalRef.current;
+          if (from.kind === "personal" && p) {
+            if (queue) p.version = queue.getSnapshot().version;
+            if (discarding) p.stale = true;
+          }
+          queue?.discard();
+          setSaveQueue(null);
+        },
+        openShared: async (r) => {
+          if (userKey?.kind !== "ready") throw new Error("Your user key is not available; reload and unlock again.");
+          const o = await openShared(r, userKey.seed);
+          const notices: string[] = [];
+          const d = resolveDraft(o, await restoreDraft(u, selectionScope({ kind: "shared", id: r.id }), o.vault, o.key, o.version, notices), o.readOnly, notices);
+          pendingOpen.current = { dirty: d.dirty, entry: d.entry, recovered: d.recovered, notices, settle: d.settle };
+          return { ...o, vault: d.vault, version: d.version };
+        },
+        openPersonal,
+        apply: (n) => {
+          applied = true;
+          if (sharedKeyRef.current !== n.key) sharedKeyRef.current?.fill(0);
+          sharedKeyRef.current = n.selected.kind === "shared" ? n.key : null;
+          const pending = n.selected.kind === "shared" ? pendingOpen.current : null;
+          pendingOpen.current = null;
+          // openShared already refused a reader's recovered draft, so what arrives here is
+          // whatever this selection may actually save.
+          if (pending?.dirty) n.queue.recoverUnsaved();
+          draft.current = null;
+          setHasDraft(false);
+          setInitialDraft(pending?.entry ?? null);
+          setSelected(n.selected);
+          setVault(n.vault);
+          setVaultKey(n.key);
+          setSaveQueue(n.queue);
+          setReadOnly(n.readOnly);
+          const id = n.selected.kind === "shared" ? n.selected.id : undefined;
+          const next: Route = { tab: "vault", shared: id, entry: sameSelection(n.selected, from) ? routeRef.current.entry : undefined };
+          lastVault.current = next;
+          // A switch forced from another tab (lost access) does not pull the user off it.
+          if (routeRef.current.tab === "vault") navigate(next);
+          if (pending) {
+            const current = () => generation === unlockGeneration.current;
+            void pending.settle(current).then(() => {
+              const text = [pending.recovered ? "Recovered local edits. Review them before saving." : "", ...pending.notices].filter(Boolean).join(" ");
+              if (text && current()) setLockNotice(text);
+            });
+          }
+        },
+        notify: (text) => { if (generation === unlockGeneration.current) setLockNotice(text); },
+        generation: () => unlockGeneration.current,
+      });
+      // Declined: put the route back on the vault that is still open.
+      if (!applied && generation === unlockGeneration.current && routeRef.current.tab === "vault") {
+        navigate({ tab: "vault", shared: from.kind === "shared" ? from.id : undefined, entry: routeRef.current.entry });
+      }
+      return ok;
+    } catch (err) {
+      // Not even the personal vault reopened (its key was rotated elsewhere, or the network
+      // is gone): locking is the only state left that holds no half-open vault.
+      if (generation === unlockGeneration.current) {
+        closeVault();
+        setLockNotice(`${toErrorMessage(err, "Could not reopen your vault.")} Unlock again.`);
+      }
+      return false;
+    } finally {
+      if (generation === unlockGeneration.current) {
+        switchingRef.current = false;
+        setSwitching(false);
+      }
+    }
+  };
+
+  const sharedRow = (id: string) => shared.vaults.find((v) => v.id === id);
+
+  // Create, then select from the list the server just gave us: the sealed copy of the key
+  // that opens the new vault only exists in that row.
+  const createShared = async () => {
+    if (!flowDeps) return;
+    const name = await dialogs.prompt({
+      title: "New shared vault",
+      label: "Name",
+      validate: sharedNameError,
+    });
+    if (name === null) return;
+    try {
+      const made = await createSharedVault(name.trim(), flowDeps);
+      made.key.fill(0);
+      const rows = await shared.refresh();
+      const row = rows.find((r) => r.id === made.id);
+      if (!row) { setLockNotice(`Shared vault “${name.trim()}” was created but could not be opened yet. Select it from the vault switcher.`); return; }
+      await switchVault({ kind: "shared", id: made.id }, row);
+    } catch (err) {
+      setLockNotice(toErrorMessage(err, "Could not create the shared vault."));
+    }
+  };
+
+  const declineShared = async (row: SharedVaultSummary) => {
+    if (!(await dialogs.confirm({ title: `Decline “${row.name}”?`, message: "The invitation is removed. An owner can invite you again.", danger: true, confirmLabel: "Decline" }))) return;
+    try { await sharedApi.decline(row.id); } catch (err) { setLockNotice(toErrorMessage(err, "Could not decline the invitation.")); }
+    void shared.refresh();
+  };
+
+  // Accepting does not open the vault: the joined vault appears in the switcher and the
+  // user picks when to leave whatever they are working on.
+  const invitationSettled = async () => {
+    setAcceptRow(null);
+    await shared.refresh();
+  };
+
+  // Route restore: once per unlock, reopen the #/shared/<id> the tab was on, after the list
+  // has loaded and the user key that opens it is ready.
+  useEffect(() => {
+    if (!vault || switchingRef.current) return;
+    const generation = unlockGeneration.current;
+    const plan = restorePlan(route.shared, shared.loaded ? shared.vaults : null, userKey?.kind ?? null, restored.current === generation);
+    if (plan.action === "wait") return;
+    restored.current = generation;
+    if (plan.action === "switch" && !sameSelection(selected, { kind: "shared", id: plan.id })) void switchVault({ kind: "shared", id: plan.id }, sharedRow(plan.id));
+    else if (plan.action === "notice") { setLockNotice(plan.text); navigate({ tab: "vault" }); }
+  }, [vault, shared.loaded, shared.vaults, userKey?.kind]);
+
+  // Route follow: after the restore, a vault-tab route naming another vault switches to it.
+  useEffect(() => {
+    if (!vault || restored.current !== unlockGeneration.current || switchingRef.current || route.tab !== "vault") return;
+    const current = selected.kind === "shared" ? selected.id : undefined;
+    if (route.shared === current) return;
+    const { selected: next, notice } = resolveSelection(route.shared, shared.vaults);
+    if (notice) { setLockNotice(notice); navigate({ tab: "vault", shared: current }); return; }
+    void switchVault(next, next.kind === "shared" ? sharedRow(next.id) : undefined);
+  }, [route.tab, route.shared]);
+
+  // A 403/404 on save means membership or role changed under us. The edits cannot be saved
+  // anywhere, so there is nothing to confirm: go home and say so.
+  useEffect(() => {
+    if (selected.kind !== "shared" || !lostAccess(selected, saveState)) return;
+    const name = sharedRow(selected.id)?.name ?? "that shared vault";
+    void switchVault(personal, undefined, { force: true }).then((ok) => {
+      if (ok) setLockNotice(`You no longer have write access to “${name}”; switched to My vault. Unsaved edits in that vault could not be saved.`);
+      void shared.refresh();
+    });
+  }, [saveState, selected]);
+
   const autoLock = useRef(() => {});
   autoLock.current = () => {
+    // A switch in flight has no queue: its discard was already confirmed, so lock with no
+    // checkpoint. The open's continuation fails its generation check and zeroes its key.
+    if (vault && user && !saveQueue) {
+      const u = user;
+      autoLock.current = () => {};
+      closeVault();
+      setLockNotice("Vault locked after inactivity.");
+      void clearDeviceVaultKey(u.username).catch(() => { setLockNotice("Vault locked. Could not remove the cached device key; keep this tab locked until browser storage is available."); });
+      return;
+    }
     if (!vault || !vaultKey || !saveQueue || !user) return;
     const u = user;
-    const key = vaultKey;
+    const scope = selectionScope(selected);
+    // A copy: closeVault zeroes a shared key before the seal below runs.
+    const key = new Uint8Array(vaultKey);
     const metadata = { version: saveQueue.getSnapshot().version, dirty: saveQueue.getSnapshot().kind !== "saved", entry: draft.current };
     const binary = metadata.dirty || metadata.entry ? saveQueue.exportBinary() : null;
     // Duplicating a browser tab copies sessionStorage. Allocate on each lock so those
     // tabs cannot overwrite one another's subsequent recovery snapshots.
-    const id = `${u.id}:${crypto.randomUUID()}`;
+    const id = draftId(u.id, scope);
     let durableReference = true;
     if (binary) {
-      try { sessionStorage.setItem(`kyvault.draft:${u.id}`, id); }
+      try { sessionStorage.setItem(`kyvault.draft:${pointerOwner(u.id, scope)}`, id); }
       catch { durableReference = false; }
     }
     // Capture the serializer before discarding; no subsequent network save can run.
@@ -475,20 +824,21 @@ export function App() {
     checkpoint.current = (async () => {
       try {
         if (binary) {
-          memoryDraft.current = await sealDraft(await binary, metadata, key, u.id);
-          await draftStore(id, "put", memoryDraft.current);
+          const sealed = await sealDraft(await binary, metadata, key, draftAccount(u.id, scope));
+          memoryDraft.current.set(scope, sealed);
+          await draftStore(id, "put", sealed);
           setRecoveryPending(!durableReference);
           setLockNotice(durableReference
             ? "Vault locked. Your unsaved edits are encrypted on this device; unlock this tab to recover them."
             : "Vault locked. Keep this tab open and unlock to recover your edits; the browser could not save the recovery reference.");
         } else {
-          memoryDraft.current = undefined;
+          memoryDraft.current.delete(scope);
         }
       } catch {
-        setLockNotice(memoryDraft.current
+        setLockNotice(memoryDraft.current.has(scope)
           ? "Vault locked. Recovery storage failed; keep this tab open and unlock to recover your edits."
           : "Vault locked, but the recovery copy failed. Unsaved edits could not be preserved.");
-      } finally { await removeCachedKey; }
+      } finally { key.fill(0); await removeCachedKey; }
     })();
   };
 
@@ -549,15 +899,14 @@ export function App() {
     const results = await Promise.allSettled([
       username ? clearDeviceVaultKey(username) : Promise.resolve(),
       checkpoint.current.then(async () => {
-        memoryDraft.current = undefined;
-        const id = user ? recoveryId(user) : undefined;
-        if (id) await draftStore(id, "delete");
-        if (user) {
-          try {
-            sessionStorage.removeItem(`kyvault.draft:${user.id}`);
-            sessionStorage.removeItem(`kypassword.draft:${user.id}`);
-          } catch {}
+        memoryDraft.current.clear();
+        const keys = user ? draftPointerKeys(user.id) : [];
+        for (const k of keys) {
+          let id: string | null = null;
+          try { id = sessionStorage.getItem(k); } catch {}
+          if (id) await draftStore(id, "delete");
         }
+        try { for (const k of keys) sessionStorage.removeItem(k); } catch {}
       }),
       logout(),
     ]);
@@ -659,10 +1008,13 @@ export function App() {
         </p>
       ) : null}
 
+      {reseal ? <ResealPanel pending={reseal} busy={resealing} onRetry={() => void retryReseal()} /> : null}
+
       {/* Keep the editor mounted across tabs so drafts and save status survive navigation. */}
       {vault && vaultKey && saveQueue ? (
         <>
           <VaultPage
+            key={`vault:${selectionScope(selected)}`}
             vault={vault}
             vaultKey={vaultKey}
             vaultVersion={saveState.version}
@@ -673,29 +1025,56 @@ export function App() {
             initialDraft={initialDraft}
             hidden={navTab !== "vault"}
             onExport={handleExportKdbx}
-            onReload={() => initVault(user)}
+            onReload={async () => {
+              // A shared vault reloads by reopening it from the server; initVault is personal-only.
+              if (selected.kind === "shared") await switchVault(selected, sharedRow(selected.id), { force: true });
+              else await initVault(user);
+            }}
             route={route}
             navigate={navigate}
+            basePath={selectionBase(selected)}
+            readOnly={readOnly}
+            header={<VaultSwitcher
+              selected={selected}
+              vaults={shared.vaults}
+              onSelect={(s) => void switchVault(s, s.kind === "shared" ? sharedRow(s.id) : undefined)}
+              onCreate={() => void createShared()}
+              onAccept={(row) => setAcceptRow(row)}
+              onDecline={(row) => void declineShared(row)}
+              onMembers={() => setShowMembers(true)}
+              canCreate={!!flowDeps}
+              busy={switching || rotating}
+              error={shared.error}
+            />}
           />
-          <WatchtowerPage vault={vault} hidden={navTab !== "watchtower"} userId={user.id} onOpenEntry={(uuid) => navigate({ tab: "vault", entry: uuid })} />
+          <WatchtowerPage key={`watchtower:${selectionScope(selected)}`} vault={vault} hidden={navTab !== "watchtower"} userId={user.id}
+            onOpenEntry={(uuid) => navigate({ tab: "vault", shared: selected.kind === "shared" ? selected.id : undefined, entry: uuid })} />
         </>
+      ) : vault && navTab === "vault" ? (
+        <p role="status" style={{ padding: "2rem", textAlign: "center", color: "var(--ink-muted)" }}>Opening vault…</p>
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (
         <AdminPanel currentUserId={user.id} route={route} navigate={navigate} />
       ) : vault ? (
         navTab === "security" ? <SecuritySettings
           user={user}
-          vaultKey={vaultKey!}
+          vaultKey={personalRef.current?.key ?? vaultKey!}
+          personalOnly={selected.kind === "personal"}
           autoLockMinutes={autoLockMinutes}
           onAutoLockChange={changeAutoLock}
           onUserUpdated={async () => { if (await confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
-          canRotate={!unsaved}
+          canRotate={!unsaved && !switching}
           onExport={handleExportKdbx}
           onRotateKey={rotateKey}
           userKey={userKey}
           unlockGeneration={() => unlockGeneration.current}
           onUserKeyReplaced={(s: UserKeyState, generation: number) => { if (generation === unlockGeneration.current) setUserKey(s); }}
+          pinVault={pinVault ?? null}
+          onPinsChanged={() => { void savePersonalPins(); }}
+          onResealPending={setResealPending}
+          resealPending={!!reseal}
+          onSharedChanged={() => { void shared.refresh(); }}
         /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -814,9 +1193,31 @@ export function App() {
         </Dialog>
       ) : null}
 
+      {acceptRow && flowDeps ? (
+        <AcceptInvitationDialog key={acceptRow.id} row={acceptRow} deps={flowDeps} onDone={() => void invitationSettled()} />
+      ) : null}
+
+      {showMembers && flowDeps && selected.kind === "shared" ? (
+        <SharedMembersDialog
+          key={selected.id}
+          vaultId={selected.id}
+          myId={user.id}
+          myRole={sharedRow(selected.id)?.role ?? "reader"}
+          sharedKey={sharedKeyRef.current}
+          deps={flowDeps}
+          onChanged={() => { void shared.refresh(); }}
+          onLeftOrDeleted={() => {
+            setShowMembers(false);
+            void switchVault(personal, undefined, { force: true }).then(() => { void shared.refresh(); });
+          }}
+          onClose={() => setShowMembers(false)}
+        />
+      ) : null}
+
       {/* History & Rollback Modal */}
       {showHistoryModal ? (
         <HistoryModal
+          key={selectionScope(selected)}
           allowRollback={!vault && !saveQueue}
           onClose={() => setShowHistoryModal(false)}
           onNotice={(text) => { restoreNotice.current = text; }}

@@ -14,7 +14,12 @@ import { generatePaperCode } from "../lib/paperCode";
 import { revokeDevices } from "../lib/keyRotation";
 import { newUserKeyRecord } from "../lib/userKeyState";
 import type { UserKeyState } from "../lib/userKeyState";
-import { fingerprint } from "../lib/userKey";
+import { fingerprint, b64 } from "../lib/userKey";
+import { fetchPublishedKey } from "../lib/keyPins";
+import { KnownKeys } from "../components/KnownKeys";
+import { handOff, runKeyReplace, type ResealPending } from "../lib/keyReplaceReseal";
+import { sharedApi as defaultSharedApi, type SharedApi } from "../lib/sharedVaults";
+import type { KeePassVault } from "../lib/kdbx";
 
 // Type-it-back comparison ignores formatting, not case or characters.
 function normalizeCode(value: string): string {
@@ -55,9 +60,21 @@ type Props = {
   userKey: UserKeyState | null;
   onUserKeyReplaced: (state: UserKeyState, generation: number) => void;
   unlockGeneration: () => number;
+  // False while a shared vault is selected: the cards below act on the personal vault only.
+  personalOnly?: boolean;
+  // Pins live in the personal vault, whichever vault is selected.
+  pinVault?: KeePassVault | null;
+  onPinsChanged?: () => void;
+  // Replacing the user key retires the key every shared vault key is sealed to. The keys it
+  // re-seals belong to App, which outlives this page: the panel that retries a failure and
+  // the keys it needs must survive the navigation this page does not.
+  onResealPending: (pending: ResealPending | null) => void;
+  resealPending: boolean;
+  onSharedChanged: () => void;
+  sharedApi?: SharedApi;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange, canRotate, onExport, onRotateKey, userKey, onUserKeyReplaced, unlockGeneration, personalOnly = true, pinVault, onPinsChanged, onResealPending, resealPending, onSharedChanged, sharedApi: api = defaultSharedApi }: Props) {
   const dialogs = useDialogs();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -150,7 +167,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       if (meta.passwordEnvelope && (await verifyMasterPassword(meta.passwordEnvelope, currentPassword, vaultKey))) {
         return meta.version;
       }
-      setError("Rotating the key needs your master password. The paper code cannot be used here.");
+      setError("This needs your master password. The paper code cannot be used here.");
       return null;
     }
     if (!meta.passwordEnvelope && !meta.recoveryEnvelope) {
@@ -350,25 +367,53 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const replaceUserKey = async () => {
     setError("");
     const generation = unlockGeneration();
-    const version = await proveCurrentPassword("password");
-    if (version === null) return;
-    const confirmed = await dialogs.confirm({
-      title: "Replace your key?",
-      message: "Anyone who has verified your current key will be asked to verify the new one. Do this if you believe your private key was exposed.",
-      confirmLabel: "Replace key",
-      danger: true,
-    });
-    if (!confirmed) return;
     setBusy(true);
+    // True once the server holds the new key: after that a failure is not "nothing changed".
+    let published = false;
+    // The key this click generated, kept so a lost PUT response can be checked against the
+    // server instead of being taken for a failure.
+    let made: Awaited<ReturnType<typeof newUserKeyRecord>> | null = null;
+    const adopt = async (m: NonNullable<typeof made>) => {
+      published = true;
+      onUserKeyReplaced({ kind: "ready", seed: m.seed, publicKey: m.publicKey, record: m.record }, generation);
+      if (alive.current) setCurrentPassword("");
+      return { id: user.id, publicKey: m.publicKey, fingerprint: await fingerprint(m.publicKey) };
+    };
     try {
-      const made = await newUserKeyRecord(vaultKey, user.id);
-      await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
-      onUserKeyReplaced({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record }, generation);
-      setCurrentPassword("");
+      const { pending } = await runKeyReplace({
+        api,
+        seed: userKey?.kind === "ready" ? userKey.seed : null,
+        prove: () => proveCurrentPassword("password"),
+        confirm: (message) => dialogs.confirm({ title: "Replace your key?", message, confirmLabel: "Replace key", danger: true }),
+        publish: async (version) => {
+          const m = await newUserKeyRecord(vaultKey, user.id);
+          made = m;
+          await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(m.record) });
+          return adopt(m);
+        },
+        // A dropped connection can still have delivered the write. Only the old key still
+        // being published means the replace did not happen; the new key being published
+        // means it did, and the shared vaults must be re-sealed to it.
+        publishedIdentity: async () => {
+          const m = made;
+          if (!m) return null;
+          const now = await fetchPublishedKey(user.id);
+          if (!now || b64.encode(now.publicKey) !== b64.encode(m.publicKey)) return null;
+          return adopt(m);
+        },
+      });
+      // App owns the pending re-seal: its keys must outlive this page, which any in-app
+      // navigation unmounts, so this hand-off is not gated on being mounted. Only a lock,
+      // which bumps the generation, ends them — the rows then stay sealed to the old key.
+      onResealPending(handOff(pending, unlockGeneration(), generation));
+      onSharedChanged();
     } catch (err) {
-      setError(toErrorMessage(err, "Could not replace the key."));
+      setError(published
+        ? ["Your key was replaced, but the shared vaults were not re-sealed to it.", toErrorMessage(err, ""),
+           "They stay locked to your old key: another active owner must share each one with you again, and a vault you own alone cannot be recovered."].filter(Boolean).join(" ")
+        : toErrorMessage(err, "Could not replace the key."));
     } finally {
-      setBusy(false);
+      if (alive.current) setBusy(false);
     }
   };
 
@@ -514,6 +559,18 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </div>
       ) : null}
 
+      {!personalOnly ? (
+        <section className="field-card" style={{ marginBottom: "2rem" }}>
+          <p style={{ margin: 0 }}>Switch to My vault to change the master password, paper code, device key or rotate the vault key.</p>
+          {onForgetDevice ? (
+            <button className="btn btn-danger btn-sm" style={{ marginTop: "1rem" }} onClick={onForgetDevice}>
+              Forget This Device & Sign Out
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
+      {personalOnly ? <>
       {/* 1. Master Password Change */}
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
@@ -646,6 +703,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </button>
       </section>
 
+      </> : null}
+
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <KeyRound size={20} color="var(--accent)" />
@@ -671,12 +730,16 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <span style={{ color: "var(--ink-muted)", fontSize: "0.8rem" }}>Created {formatWhen(userKey.record.createdAt)}</span>
           </div>
         )}
-        {userKey && userKey.kind !== "none" && userKey.kind !== "unavailable" ? (
-          <button type="button" className="btn btn-danger" onClick={() => void replaceUserKey()} disabled={busy || !currentPassword}
-            title={currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
+        {personalOnly && userKey && userKey.kind !== "none" && userKey.kind !== "unavailable" ? (
+          <button type="button" className="btn btn-danger" onClick={() => void replaceUserKey()} disabled={busy || !currentPassword || resealPending}
+            title={resealPending ? "Finish re-sealing your shared vaults first; replacing the key again would lose the keys that retry needs."
+              : currentPassword ? undefined : "Enter your current master password above first."}>Replace my key</button>
         ) : null}
       </section>
 
+      {pinVault ? <KnownKeys vault={pinVault} onChanged={() => onPinsChanged?.()} /> : null}
+
+      {personalOnly ? <>
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <RefreshCw size={20} color="var(--accent)" />
@@ -776,6 +839,8 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
         </button>
       </section>
 
+      </> : null}
+
       {/* 3. Single Sign-On */}
       {ssoConfig?.enabled ? (
         <section className="field-card" style={{ marginBottom: "2rem" }}>
@@ -808,7 +873,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       ) : null}
 
       {/* Local Device Vault & 1-Click SSO */}
-      <section className="field-card" style={{ marginBottom: "2rem" }}>
+      {personalOnly ? <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
           <KeyRound size={20} color="var(--accent)" />
           <h3 style={{ margin: 0 }}>This Device & 1-Click SSO</h3>
@@ -822,7 +887,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             Forget This Device & Sign Out
           </button>
         )}
-      </section>
+      </section> : null}
 
       <section className="field-card" style={{ marginBottom: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>

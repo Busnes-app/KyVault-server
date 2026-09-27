@@ -3,6 +3,7 @@ import { KeePassVault, isWrongVaultKey } from "../lib/kdbx";
 import { useState, useEffect, useRef } from "react";
 import { HttpError, getBinary, getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { diffVaults, type DiffRow, type VaultDiff } from "../lib/vaultDiff";
+import { PERSONAL_BASE } from "../lib/vaultSave";
 import { RotateCcw, AlertTriangle, Trash2, CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { Dialog } from "./Dialog";
 import { useDialogs } from "./DialogHost";
@@ -46,9 +47,12 @@ type Props = {
   onClose: () => void;
   onRestored: () => void;
   onNotice: (text: string) => void;
+  basePath?: string;
+  // Readers see history and conflicts but cannot roll back or discard.
+  readOnly?: boolean;
 };
 
-export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback }: Props) {
+export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback, basePath = PERSONAL_BASE, readOnly = false }: Props) {
   const dialogs = useDialogs();
   const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
@@ -77,7 +81,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setPreviews((prev) => ({ ...prev, [id]: { kind: "loading" } }));
     let result: Preview;
     try {
-      const bytes = await getBinary(`/api/vault/history/${encodeURIComponent(id)}`, controller.signal);
+      const bytes = await getBinary(`${basePath}/history/${encodeURIComponent(id)}`, controller.signal);
       const opened = await KeePassVault.open(bytes, snapshot.vaultKey);
       // Closed or locked while decrypting: nothing may continue to a confirm or restore.
       if (controller.signal.aborted) throw new Error("preview cancelled");
@@ -107,8 +111,8 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setError("");
     try {
       const [histData, confData] = await Promise.all([
-        getJSON<HistoryEntry[]>("/api/vault/history"),
-        getJSON<ConflictEntry[]>("/api/vault/conflicts"),
+        getJSON<HistoryEntry[]>(`${basePath}/history`),
+        getJSON<ConflictEntry[]>(`${basePath}/conflicts`),
       ]);
       setHistory(histData || []);
       setConflicts(confData || []);
@@ -124,7 +128,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
   }, []);
 
   const restoreSnapshot = async (id: string) => {
-    if (!allowRollback || busyId !== null || history.find((h) => h.id === id)?.staleKey) return;
+    if (readOnly || !allowRollback || busyId !== null || history.find((h) => h.id === id)?.staleKey) return;
     // While unlocked, only a snapshot the current key opens can be rolled back to.
     let preview = previews[id];
     if (snapshot && preview?.kind !== "ready") {
@@ -146,7 +150,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await postJSON(`/api/vault/history/${id}/restore`, {});
+      await postJSON(`${basePath}/history/${id}/restore`, {});
       onNotice("Vault restored to the selected version.");
       onRestored();
     } catch (err) {
@@ -162,7 +166,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
   };
 
   const discardConflict = async (id: string) => {
-    if (!allowRollback || busyId !== null) return;
+    if (readOnly || !allowRollback || busyId !== null) return;
     if (!await dialogs.confirm({
       title: "Discard this conflict?",
       message: "Discard this conflict upload?",
@@ -173,7 +177,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await deleteJSON(`/api/vault/conflicts/${id}`);
+      await deleteJSON(`${basePath}/conflicts/${id}`);
       setConflicts((prev) => prev.filter((c) => c.id !== id));
       setMessage("Conflict upload removed.");
     } catch (err) {
@@ -222,7 +226,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
 
         {comparisonId && recovery ? (
           <ConflictComparison key={comparisonId} conflictId={comparisonId} current={recovery.vault} vaultKey={recovery.vaultKey}
-            onRecovered={recovery.onRecovered} onBack={() => setComparisonId(null)} />
+            basePath={basePath} onRecovered={recovery.onRecovered} onBack={() => setComparisonId(null)} />
         ) : loading ? (
           <p style={{ color: "var(--ink-muted)" }}>Loading {activeTab === "history" ? "snapshots" : "conflicts"}…</p>
         ) : activeTab === "history" ? (
@@ -271,14 +275,14 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
                     >
                       {openPreview === h.id ? <EyeOff size={14} /> : <Eye size={14} />} Preview
                     </button>
-                    <button
+                    {readOnly ? null : <button
                       className="btn btn-secondary btn-sm"
                       disabled={busyId !== null || !allowRollback || refused}
                       title={rollbackReason}
                       onClick={() => restoreSnapshot(h.id)}
                     >
                       <RotateCcw size={14} /> Rollback
-                    </button>
+                    </button>}
                   </div>
                 </div>
                 {openPreview === h.id && preview ? <SnapshotPreview preview={preview} /> : null}
@@ -317,16 +321,16 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
                 </div>
                 <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                 <button className="btn btn-secondary btn-sm" disabled={busyId !== null || !recovery}
-                  title={!recovery ? "Unlock the vault to compare entries" : undefined}
+                  title={readOnly ? "Read-only: you cannot recover entries into this vault." : !recovery ? "Unlock the vault to compare entries" : undefined}
                   onClick={() => setComparisonId(c.id)}>Compare & Recover</button>
-                <button
+                {readOnly ? null : <button
                   className="btn btn-danger btn-sm"
                   disabled={busyId !== null || !allowRollback}
                   title={!allowRollback ? "Save or discard your unsaved edits first." : undefined}
                   onClick={() => discardConflict(c.id)}
                 >
                   <Trash2 size={14} /> Discard
-                </button>
+                </button>}
                 </div>
               </div>
             ))}

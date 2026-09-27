@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { getBinary } from "../lib/api";
 import { KeePassVault, isWrongVaultKey } from "../lib/kdbx";
 import { compareConflictEntries, comparisonFields } from "../lib/conflictComparison";
+import { PERSONAL_BASE } from "../lib/vaultSave";
 
 type LoadState = { kind: "loading" } | { kind: "error"; oldKey: boolean } | { kind: "ready"; vault: KeePassVault };
 type Props = {
@@ -10,9 +11,10 @@ type Props = {
   vaultKey: Uint8Array;
   onRecovered: (uuid: string) => void;
   onBack: () => void;
+  basePath?: string;
 };
 
-export function ConflictComparison({ conflictId, current, vaultKey, onRecovered, onBack }: Props) {
+export function ConflictComparison({ conflictId, current, vaultKey, onRecovered, onBack, basePath = PERSONAL_BASE }: Props) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [selectedId, setSelectedId] = useState("");
   const [reveal, setReveal] = useState(false);
@@ -23,7 +25,7 @@ export function ConflictComparison({ conflictId, current, vaultKey, onRecovered,
     let active = true;
     void (async () => {
       try {
-        const bytes = await getBinary(`/api/vault/conflicts/${encodeURIComponent(conflictId)}`, controller.signal);
+        const bytes = await getBinary(`${basePath}/conflicts/${encodeURIComponent(conflictId)}`, controller.signal);
         if (!active) return;
         const vault = await KeePassVault.open(bytes, vaultKey);
         if (active) {
@@ -35,7 +37,7 @@ export function ConflictComparison({ conflictId, current, vaultKey, onRecovered,
       }
     })();
     return () => { active = false; controller.abort(); };
-  }, [conflictId, vaultKey]);
+  }, [conflictId, vaultKey, basePath]);
 
   const rows = state.kind === "ready" ? compareConflictEntries(current.getLiveEntries(), state.vault.getLiveEntries()) : [];
   const selected = rows.find(row => row.entry.uuid === selectedId);

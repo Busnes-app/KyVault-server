@@ -4,9 +4,11 @@ import type { KeePassVault } from "./kdbx";
 export type SaveState =
   | { kind: "saved"; version: number }
   | { kind: "saving"; version: number }
-  | { kind: "error"; version: number; message: string; conflict?: boolean };
+  | { kind: "error"; version: number; message: string; conflict?: boolean; status?: number };
 
-export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string): Promise<number> {
+export const PERSONAL_BASE = "/api/vault";
+
+export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string, basePath = PERSONAL_BASE): Promise<number> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     "If-Match": `"${version}"`,
@@ -15,7 +17,7 @@ export async function uploadVault(binary: ArrayBuffer, version: number, password
   if (passwordEnvelope) headers["X-Password-Envelope"] = passwordEnvelope;
   if (recoveryEnvelope) headers["X-Recovery-Envelope"] = recoveryEnvelope;
   if (userKeyHeader) headers["X-User-Key"] = userKeyHeader;
-  const data = await requestJSON<unknown>("/api/vault/upload", { method: "POST", headers, body: binary, signal });
+  const data = await requestJSON<unknown>(`${basePath}/upload`, { method: "POST", headers, body: binary, signal });
   if (typeof data !== "object" || data === null || !("metadata" in data) ||
       typeof data.metadata !== "object" || data.metadata === null || !("version" in data.metadata) ||
       typeof data.metadata.version !== "number" || !Number.isSafeInteger(data.metadata.version) || data.metadata.version <= version) {
@@ -43,7 +45,7 @@ export class VaultSaveQueue {
 
   // passwordEnvelope is the one this vault was unlocked against: a different stored one
   // means another session rotated the key, and this copy must not overwrite the server's.
-  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string) {
+  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string, private basePath = PERSONAL_BASE) {
     this.state = { kind: "saved", version };
   }
 
@@ -104,16 +106,17 @@ export class VaultSaveQueue {
     try {
       if (options.overwrite) {
         // The server's copy stays in version history; ours becomes the head.
-        const meta = await requestJSON<{ version?: unknown; passwordEnvelope?: string }>("/api/vault/metadata", { method: "GET", signal: this.controller.signal });
+        const meta = await requestJSON<{ version?: unknown; passwordEnvelope?: string }>(`${this.basePath}/metadata`, { method: "GET", signal: this.controller.signal });
         if (typeof meta.version !== "number" || !Number.isSafeInteger(meta.version)) throw new Error("The server did not report its vault version.");
-        if (meta.passwordEnvelope !== this.passwordEnvelope) throw new Error("The vault key was rotated in another session. Download this copy, then lock and unlock with your master password.");
+        // Shared metadata has no envelope; the rotation guard only applies to the personal vault.
+        if (this.basePath === PERSONAL_BASE && meta.passwordEnvelope !== this.passwordEnvelope) throw new Error("The vault key was rotated in another session. Download this copy, then lock and unlock with your master password.");
         this.state = { ...this.state, version: meta.version };
       }
       while (this.savedRevision < this.revision) {
         const revision = this.revision;
         const binary = await this.exportBinary();
         if (this.controller.signal.aborted) return;
-        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal);
+        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal, false, undefined, this.basePath);
         if (this.controller.signal.aborted) return;
         this.savedRevision = revision;
         this.publish({ kind: this.savedRevision === this.revision ? "saved" : "saving", version });
@@ -125,7 +128,7 @@ export class VaultSaveQueue {
         this.onlineRetry = () => { this.clearOnlineRetry(); void this.save(); };
         window.addEventListener("online", this.onlineRetry);
       }
-      this.publish({ kind: "error", version: this.state.version, conflict, message: conflict
+      this.publish({ kind: "error", version: this.state.version, conflict, status: err instanceof HttpError ? err.status : undefined, message: conflict
         ? "A newer vault exists on the server. Overwrite it with this copy (the server copy stays in Version History) or reload the server copy and lose these edits."
         : toErrorMessage(err, "Unable to save vault. Your edits are still here.") });
     } finally {

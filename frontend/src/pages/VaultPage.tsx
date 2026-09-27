@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { KeePassVault, VaultEntry, VaultGroup, CustomField } from "../lib/kdbx";
 import { readKdbxFile, describeImport } from "../lib/kdbxImport";
 import type { EntryDraft } from "../lib/lockedDraft";
-import type { SaveState } from "../lib/vaultSave";
+import { PERSONAL_BASE, type SaveState } from "../lib/vaultSave";
 import { createFromDraft, type NewEntryDraft } from "../lib/newEntryDraft";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { parseTags, hasReservedTag, sortEntries, entryMatches, isExpired, expiresWithin, RESERVED_FIELDS, type SortKey } from "../lib/entryMeta";
@@ -61,9 +61,13 @@ type Props = {
   onReload: () => Promise<void>;
   route: Route;
   navigate: (next: Route) => void;
+  basePath?: string;
+  // Readers: every mutating handler refuses, not only its button.
+  readOnly?: boolean;
+  header?: ReactNode;
 };
 
-export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate }: Props) {
+export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate, basePath = PERSONAL_BASE, readOnly = false, header }: Props) {
   const dialogs = useDialogs();
   const narrow = useMediaQuery(NARROW);
   const [pane, setPane] = useState<"folders" | "list" | "detail">(initialDraft ? "detail" : "list");
@@ -187,7 +191,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     if (newDraft) return; // draft has no route entry; do not let this effect close it
     if (route.tab !== "vault" || route.entry === selectedEntryUuid) return;
     if (route.entry && !entries.some((e) => e.uuid === route.entry)) return;
-    if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault" }); return; }
+    if (route.entry && recycledIds.has(route.entry)) { navigate({ tab: "vault", shared: route.shared }); return; }
     (async () => {
       if (await canChangeEntry()) {
         if (route.entry && !filteredEntries.some((e) => e.uuid === route.entry)) {
@@ -199,7 +203,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         setSelectedEntryUuid(route.entry ?? null);
         setPane(route.entry ? "detail" : "list");
       } else {
-        navigate({ tab: "vault", entry: selectedEntryUuid ?? undefined });
+        navigate({ tab: "vault", shared: route.shared, entry: selectedEntryUuid ?? undefined });
       }
     })();
   }, [route.tab, route.entry, entries, recycledIds, selectedEntryUuid, newDraft]);
@@ -209,7 +213,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     if (selectedEntry) {
       const recovered = pendingDraft.current;
       setRevealedCustom(new Set());
-      if (recovered?.uuid === selectedEntry.uuid) {
+      if (recovered?.uuid === selectedEntry.uuid && !readOnly) {
         pendingDraft.current = null;
         setEditTitle(recovered.title); setEditUsername(recovered.username); setEditPassword(recovered.password);
         setEditUrl(recovered.url); setEditNotes(recovered.notes); setEditTotp(recovered.totpSeed);
@@ -280,6 +284,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     original && value === entryExpiresString(original) ? original.expiresAt : parseExpires(value);
 
   const handleSaveEntry = () => {
+    if (readOnly) return;
     if (reservedCustomFieldName || emptyCustomFieldName || duplicateCustomFieldName) return;
     if (newDraft) {
       const entry = createFromDraft(vault, { groupUuid: editGroupUuid }, {
@@ -292,7 +297,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       setNewDraft(null);
       setIsEditing(false);
       setSelectedEntryUuid(entry.uuid);
-      navigate({ tab: "vault", entry: entry.uuid });
+      navigate({ tab: "vault", shared: route.shared, entry: entry.uuid });
       return;
     }
     if (!selectedEntryUuid) return;
@@ -330,12 +335,13 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   // The vault stays untouched until Apply creates the entry, so Cancel leaves no entry
   // and no save revision behind.
   const handleCreateNewEntry = async () => {
+    if (readOnly) return;
     if (!await canChangeEntry()) return;
     const groupUuid = selectedGroupUuid === "all" || selectedGroupUuid === "recycle" ? groups[0]?.uuid || "" : selectedGroupUuid;
     if (selectedGroupUuid === "recycle") setSelectedGroupUuid("all");
     setSelectedEntryUuid(null);
     setNewDraft({ groupUuid });
-    navigate({ tab: "vault" });
+    navigate({ tab: "vault", shared: route.shared });
     setPane("detail");
     setEditTitle(""); setEditUsername(""); setEditPassword(""); setEditUrl(""); setEditNotes(""); setEditTotp("");
     setEditGroupUuid(groupUuid);
@@ -345,6 +351,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   };
 
   const handleDeleteEntry = async () => {
+    if (readOnly) return;
     if (!selectedEntryUuid) return;
     const permanent = !vault.recyclingEnabled;
     const message = permanent ? "Recycling is disabled for this vault. Permanently delete this entry from the current vault? Existing snapshots and backups may still contain it." :
@@ -359,12 +366,13 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     vault.deleteEntry(selectedEntryUuid);
     onChanged();
     setSelectedEntryUuid(null);
-    navigate({ tab: "vault", entry: undefined });
+    navigate({ tab: "vault", shared: route.shared, entry: undefined });
     setPane("list");
     refreshVaultData();
   };
 
   const handleRestoreEntry = async () => {
+    if (readOnly) return;
     if (!selectedEntryUuid) return;
     try {
       vault.restoreEntry(selectedEntryUuid);
@@ -390,7 +398,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     ) : true;
     if (!inFolder) {
       setSelectedEntryUuid(null);
-      navigate({ tab: "vault", entry: undefined });
+      navigate({ tab: "vault", shared: route.shared, entry: undefined });
     }
     setSelectedGroupUuid(uuid);
     if (uuid === "recycle") clearSmartViews();
@@ -399,6 +407,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
   const selectedFolder = groups.find(group => group.uuid === selectedGroupUuid);
   const handleCreateGroup = async () => {
+    if (readOnly) return;
     const name = await dialogs.prompt({
       title: "New folder",
       label: selectedFolder ? `New subfolder in "${selectedFolder.path}"` : "New folder name",
@@ -415,6 +424,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   };
 
   const handleRenameGroup = async () => {
+    if (readOnly) return;
     if (!selectedFolder) return;
     const name = await dialogs.prompt({
       title: "Rename folder",
@@ -444,6 +454,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   };
 
   const handleMoveGroup = async () => {
+    if (readOnly) return;
     if (!selectedFolder) return;
     const root = groups[0];
     const options = [
@@ -469,6 +480,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   };
 
   const handleDeleteGroup = async () => {
+    if (readOnly) return;
     if (!selectedFolder) return;
     const subtreeIds = new Set(groups.filter((g) => g.uuid === selectedFolder.uuid ||
       isDescendant(g.uuid, selectedFolder.uuid)).map((g) => g.uuid));
@@ -486,7 +498,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       vault.deleteGroup(selectedFolder.uuid);
       if (selectedEntry && subtreeIds.has(selectedEntry.groupUuid)) {
         setSelectedEntryUuid(null);
-        navigate({ tab: "vault", entry: undefined });
+        navigate({ tab: "vault", shared: route.shared, entry: undefined });
       }
       setSelectedGroupUuid("all");
       onChanged();
@@ -497,6 +509,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   };
 
   const handleImportKeePassFile = async (file: File) => {
+    if (readOnly) return;
     let buffer: ArrayBuffer;
     try {
       buffer = await readKdbxFile(file);
@@ -581,15 +594,16 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     <div className={`vault-layout${narrow ? " vault-layout--narrow" : ""}`} data-pane={pane} style={hidden ? { display: "none" } : undefined}>
       {/* 1. Sidebar Folders */}
       <aside className="vault-sidebar">
+        {header}
         <div className="sidebar-header">
           <span style={{ fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase", color: "var(--ink)" }}>
             Folders
           </span>
           <div style={{ display: "flex", gap: "0.25rem" }}>
-            <button type="button" className="btn btn-quiet btn-sm" onClick={handleCreateGroup}
+            {readOnly ? <span className="badge badge-cyan">Read-only</span> : <button type="button" className="btn btn-quiet btn-sm" onClick={handleCreateGroup}
               title={selectedFolder ? "Add Subfolder" : "Add Folder"} aria-label={selectedFolder ? "Add Subfolder" : "Add Folder"}>
               <Plus size={16} />
-            </button>
+            </button>}
             <button type="button" className="btn btn-quiet btn-sm vault-only-narrow" aria-label="Close folders"
               onClick={() => setPane("list")}>
               <ChevronLeft size={16} />
@@ -618,7 +632,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           <span>{recycledIds.size}</span>
         </button>
 
-        {selectedFolder ? (
+        {selectedFolder && !readOnly ? (
           <div style={{ display: "flex", gap: "0.25rem" }}>
             <button type="button" className="btn btn-quiet btn-sm" onClick={handleRenameGroup}>Rename Folder</button>
             <button type="button" className="btn btn-quiet btn-sm" onClick={handleMoveGroup}>Move Folder</button>
@@ -647,6 +661,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
         <div style={{ marginTop: "auto", padding: "1rem", borderTop: "1px solid var(--line)" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            {readOnly ? null : <>
             <button className="btn btn-primary btn-sm" onClick={() => setShowCsvImport(true)}>
               <FileSpreadsheet size={14} /> Import CSV Passwords
             </button>
@@ -659,6 +674,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             <button className="btn btn-secondary btn-sm" onClick={() => importFileInputRef.current?.click()}>
               <Upload size={14} /> Import KeePass file
             </button>
+            </>}
             <button className="btn btn-secondary btn-sm" onClick={() => setShowPairing(true)}>
               <QrCode size={14} /> Pair Extension / Mobile
             </button>
@@ -698,9 +714,9 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
-            <button className="btn btn-primary" onClick={handleCreateNewEntry} title="Add Entry">
+            {readOnly ? null : <button className="btn btn-primary" onClick={handleCreateNewEntry} title="Add Entry">
               <Plus size={16} />
-            </button>
+            </button>}
           </div>
 
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem" }}>
@@ -823,20 +839,20 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           {filteredEntries.length === 0 ? (
             <li style={{ padding: "2.5rem 1rem", textAlign: "center", color: "var(--ink-muted)", fontSize: "0.9rem" }}>
               <p style={{ marginBottom: "1rem" }}>{showReusedPasswords ? "No reused passwords match this search." : "No entries found."}</p>
-              <button
+              {readOnly ? null : <button
                 className="btn btn-secondary btn-sm"
                 style={{ margin: "0 auto" }}
                 onClick={() => setShowCsvImport(true)}
               >
                 <FileSpreadsheet size={14} /> Import from CSV
-              </button>
+              </button>}
             </li>
           ) : (
             filteredEntries.map((e) => (
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setNewDraft(null); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", entry: e.uuid }); setPane("detail"); } }}
+                onClick={async () => { if (await canChangeEntry()) { setIsEditing(false); setNewDraft(null); setSelectedEntryUuid(e.uuid); navigate({ tab: "vault", shared: route.shared, entry: e.uuid }); setPane("detail"); } }}
               >
                 <div className="entry-title">
                   {e.favorite ? <Star size={14} fill="var(--warning)" color="var(--warning)" aria-label="Favourite" /> : null}
@@ -886,7 +902,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 {!isEditing && selectedEntry ? <button className="btn btn-secondary" onClick={() => setShowEntryHistory(true)}>
                   <History size={16} /> Entry History
                 </button> : null}
-                {selectedEntry && recycledIds.has(selectedEntry.uuid) ? (
+                {readOnly ? null : selectedEntry && recycledIds.has(selectedEntry.uuid) ? (
                   <button className="btn btn-primary" onClick={handleRestoreEntry}>Restore to vault</button>
                 ) : isEditing ? (
                   <>
@@ -1263,7 +1279,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             </div>
 
             {!isEditing && selectedEntry && !hidden ? <EntryAttachments key={selectedEntry.uuid} vault={vault}
-              entryUuid={selectedEntry.uuid} readOnly={recycledIds.has(selectedEntry.uuid)}
+              entryUuid={selectedEntry.uuid} readOnly={readOnly || recycledIds.has(selectedEntry.uuid)}
               onChanged={() => { onChanged(); refreshVaultData(); }} /> : null}
           </div>
         ) : (
@@ -1283,7 +1299,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         key={selectedEntry.uuid}
         vault={vault}
         entryUuid={selectedEntry.uuid}
-        allowRestore={!recycledIds.has(selectedEntry.uuid)}
+        allowRestore={!readOnly && !recycledIds.has(selectedEntry.uuid)}
         onClose={() => setShowEntryHistory(false)}
         onRestored={() => {
           onChanged();
@@ -1311,7 +1327,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
         />
       ) : null}
 
-      {showCsvImport ? (
+      {showCsvImport && !readOnly ? (
         <CsvImportModal
           vault={vault}
           groups={groups}
@@ -1337,15 +1353,17 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
       {showHistory ? (
         <HistoryModal
-          allowRollback={saveState.kind === "saved" && !draftDirty}
+          allowRollback={!readOnly && saveState.kind === "saved" && !draftDirty}
+          readOnly={readOnly}
+          basePath={basePath}
           snapshot={{ vault, vaultKey }}
-          recovery={{ vault, vaultKey, onRecovered: (uuid) => {
+          recovery={readOnly ? undefined : { vault, vaultKey, onRecovered: (uuid) => {
             onChanged();
             refreshVaultData();
             setSelectedGroupUuid("all");
             clearSmartViews();
             setSelectedEntryUuid(uuid);
-            navigate({ tab: "vault", entry: uuid });
+            navigate({ tab: "vault", shared: route.shared, entry: uuid });
             setPane("detail");
           } }}
           onClose={() => setShowHistory(false)}
