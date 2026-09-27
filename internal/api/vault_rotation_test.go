@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -403,4 +404,47 @@ func TestRotationRefusesPairingsIssuedByRevokedDevice(t *testing.T) {
 		}
 	}
 	srv.sessMu.Unlock()
+}
+
+func TestRotationUploadCarriesUserKeyHeader(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	user, cookie := signedInUser(t, srv, "rotator2", users.RoleUser)
+	if _, err := srv.vault.SaveVault(user.ID, 0, []byte("old"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	if rec := putUserKey(handler, cookie, `"1"`, userKeyBody(t, 1)); rec.Code != http.StatusOK {
+		t.Fatalf("publish = %d", rec.Code)
+	}
+	rotate := func(header string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/vault/upload", bytes.NewReader([]byte("new")))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("If-Match", `"1"`)
+		req.Header.Set("X-Password-Envelope", "pw2")
+		req.Header.Set("X-Recovery-Envelope", "rec2")
+		req.Header.Set("X-Vault-Key-Rotated", "1")
+		if header != "" {
+			req.Header.Set("X-User-Key", header)
+		}
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := rotate(""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("rotation without X-User-Key = %d", rec.Code)
+	}
+	if rec := rotate("not base64"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("garbage X-User-Key = %d", rec.Code)
+	}
+	if rec := rotate(base64.StdEncoding.EncodeToString(userKeyBody(t, 2))); rec.Code != http.StatusBadRequest {
+		t.Fatalf("rotation swapping the public key = %d", rec.Code)
+	}
+	if rec := rotate(base64.StdEncoding.EncodeToString(userKeyBody(t, 1))); rec.Code != http.StatusOK {
+		t.Fatalf("rotation with X-User-Key = %d %s", rec.Code, rec.Body.String())
+	}
+	meta, _ := srv.vault.GetMetadata(user.ID)
+	if meta.Version != 2 || meta.UserKey == nil {
+		t.Fatalf("after rotation: v%d userKey=%v", meta.Version, meta.UserKey != nil)
+	}
 }

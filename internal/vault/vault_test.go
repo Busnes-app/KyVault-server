@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Busnes-app/kyvault-server/internal/userkey"
 )
 
 func TestVaultStoreLifecycle(t *testing.T) {
@@ -264,5 +267,207 @@ func TestConflictFilenameCannotEscape(t *testing.T) {
 	}
 	if got := fileToken(""); got != "web" {
 		t.Fatalf("fileToken(\"\") = %q, want web", got)
+	}
+}
+
+func testUserKey(pk byte) userkey.Record {
+	pub := make([]byte, userkey.PublicKeyBytes)
+	for i := range pub {
+		pub[i] = pk
+	}
+	return userkey.Record{
+		Alg:         userkey.AlgXWing,
+		PublicKey:   base64.StdEncoding.EncodeToString(pub),
+		WrappedSeed: base64.StdEncoding.EncodeToString(make([]byte, userkey.WrappedSeedBytes)),
+		CreatedAt:   time.Now().UTC(),
+	}
+}
+
+func TestSaveUserKeyAppendsPreviousAndCaps(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.SaveUserKey("u1", 1, testUserKey(1), false)
+	if err != nil || !created {
+		t.Fatalf("first save: created=%v err=%v", created, err)
+	}
+	if _, err := store.SaveUserKey("u1", 0, testUserKey(2), false); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale version: %v", err)
+	}
+	for i := byte(2); i <= 8; i++ {
+		created, err := store.SaveUserKey("u1", 1, testUserKey(i), false)
+		if err != nil || created {
+			t.Fatalf("replace %d: created=%v err=%v", i, created, err)
+		}
+	}
+	meta, _ := store.GetMetadata("u1")
+	if meta.UserKey == nil || len(meta.UserKey.Previous) != userkey.MaxPrevious {
+		t.Fatalf("previous: %+v", meta.UserKey)
+	}
+	// Oldest dropped: previous[0] is key 3 (keys 1 and 2 fell off), newest last.
+	if got := meta.UserKey.Previous[0].PublicKey; got != testUserKey(3).PublicKey {
+		t.Fatalf("previous[0] is not key 3")
+	}
+	if meta.Version != 1 {
+		t.Fatalf("user key write bumped version to %d", meta.Version)
+	}
+	// Re-saving the same public key is idempotent: no previous entry.
+	before := len(meta.UserKey.Previous)
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(8), false); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ = store.GetMetadata("u1")
+	if len(meta.UserKey.Previous) != before {
+		t.Fatal("same-key save appended previous")
+	}
+}
+
+func TestRotateVaultCarriesUserKey(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	// rotation without a record needs no header
+	if _, err := store.RotateVault("u1", 1, []byte("v2"), "pw2", "rec2", "", nil); err != nil {
+		t.Fatalf("rotation with no user key: %v", err)
+	}
+	if _, err := store.SaveUserKey("u1", 2, testUserKey(1), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RotateVault("u1", 2, []byte("v3"), "pw3", "rec3", "", nil); !errors.Is(err, ErrRotationUserKey) {
+		t.Fatalf("rotation dropping the user key: %v", err)
+	}
+	rewrapped := testUserKey(1)
+	rewrapped.WrappedSeed = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, userkey.WrappedSeedBytes))
+	meta, err := store.RotateVault("u1", 2, []byte("v3"), "pw3", "rec3", "", &rewrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.UserKey == nil || meta.UserKey.WrappedSeed != rewrapped.WrappedSeed || meta.UserKey.PublicKey != testUserKey(1).PublicKey {
+		t.Fatalf("rotated user key: %+v", meta.UserKey)
+	}
+	// A rotation may not change the public key: that is Replace, a separate action.
+	other := testUserKey(2)
+	if _, err := store.RotateVault("u1", 3, []byte("v4"), "pw4", "rec4", "", &other); !errors.Is(err, ErrRotationUserKey) {
+		t.Fatalf("rotation swapping the public key: %v", err)
+	}
+	// Ordinary saves carry the record through untouched.
+	meta, err = store.SaveVault("u1", 3, []byte("v4"), "", "", "")
+	if err != nil || meta.UserKey == nil {
+		t.Fatalf("save dropped user key: %+v %v", meta.UserKey, err)
+	}
+}
+
+// metadata without userKey decodes
+func TestMetadataWithoutUserKeyDecodes(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir, 90)
+	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(store.metaPath("u1"))
+	if bytes.Contains(raw, []byte("userKey")) {
+		t.Fatal("empty user key serialised")
+	}
+	meta, err := store.GetMetadata("u1")
+	if err != nil || meta.UserKey != nil {
+		t.Fatalf("decode: %+v %v", meta.UserKey, err)
+	}
+}
+
+func TestRestoreHistoryKeepsUserKey(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v1"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	key := testUserKey(1)
+	if _, err := store.SaveUserKey("u1", 1, key, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 1, []byte("v2"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.ListHistory("u1")
+	if err != nil || len(history) == 0 {
+		t.Fatalf("history: %v %v", history, err)
+	}
+	meta, err := store.RestoreHistory("u1", history[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.UserKey == nil || meta.UserKey.PublicKey != key.PublicKey || meta.UserKey.WrappedSeed != key.WrappedSeed {
+		t.Fatalf("rollback lost the user key: %+v", meta.UserKey)
+	}
+	if len(meta.UserKey.Previous) != len(key.Previous) {
+		t.Fatalf("rollback changed previous: %+v", meta.UserKey.Previous)
+	}
+}
+
+func TestRotateVaultRefusesPublishingNewUserKey(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	// No published key yet: a rotation carrying X-User-Key must not publish one.
+	fresh := testUserKey(1)
+	if _, err := store.RotateVault("u1", 1, []byte("v2"), "pw2", "rec2", "", &fresh); !errors.Is(err, ErrRotationUserKey) {
+		t.Fatalf("rotation publishing a new key: %v", err)
+	}
+	meta, _ := store.GetMetadata("u1")
+	if meta.UserKey != nil {
+		t.Fatalf("rotation published a user key: %+v", meta.UserKey)
+	}
+}
+
+func TestSaveUserKeyRefusesZeroVersion(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserKey("u1", 0, testUserKey(1), false); !errors.Is(err, ErrConflict) {
+		t.Fatalf("save against version 0: %v", err)
+	}
+	meta, _ := store.GetMetadata("u1")
+	if meta.UserKey != nil {
+		t.Fatal("save against version 0 stored a key")
+	}
+}
+
+// Two tabs racing to publish the first key: createOnly refuses the second so it cannot
+// silently replace the first.
+func TestSaveUserKeyCreateOnlyRefusesExisting(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(1), true); err != nil {
+		t.Fatalf("first create-only save: %v", err)
+	}
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(2), true); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second create-only save: %v", err)
+	}
+	meta, _ := store.GetMetadata("u1")
+	if meta.UserKey == nil || meta.UserKey.PublicKey != testUserKey(1).PublicKey {
+		t.Fatalf("create-only conflict changed the record: %+v", meta.UserKey)
+	}
+	// createOnly does not block an ordinary replace.
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(2), false); err != nil {
+		t.Fatalf("ordinary replace after create-only conflict: %v", err)
 	}
 }

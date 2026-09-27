@@ -1,12 +1,14 @@
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback } from "react";
-import { getJSON, postJSON, putJSON, toErrorMessage, HttpError } from "./lib/api";
+import { getJSON, postJSON, putJSON, requestJSON, toErrorMessage, HttpError } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
 import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, pruneDrafts, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault, isWrongVaultKey } from "./lib/kdbx";
 import { downloadBlob } from "./lib/download";
 import { rotateAndUpload, RotationUnconfirmedError, uploadRotatedVault } from "./lib/keyRotation";
+import { adoptUserKey, newUserKeyRecord, type UserKeyState } from "./lib/userKeyState";
+import type { UserKeyRecord } from "./lib/userKey";
 import {
   generateVaultMasterKey,
   wrapVaultKey,
@@ -48,6 +50,7 @@ type VaultMetadata = {
   sizeBytes: number;
   passwordEnvelope?: string;
   recoveryEnvelope?: string;
+  userKey?: UserKeyRecord;
 };
 
 const idleSave: SaveState = { kind: "saved", version: 0 };
@@ -68,6 +71,7 @@ export function App() {
   // Vault state
   const [vault, setVault] = useState<KeePassVault | null>(null);
   const [vaultKey, setVaultKey] = useState<Uint8Array | null>(null);
+  const [userKey, setUserKey] = useState<UserKeyState | null>(null);
   const [saveQueue, setSaveQueue] = useState<VaultSaveQueue | null>(null);
   const saveState = useSyncExternalStore(saveQueue?.subscribe ?? noSubscribe, saveQueue?.getSnapshot ?? idleSnapshot);
   const [hasDraft, setHasDraft] = useState(false);
@@ -128,6 +132,7 @@ export function App() {
         setUser(null);
         setVault(null);
         setVaultKey(null);
+        setUserKey(null);
         setSaveQueue(null);
         setHasDraft(false);
       }
@@ -135,6 +140,7 @@ export function App() {
       setUser(null);
       setVault(null);
       setVaultKey(null);
+      setUserKey(null);
       setSaveQueue(null);
       setHasDraft(false);
     } finally {
@@ -156,6 +162,47 @@ export function App() {
     window.addEventListener("kyvault:unauthorized", ended);
     return () => window.removeEventListener("kyvault:unauthorized", ended);
   }, [user?.id]);
+
+  // Runs after unlock, never blocks it. A missing record is generated and published
+  // create-only (If-None-Match: *) against the vault version the tab holds; a 409 means
+  // another tab won the race to publish first, so this tab re-reads metadata and adopts
+  // whatever that tab wrote instead of overwriting it.
+  const settleUserKey = async (u: User, key: Uint8Array, record: UserKeyRecord | undefined, version: number, generation: number) => {
+    try {
+      const state = await adoptUserKey(record, key, u.id);
+      if (generation !== unlockGeneration.current) return;
+      if (state.kind !== "none") { setUserKey(state); return; }
+      try {
+        const made = await newUserKeyRecord(key, u.id);
+        await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "If-None-Match": "*", "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
+        if (generation !== unlockGeneration.current) return;
+        setUserKey({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record });
+        setMeta((m) => (m ? { ...m, userKey: made.record } : m));
+      } catch (err) {
+        if (generation !== unlockGeneration.current) return;
+        if (err instanceof HttpError && err.status === 409) {
+          try {
+            const latest = await getJSON<VaultMetadata>("/api/vault/metadata");
+            if (generation !== unlockGeneration.current) return;
+            const adopted = await adoptUserKey(latest.userKey, key, u.id);
+            if (generation !== unlockGeneration.current) return;
+            setUserKey(adopted);
+            setMeta(latest);
+            return;
+          } catch (err2) {
+            if (generation !== unlockGeneration.current) return;
+            console.warn("user key adopt after conflict failed:", err2);
+          }
+        }
+        setUserKey({ kind: "none" });
+        console.warn("user key publish deferred:", err);
+      }
+    } catch (err) {
+      if (generation !== unlockGeneration.current) return;
+      setUserKey({ kind: "unavailable", reason: toErrorMessage(err, "Your key could not be loaded.") });
+      console.warn("user key settle failed:", err);
+    }
+  };
 
   const initVault = async (u: User, masterPassword?: string) => {
     const generation = ++unlockGeneration.current;
@@ -195,6 +242,7 @@ export function App() {
         try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {}
         setSaveQueue(new VaultSaveQueue(newVault, version, pwEnvelope));
         setVaultKey(key);
+        void settleUserKey(u, key, undefined, version, generation);
         setVault(newVault);
         setLockedReason(null);
         setShowUnlockModal(false);
@@ -284,6 +332,7 @@ export function App() {
       setInitialDraft(recovered?.metadata.entry ?? null);
       setSaveQueue(queue);
       setVaultKey(key);
+      void settleUserKey(u, key, meta.userKey, recovered?.metadata.version ?? meta.version, generation);
       setVault(loadedVault);
       if (recovered) notices.unshift("Recovered local edits. Review them before saving.");
       setLockNotice(notices.join(" "));
@@ -339,15 +388,15 @@ export function App() {
   const rotateKey = async (password: string, paperCode: string): Promise<void> => {
     const queue = saveQueue, oldKey = vaultKey, u = user, generation = unlockGeneration.current;
     if (!vault || !queue || !oldKey || !u) throw new Error("Unlock the vault first.");
-    let rotated: { key: Uint8Array; version: number; passwordEnvelope: string };
+    let rotated: { key: Uint8Array; version: number; passwordEnvelope: string; userKeyRecord?: UserKeyRecord };
     try {
       rotated = await queue.exclusive((live) => {
         if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
         const version = queue.getSnapshot().version;
         return rotateAndUpload(live, oldKey, password, paperCode, version, {
-          upload: (binary, pw, rec) => uploadRotatedVault(binary, version, pw, rec),
+          upload: (binary, pw, rec, ukr) => uploadRotatedVault(binary, version, pw, rec, ukr),
           metadata: () => getJSON("/api/vault/metadata"),
-        });
+        }, userKey ?? { kind: "none" }, u.id);
       });
     } catch (err) {
       if (err instanceof RotationUnconfirmedError) {
@@ -366,6 +415,7 @@ export function App() {
       return;
     }
     setVaultKey(rotated.key);
+    if (rotated.userKeyRecord && userKey?.kind === "ready") setUserKey({ ...userKey, record: rotated.userKeyRecord });
     setSaveQueue(new VaultSaveQueue(vault, rotated.version, rotated.passwordEnvelope));
     // Forget This Device or a lock can land while this write is pending; the helper
     // undoes a write that lost that race so the forgotten device keeps nothing.
@@ -393,6 +443,7 @@ export function App() {
     setHasDraft(false);
     setVault(null);
     setVaultKey(null);
+    setUserKey(null);
     setUnlockPassword("");
     setUnlockConfirm("");
     setShowUnlockModal(false);
@@ -642,6 +693,9 @@ export function App() {
           canRotate={!unsaved}
           onExport={handleExportKdbx}
           onRotateKey={rotateKey}
+          userKey={userKey}
+          unlockGeneration={() => unlockGeneration.current}
+          onUserKeyReplaced={(s: UserKeyState, generation: number) => { if (generation === unlockGeneration.current) setUserKey(s); }}
         /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>

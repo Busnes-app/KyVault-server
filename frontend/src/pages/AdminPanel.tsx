@@ -5,6 +5,7 @@ import { AdminBackup } from "../components/AdminBackup";
 import { formatWhen } from "../lib/format";
 import { useDialogs } from "../components/DialogHost";
 import { copyText } from "../lib/clipboard";
+import { fetchPublishedKey } from "../lib/keyPins";
 import type { Route } from "../lib/route";
 
 type User = {
@@ -56,6 +57,22 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
   const [roleError, setRoleError] = useState("");
   const [scimCopied, setScimCopied] = useState(false);
   const [redirectCopied, setRedirectCopied] = useState(false);
+  const [fingerprints, setFingerprints] = useState<Record<string, string>>({});
+  const [fingerprintsLoaded, setFingerprintsLoaded] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    setFingerprintsLoaded(false);
+    (async () => {
+      const out: Record<string, string> = {};
+      await Promise.all(usersList.map(async (u) => {
+        const k = await fetchPublishedKey(u.id).catch(() => null);
+        if (k) out[u.id] = k.fingerprint;
+      }));
+      if (live) { setFingerprints(out); setFingerprintsLoaded(true); }
+    })();
+    return () => { live = false; };
+  }, [usersList]);
 
   const loadData = async () => {
     const [u, s, a, p] = await Promise.allSettled([
@@ -399,6 +416,7 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
                   </div>
                   <div style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginTop: "0.25rem" }}>
                     ID: <code>{u.id}</code> {u.ssoSub ? `• Linked SSO: ${u.ssoSub}` : ""}
+                    {fingerprintsLoaded ? (fingerprints[u.id] ? <> • Key <code className="font-mono">{fingerprints[u.id]}</code></> : " • No key") : null}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>

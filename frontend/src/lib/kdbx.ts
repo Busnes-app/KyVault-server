@@ -672,6 +672,22 @@ export class KeePassVault {
     return this.db.meta.recycleBinEnabled !== false;
   }
 
+  // Database-level custom data: KeePass's generic string map in the encrypted meta block.
+  // KyVault uses it for key pins; KeePassXC shows it under Database Settings and keeps it.
+  public getCustomData(key: string): string | undefined {
+    return this.db.meta.customData?.get(key)?.value ?? undefined;
+  }
+
+  public setCustomData(key: string, value: string | undefined): void {
+    this.db.meta.customData ??= new Map();
+    if (value === undefined) this.db.meta.customData.delete(key);
+    else this.db.meta.customData.set(key, { value, lastModified: new Date() });
+  }
+
+  public customDataKeys(prefix: string): string[] {
+    return [...(this.db.meta.customData?.keys() ?? [])].filter((k) => k.startsWith(prefix)).sort();
+  }
+
   // Delete an entry
   public deleteEntry(uuid: string): void {
     const e = this.findEntry(uuid);
