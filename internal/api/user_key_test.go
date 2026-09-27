@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/kyvault-server/internal/sso"
 	"github.com/Busnes-app/kyvault-server/internal/userkey"
 	"github.com/Busnes-app/kyvault-server/internal/users"
 )
@@ -165,5 +166,60 @@ func TestUserKeyReadableWithDeviceToken(t *testing.T) {
 	_ = json.Unmarshal(checkOut.Body.Bytes(), &pub)
 	if pub.Fingerprint != userkey.Fingerprint(bytes.Repeat([]byte{1}, userkey.PublicKeyBytes)) || len(pub.Previous) != 0 {
 		t.Fatalf("device PUT changed the record: %+v", pub)
+	}
+}
+
+// staleSession signs the user in with an auth_time older than freshSessionWindow.
+func staleSession(t *testing.T, srv *Server, u users.User) *http.Cookie {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	id := sso.Identity{Issuer: "https://kysignon.test", ClientID: "kyvault-app", Subject: u.SSOSub, SessionID: "sid-stale-" + u.Username, IssuedAt: time.Now().UTC().Add(-time.Hour)}
+	if err := srv.startSession(rec, httptest.NewRequest(http.MethodGet, "/", nil), u.ID, id, time.Now().UTC().Add(-freshSessionWindow-time.Minute)); err != nil {
+		t.Fatalf("startSession: %v", err)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "kypass_session" {
+			return c
+		}
+	}
+	t.Fatal("no session cookie was issued")
+	return nil
+}
+
+// The master password proof lives in the browser, so a stolen session must not be able
+// to replace the published identity on its own: replace needs a recent KySignOn sign-in.
+// First publish is create-only and stays open to any session.
+func TestUserKeyReplaceNeedsFreshSession(t *testing.T) {
+	srv := newTestServer(t)
+	handler := srv.Routes()
+	alice, fresh := signedInUser(t, srv, "alice", users.RoleUser)
+	if _, err := srv.vault.SaveVault(alice.ID, 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	stale := staleSession(t, srv, alice)
+
+	// First publish from a stale session is allowed (create-only).
+	req := httptest.NewRequest(http.MethodPut, "/api/vault/user-key", bytes.NewReader(userKeyBody(t, 1)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", `"1"`)
+	req.Header.Set("If-None-Match", "*")
+	req.AddCookie(stale)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stale first publish = %d %s", rec.Code, rec.Body.String())
+	}
+	before, _ := srv.vault.GetMetadata(alice.ID)
+
+	if rec := putUserKey(handler, stale, `"1"`, userKeyBody(t, 2)); rec.Code != http.StatusForbidden || !strings.HasPrefix(rec.Body.String(), "re-authenticate") {
+		t.Fatalf("stale replace = %d %s", rec.Code, rec.Body.String())
+	}
+	after, _ := srv.vault.GetMetadata(alice.ID)
+	if after.UserKey.PublicKey != before.UserKey.PublicKey || after.UserKey.WrappedSeed != before.UserKey.WrappedSeed || len(after.UserKey.Previous) != 0 {
+		t.Fatal("stale replace changed the record")
+	}
+
+	if rec := putUserKey(handler, fresh, `"1"`, userKeyBody(t, 2)); rec.Code != http.StatusOK {
+		t.Fatalf("fresh replace = %d %s", rec.Code, rec.Body.String())
 	}
 }

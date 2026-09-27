@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/Busnes-app/kyvault-server/internal/userkey"
 	"github.com/Busnes-app/kyvault-server/internal/users"
@@ -15,8 +16,18 @@ import (
 // it was wrapped against so a tab holding a retired vault key cannot publish a seed
 // nobody can open.
 func (s *Server) handleUserKeyPut(w http.ResponseWriter, r *http.Request, u users.User) {
-	if current, ok := s.currentSession(r); !ok || current.DeviceID != "" {
+	current, ok := s.currentSession(r)
+	if !ok || current.DeviceID != "" {
 		http.Error(w, "device sessions cannot publish a user key", http.StatusForbidden)
+		return
+	}
+	createOnly := r.Header.Get("If-None-Match") == "*"
+	// The master password proof is client-side and cannot be checked here. Replacing the
+	// published identity therefore also needs a recent KySignOn sign-in, like the destructive
+	// backup actions, so a stolen session alone cannot swap the key peers will trust. First
+	// publish is create-only and cannot overwrite anything, so it runs from any session.
+	if !createOnly && (current.AuthenticatedAt.IsZero() || time.Since(current.AuthenticatedAt) > freshSessionWindow) {
+		http.Error(w, "re-authenticate to continue: sign in again through KySignOn", http.StatusForbidden)
 		return
 	}
 	var rec userkey.Record
@@ -24,7 +35,6 @@ func (s *Server) handleUserKeyPut(w http.ResponseWriter, r *http.Request, u user
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	createOnly := r.Header.Get("If-None-Match") == "*"
 	created, err := s.vault.SaveUserKey(u.ID, ifMatchVersion(r), rec, createOnly)
 	switch {
 	case errors.Is(err, userkey.ErrShape):

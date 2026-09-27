@@ -479,7 +479,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `If-Match` on the vault version, no version bump); a 409 means another tab won the race, so this tab
   re-reads metadata and adopts what that tab wrote instead of overwriting it. Rotation re-wraps the
   seed and sends it as `X-User-Key` in the same upload; the server refuses a rotation that drops or
-  swaps an existing key. Replace needs the master password and appends the old public key to
+  swaps an existing key. Replace needs the master password in the browser and, because the server cannot check that, a KySignOn sign-in within `freshSessionWindow` (403 `re-authenticate…` otherwise; the page offers "Sign in again"); it appends the old public key to
   `previous` (max 5); the callback is generation-guarded like `settleUserKey`/`rotateKey` so a lock
   during the async publish cannot resurrect a stale key into app state. `PUT /api/vault/user-key` is
   refused with 403 for a device-session bearer token (a stolen extension token must not be able to

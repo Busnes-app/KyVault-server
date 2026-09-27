@@ -510,6 +510,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           }}
         >
           {error}
+          {error.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login?reauth=true">Sign in again</a></> : null}
         </div>
       ) : null}
 
