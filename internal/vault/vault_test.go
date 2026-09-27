@@ -291,15 +291,15 @@ func TestSaveUserKeyAppendsPreviousAndCaps(t *testing.T) {
 	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
 		t.Fatal(err)
 	}
-	created, err := store.SaveUserKey("u1", 1, testUserKey(1))
+	created, err := store.SaveUserKey("u1", 1, testUserKey(1), false)
 	if err != nil || !created {
 		t.Fatalf("first save: created=%v err=%v", created, err)
 	}
-	if _, err := store.SaveUserKey("u1", 0, testUserKey(2)); !errors.Is(err, ErrConflict) {
+	if _, err := store.SaveUserKey("u1", 0, testUserKey(2), false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale version: %v", err)
 	}
 	for i := byte(2); i <= 8; i++ {
-		created, err := store.SaveUserKey("u1", 1, testUserKey(i))
+		created, err := store.SaveUserKey("u1", 1, testUserKey(i), false)
 		if err != nil || created {
 			t.Fatalf("replace %d: created=%v err=%v", i, created, err)
 		}
@@ -317,7 +317,7 @@ func TestSaveUserKeyAppendsPreviousAndCaps(t *testing.T) {
 	}
 	// Re-saving the same public key is idempotent: no previous entry.
 	before := len(meta.UserKey.Previous)
-	if _, err := store.SaveUserKey("u1", 1, testUserKey(8)); err != nil {
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(8), false); err != nil {
 		t.Fatal(err)
 	}
 	meta, _ = store.GetMetadata("u1")
@@ -338,7 +338,7 @@ func TestRotateVaultCarriesUserKey(t *testing.T) {
 	if _, err := store.RotateVault("u1", 1, []byte("v2"), "pw2", "rec2", "", nil); err != nil {
 		t.Fatalf("rotation with no user key: %v", err)
 	}
-	if _, err := store.SaveUserKey("u1", 2, testUserKey(1)); err != nil {
+	if _, err := store.SaveUserKey("u1", 2, testUserKey(1), false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RotateVault("u1", 2, []byte("v3"), "pw3", "rec3", "", nil); !errors.Is(err, ErrRotationUserKey) {
@@ -391,7 +391,7 @@ func TestRestoreHistoryKeepsUserKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := testUserKey(1)
-	if _, err := store.SaveUserKey("u1", 1, key); err != nil {
+	if _, err := store.SaveUserKey("u1", 1, key, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SaveVault("u1", 1, []byte("v2"), "", "", ""); err != nil {
@@ -437,11 +437,37 @@ func TestSaveUserKeyRefusesZeroVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SaveUserKey("u1", 0, testUserKey(1)); !errors.Is(err, ErrConflict) {
+	if _, err := store.SaveUserKey("u1", 0, testUserKey(1), false); !errors.Is(err, ErrConflict) {
 		t.Fatalf("save against version 0: %v", err)
 	}
 	meta, _ := store.GetMetadata("u1")
 	if meta.UserKey != nil {
 		t.Fatal("save against version 0 stored a key")
+	}
+}
+
+// Two tabs racing to publish the first key: createOnly refuses the second so it cannot
+// silently replace the first.
+func TestSaveUserKeyCreateOnlyRefusesExisting(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("u1", 0, []byte("v"), "pw", "rec", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(1), true); err != nil {
+		t.Fatalf("first create-only save: %v", err)
+	}
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(2), true); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second create-only save: %v", err)
+	}
+	meta, _ := store.GetMetadata("u1")
+	if meta.UserKey == nil || meta.UserKey.PublicKey != testUserKey(1).PublicKey {
+		t.Fatalf("create-only conflict changed the record: %+v", meta.UserKey)
+	}
+	// createOnly does not block an ordinary replace.
+	if _, err := store.SaveUserKey("u1", 1, testUserKey(2), false); err != nil {
+		t.Fatalf("ordinary replace after create-only conflict: %v", err)
 	}
 }

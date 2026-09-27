@@ -86,6 +86,11 @@ export function mockApi(): Plugin {
         const rotated = req.headers["x-vault-key-rotated"] === "1";
         if (rotated && !(req.headers["x-password-envelope"] && req.headers["x-recovery-envelope"])) return json(res, 400, { error: "a key rotation must carry both new envelopes" });
         if (rotated && store.userKey && !req.headers["x-user-key"]) return json(res, 400, { error: "a key rotation must carry the re-wrapped user key" });
+        if (rotated && req.headers["x-user-key"]) {
+          const decoded = JSON.parse(Buffer.from(String(req.headers["x-user-key"]), "base64").toString());
+          if (!store.userKey) return json(res, 400, { error: "a key rotation must not publish a new user key" });
+          if (decoded.publicKey !== store.userKey.publicKey) return json(res, 400, { error: "a key rotation must not change the public key" });
+        }
         archive();
         store.bytes = body; store.version++;
         if (rotated) { store.keyEpochSince = store.version; store.devices = []; }
@@ -99,7 +104,8 @@ export function mockApi(): Plugin {
       }
       if (p === "/api/vault/user-key" && m === "PUT") {
         const expected = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));
-        if (expected !== store.version) return json(res, 409, { error: "conflict" });
+        if (store.version === 0 || expected !== store.version) return json(res, 409, { error: "conflict" });
+        if (req.headers["if-none-match"] === "*" && store.userKey) return json(res, 409, { error: "conflict" });
         const body = JSON.parse((await readBody(req)).toString() || "{}");
         const prev = store.userKey && store.userKey.publicKey !== body.publicKey
           ? [...((store.userKey.previous as unknown[]) ?? []), { publicKey: store.userKey.publicKey, replacedAt: new Date().toISOString() }].slice(-5)

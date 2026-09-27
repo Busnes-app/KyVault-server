@@ -35,6 +35,19 @@ func putUserKey(handler http.Handler, cookie *http.Cookie, ifMatch string, body 
 	return rec
 }
 
+func putUserKeyCreateOnly(handler http.Handler, cookie *http.Cookie, ifMatch string, body []byte) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPut, "/api/vault/user-key", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", ifMatch)
+	req.Header.Set("If-None-Match", "*")
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func TestUserKeyPublishReplaceAndRead(t *testing.T) {
 	srv := newTestServer(t)
 	handler := srv.Routes()
@@ -56,6 +69,19 @@ func TestUserKeyPublishReplaceAndRead(t *testing.T) {
 	rec := putUserKey(handler, aliceCookie, `"1"`, userKeyBody(t, 1))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"fingerprint"`) {
 		t.Fatalf("publish = %d %s", rec.Code, rec.Body.String())
+	}
+	// A second tab racing the first publish with If-None-Match: * must not overwrite it.
+	if rec := putUserKeyCreateOnly(handler, aliceCookie, `"1"`, userKeyBody(t, 2)); rec.Code != http.StatusConflict {
+		t.Fatalf("create-only against an existing key = %d", rec.Code)
+	}
+	req0 := httptest.NewRequest(http.MethodGet, "/api/users/"+alice.ID+"/key", nil)
+	req0.AddCookie(bobCookie)
+	out0 := httptest.NewRecorder()
+	handler.ServeHTTP(out0, req0)
+	var pub0 userkey.Public
+	_ = json.Unmarshal(out0.Body.Bytes(), &pub0)
+	if pub0.Fingerprint != userkey.Fingerprint(bytes.Repeat([]byte{1}, userkey.PublicKeyBytes)) || len(pub0.Previous) != 0 {
+		t.Fatalf("create-only conflict changed the record: %+v", pub0)
 	}
 	// second PUT with a different key appends previous
 	if rec := putUserKey(handler, aliceCookie, `"1"`, userKeyBody(t, 2)); rec.Code != http.StatusOK {

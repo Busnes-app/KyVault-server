@@ -501,8 +501,10 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 
 // SaveUserKey publishes or replaces the owner's key. The vault version is a precondition
 // only; the write does not bump it, like SaveEnvelopes. A replace keeps the last
-// MaxPrevious public keys so a pinned peer can see the change was the owner's.
-func (s *Store) SaveUserKey(userID string, expectedVersion int64, rec userkey.Record) (bool, error) {
+// MaxPrevious public keys so a pinned peer can see the change was the owner's. createOnly
+// (If-None-Match: *) refuses to overwrite an existing record: two tabs racing to publish
+// the first key must not let the second silently replace the first.
+func (s *Store) SaveUserKey(userID string, expectedVersion int64, rec userkey.Record, createOnly bool) (bool, error) {
 	if err := rec.Validate(); err != nil {
 		return false, err
 	}
@@ -517,6 +519,9 @@ func (s *Store) SaveUserKey(userID string, expectedVersion int64, rec userkey.Re
 	}
 	meta, _ := s.getMetadataLocked(userID)
 	if meta.Version != expectedVersion {
+		return false, ErrConflict
+	}
+	if createOnly && meta.UserKey != nil {
 		return false, ErrConflict
 	}
 	rec.Previous = nil

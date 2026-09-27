@@ -163,21 +163,34 @@ export function App() {
     return () => window.removeEventListener("kyvault:unauthorized", ended);
   }, [user?.id]);
 
-  // Runs after unlock, never blocks it. A missing record is generated and published against
-  // the vault version the tab holds; a 409 means another tab got there first and the next
-  // unlock adopts what it wrote.
+  // Runs after unlock, never blocks it. A missing record is generated and published
+  // create-only (If-None-Match: *) against the vault version the tab holds; a 409 means
+  // another tab won the race to publish first, so this tab re-reads metadata and adopts
+  // whatever that tab wrote instead of overwriting it.
   const settleUserKey = async (u: User, key: Uint8Array, record: UserKeyRecord | undefined, version: number, generation: number) => {
     const state = await adoptUserKey(record, key, u.id);
     if (generation !== unlockGeneration.current) return;
     if (state.kind !== "none") { setUserKey(state); return; }
     try {
       const made = await newUserKeyRecord(key, u.id);
-      await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
+      await requestJSON("/api/vault/user-key", { method: "PUT", headers: { "If-Match": `"${version}"`, "If-None-Match": "*", "Content-Type": "application/json" }, body: JSON.stringify(made.record) });
       if (generation !== unlockGeneration.current) return;
       setUserKey({ kind: "ready", seed: made.seed, publicKey: made.publicKey, record: made.record });
       setMeta((m) => (m ? { ...m, userKey: made.record } : m));
     } catch (err) {
       if (generation !== unlockGeneration.current) return;
+      if (err instanceof HttpError && err.status === 409) {
+        try {
+          const latest = await getJSON<VaultMetadata>("/api/vault/metadata");
+          if (generation !== unlockGeneration.current) return;
+          setUserKey(await adoptUserKey(latest.userKey, key, u.id));
+          setMeta(latest);
+          return;
+        } catch (err2) {
+          if (generation !== unlockGeneration.current) return;
+          console.warn("user key adopt after conflict failed:", err2);
+        }
+      }
       setUserKey({ kind: "none" });
       console.warn("user key publish deferred:", err);
     }

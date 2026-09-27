@@ -7,7 +7,7 @@ import type { UserKeyRecord } from "./userKey";
 
 // In memory only: the live vault now saves under the new key. The caller must send the
 // binary and both envelopes in ONE upload, and call vault.rekey(oldKey) if that fails.
-export async function rotateVaultKey(vault: KeePassVault, password: string, paperCode: string, userKey: UserKeyState = { kind: "none" }, userId = "") {
+export async function rotateVaultKey(vault: KeePassVault, password: string, paperCode: string, userKey: UserKeyState, userId: string) {
   const key = generateVaultMasterKey();
   vault.rekey(key);
   const binary = await vault.exportBinary();
@@ -44,7 +44,7 @@ export class RotationUnconfirmedError extends Error {
 // them stored at exactly version + 1 proves the rotation landed and nothing saved on top.
 // Our envelopes at a later version mean another tab saved since; locking lets the next
 // unlock read that save instead of this tab overwriting it.
-export async function rotateAndUpload(vault: KeePassVault, oldKey: Uint8Array, password: string, paperCode: string, version: number, io: RotationIO, userKey: UserKeyState = { kind: "none" }, userId = "") {
+export async function rotateAndUpload(vault: KeePassVault, oldKey: Uint8Array, password: string, paperCode: string, version: number, io: RotationIO, userKey: UserKeyState, userId: string) {
   let rotated: Awaited<ReturnType<typeof rotateVaultKey>> | undefined;
   try {
     rotated = await rotateVaultKey(vault, password, paperCode, userKey, userId);

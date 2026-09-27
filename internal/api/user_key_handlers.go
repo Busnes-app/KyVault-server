@@ -20,7 +20,8 @@ func (s *Server) handleUserKeyPut(w http.ResponseWriter, r *http.Request, u user
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	created, err := s.vault.SaveUserKey(u.ID, ifMatchVersion(r), rec)
+	createOnly := r.Header.Get("If-None-Match") == "*"
+	created, err := s.vault.SaveUserKey(u.ID, ifMatchVersion(r), rec, createOnly)
 	switch {
 	case errors.Is(err, userkey.ErrShape):
 		http.Error(w, err.Error(), http.StatusBadRequest)

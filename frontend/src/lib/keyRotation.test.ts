@@ -22,7 +22,7 @@ test("rotation re-encrypts under a fresh key and wraps it for the password and p
   const { vault, entry } = await vaultWithEntry(oldKey);
   const code = generatePaperCode();
   assert.match(code, /^KYPASS(-[A-HJ-NP-Z2-9]{4}){4}$/);
-  const r = await rotateVaultKey(vault, PASSWORD, code);
+  const r = await rotateVaultKey(vault, PASSWORD, code, { kind: "none" }, "u1");
   assert.equal(r.key.length, 32);
   assert.notDeepEqual([...r.key], [...oldKey]);
   const reopened = await KeePassVault.open(r.binary, r.key);
@@ -49,7 +49,7 @@ test("rotation sends the KDBX and both envelopes in one upload and restores the 
   const refused = rotateAndUpload(vault, oldKey, PASSWORD, code, 2, {
     upload: async (binary, pw, rec) => { calls.push({ binary, pw, rec }); throw new HttpError(409, "conflict"); },
     metadata: async () => { metadataReads++; return {}; },
-  });
+  }, { kind: "none" }, "u1");
   await assert.rejects(refused, /409/);
   assert.equal(calls.length, 1, "exactly one upload request carries the rotation");
   assert.ok(calls[0].pw && calls[0].rec, "both envelopes ride on the upload");
@@ -61,7 +61,7 @@ test("rotation sends the KDBX and both envelopes in one upload and restores the 
   const done = await rotateAndUpload(vault, oldKey, PASSWORD, code, 2, {
     upload: async (_binary, pw, rec) => { sent.push({ pw, rec }); return 9; },
     metadata: async () => { throw new Error("not consulted on success"); },
-  });
+  }, { kind: "none" }, "u1");
   assert.equal(done.version, 9);
   assert.equal(done.passwordEnvelope, sent[0].pw);
   assert.equal(sent.length, 1);
@@ -79,7 +79,7 @@ test("a lost upload response is reconciled against the stored envelopes", async 
   const landed = await rotateAndUpload(vault, oldKey, PASSWORD, code, 3, {
     upload: async (_b, pw, rec) => { stored = { version: 4, passwordEnvelope: pw, recoveryEnvelope: rec }; throw new TypeError("Failed to fetch"); },
     metadata: async () => stored,
-  });
+  }, { kind: "none" }, "u1");
   assert.equal(landed.version, 4);
   assert.equal(landed.passwordEnvelope, stored.passwordEnvelope);
   assert.ok(await KeePassVault.open(await vault.exportBinary(), landed.key));
@@ -90,7 +90,7 @@ test("a lost upload response is reconciled against the stored envelopes", async 
   await assert.rejects(rotateAndUpload(vault, beforeLater, PASSWORD, code, 4, {
     upload: async (_b, pw, rec) => { stored = { version: 6, passwordEnvelope: pw, recoveryEnvelope: rec }; throw new TypeError("Failed to fetch"); },
     metadata: async () => stored,
-  }), RotationUnconfirmedError);
+  }, { kind: "none" }, "u1"), RotationUnconfirmedError);
 
   // The request never arrived: the stored envelopes are not ours, so the old key comes back.
   const currentKey = landed.key;
@@ -98,14 +98,14 @@ test("a lost upload response is reconciled against the stored envelopes", async 
   await assert.rejects(rotateAndUpload(vault, currentKey, PASSWORD, code, 4, {
     upload: async () => { throw new TypeError("Failed to fetch"); },
     metadata: async () => stored,
-  }), /Failed to fetch/);
+  }, { kind: "none" }, "u1"), /Failed to fetch/);
   assert.ok(await KeePassVault.open(await vault.exportBinary(), currentKey));
 
   // Neither the answer nor the metadata arrived: the caller is told to lock, not to carry on.
   await assert.rejects(rotateAndUpload(vault, currentKey, PASSWORD, code, 4, {
     upload: async () => { throw new TypeError("Failed to fetch"); },
     metadata: async () => { throw new TypeError("Failed to fetch"); },
-  }), RotationUnconfirmedError);
+  }, { kind: "none" }, "u1"), RotationUnconfirmedError);
 });
 
 test("device revocation is best effort, idempotent and treats 404 as done", async () => {
@@ -138,7 +138,8 @@ test("rotation re-wraps the user key seed under the new vault key and sends it",
   const oldKey = new Uint8Array(32).fill(1);
   const vault = await KeePassVault.createNew(oldKey);
   const made = await newUserKeyRecord(oldKey, "u1");
-  const state = await adoptUserKey(made.record, oldKey, "u1");
+  const withPrevious = { ...made.record, previous: [{ publicKey: "old-pk", replacedAt: new Date().toISOString() }] };
+  const state = await adoptUserKey(withPrevious, oldKey, "u1");
   let sent: UserKeyRecord | undefined;
   const r = await rotateAndUpload(vault, oldKey, "correct horse battery staple", "paper", 3, {
     upload: async (_b, _pw, _rec, userKeyRecord) => { sent = userKeyRecord; return 4; },
@@ -148,4 +149,5 @@ test("rotation re-wraps the user key seed under the new vault key and sends it",
   assert.equal(sent!.publicKey, made.record.publicKey);
   assert.deepEqual(await unwrapSeed(b64.decode(sent!.wrappedSeed), r.key, "u1"), made.seed);
   assert.equal(r.userKeyRecord, sent);
+  assert.ok(!("previous" in sent!), "rotation must not carry a replace history; only Replace does");
 });
