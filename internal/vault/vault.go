@@ -34,6 +34,10 @@ var (
 	ErrConflict        = errors.New("vault version conflict: a newer version exists on the server")
 	// ErrRetired refuses writes to a key MoveOut took away; it is an ErrNotFound.
 	ErrRetired = fmt.Errorf("%w: vault was deleted", ErrNotFound)
+	// ErrArchive refuses a re-key that cannot preserve the version it replaces. That snapshot
+	// is the only recovery from a crash between the ciphertext and the membership record, so
+	// the write is refused rather than left with no way back.
+	ErrArchive = errors.New("the version being replaced could not be archived")
 )
 
 // ConflictError conveys details about a rejected upload.
@@ -416,12 +420,15 @@ func (s *Store) SaveRekeyed(key string, expectedVersion int64, kdbxData []byte, 
 	return s.saveVault(key, expectedVersion, kdbxData, "", "", deviceID, false, true, nil)
 }
 
-// MarkKeyEpoch marks the current version as the start of a new key epoch: ListHistory flags
-// every older snapshot staleKey and RestoreHistory refuses it with ErrStaleKey, so no client
-// can roll ciphertext under a retired key onto the live vault. It is separate from the write
-// that re-encrypted the vault so a shared rotation marks the epoch only once the new sealed
-// keys have committed.
-func (s *Store) MarkKeyEpoch(key string) error {
+// MarkKeyEpoch marks version as the start of a new key epoch: ListHistory flags every older
+// snapshot staleKey and RestoreHistory refuses it with ErrStaleKey, so no client can roll
+// ciphertext under a retired key onto the live vault. It is separate from the write that
+// re-encrypted the vault so a shared rotation marks the epoch only once the new sealed keys
+// have committed — which is why the caller passes the version its own re-key wrote and not
+// the current one: a save landing in between is under the *new* key and must stay
+// restorable. An existing marker is never lowered, and a version the vault has not reached
+// is refused.
+func (s *Store) MarkKeyEpoch(key string, version int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.retired[key] {
@@ -434,7 +441,13 @@ func (s *Store) MarkKeyEpoch(key string) error {
 	if current.Version == 0 {
 		return ErrNotFound
 	}
-	current.KeyEpochSince = current.Version
+	if version <= 0 || version > current.Version {
+		return fmt.Errorf("key epoch %d is not a version this vault has reached (%d)", version, current.Version)
+	}
+	if version <= current.KeyEpochSince {
+		return nil
+	}
+	current.KeyEpochSince = version
 	return s.saveMetadataLocked(key, current)
 }
 
@@ -491,7 +504,7 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 			err = os.WriteFile(filepath.Join(s.historyDir(userID), historyID+".kdbx"), currentKdbx, 0600)
 		}
 		if err != nil && mustArchive {
-			return Metadata{}, fmt.Errorf("archive version %d before re-keying: %w", current.Version, err)
+			return Metadata{}, fmt.Errorf("%w: version %d: %v", ErrArchive, current.Version, err)
 		}
 	}
 

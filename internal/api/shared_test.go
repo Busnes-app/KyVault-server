@@ -1741,7 +1741,11 @@ func TestSharedRotateIsRefusedWhenTheSnapshotCannotBeArchived(t *testing.T) {
 		}
 	})
 	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, sealedKeyFor(9), aliceFP)})
-	if rec := rotate(srv, aliceC, id, `"2"`, body, ct); rec.Code != http.StatusInternalServerError {
+	// Not a bare 500: the owner is told what failed and that nothing changed, and the status
+	// says it is the server's storage, not their request.
+	rec := rotate(srv, aliceC, id, `"2"`, body, ct)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "could not be archived") ||
+		!strings.Contains(rec.Body.String(), "nothing was changed") {
 		t.Fatalf("rotate with an unarchivable snapshot = %d %s", rec.Code, rec.Body.String())
 	}
 	if v := sharedRecord(t, srv, id); v.KeyEpoch != 1 || v.Members[alice.ID].SealedKey != sealedKeyFor(0xA1) {

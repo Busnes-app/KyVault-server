@@ -478,8 +478,9 @@ func TestCollectCannotCaptureATornRotation(t *testing.T) {
 		done <- nil
 	}()
 
-	collected := 0
-	for {
+	// Bounded by collections, not by the rotations finishing first: the loop must not depend
+	// on which goroutine wins.
+	for range 40 {
 		files, _, _, err := c.Collect()
 		if err != nil {
 			t.Fatal(err)
@@ -496,17 +497,11 @@ func TestCollectCannotCaptureATornRotation(t *testing.T) {
 			t.Fatalf("capsule caught a torn rotation: record at epoch %d, ciphertext %q",
 				record.KeyEpoch, byPath["data/vaults/shared/"+sv.ID+"/vault.kdbx"])
 		}
-		collected++
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatal(err)
-			}
-			if collected < 2 {
-				t.Fatalf("only %d capsules were collected while the vault rotated", collected)
-			}
-			return
-		default:
-		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if v, err := c.Shared.Get(sv.ID); err != nil || v.KeyEpoch != rotations+1 {
+		t.Fatalf("the rotations did not all run: %+v, %v", v, err)
 	}
 }

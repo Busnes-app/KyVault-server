@@ -13,11 +13,16 @@ export const PERSONAL_BASE = "/api/vault";
 export const saveAction = (state: SaveState): "overwrite" | "reload" | "retry" | null =>
   state.kind !== "error" ? null : state.conflict ? "overwrite" : state.status === 409 ? "reload" : "retry";
 
-// A shared write the server refused because the vault key was rotated. It shares its status
-// code with a version conflict and means the opposite: this copy is sealed under a retired
-// key, so overwriting is the one thing that must not happen. Callers re-open the vault.
+// The server's two epoch refusals: the key was rotated under this tab, or the write never said
+// which key it used at all (a tab left open across a deploy, or a client that sends no epoch
+// header). Both share their status code with a version conflict and mean the opposite of one:
+// this copy cannot be the basis of an overwrite, and the only answer is to re-open the vault.
+export const ROTATION_REFUSAL = /was rotated|did not say which shared vault key/;
+
+// A shared write the server refused for either of those reasons. Overwriting is the one thing
+// that must not happen; callers re-open the vault.
 export const isRotationRefusal = (err: unknown): boolean =>
-  err instanceof HttpError && err.status === 409 && /was rotated/.test(err.message);
+  err instanceof HttpError && err.status === 409 && ROTATION_REFUSAL.test(err.message);
 
 export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string, basePath = PERSONAL_BASE, keyEpoch?: number): Promise<number> {
   const headers: Record<string, string> = {

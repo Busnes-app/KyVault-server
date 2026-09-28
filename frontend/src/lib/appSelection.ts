@@ -1,4 +1,4 @@
-import { VaultSaveQueue, type SaveState } from "./vaultSave";
+import { VaultSaveQueue, ROTATION_REFUSAL, type SaveState } from "./vaultSave";
 import { resolveSelection, selectionBase, type Selected, type OpenedShared } from "./vaultSelection";
 import type { SharedVaultSummary } from "./sharedVaults";
 import type { KeePassVault } from "./kdbx";
@@ -19,25 +19,30 @@ export type SwitchDeps = {
 export const lostAccess = (selected: Selected, state: SaveState): boolean =>
   selected.kind === "shared" && state.kind === "error" && (state.status === 403 || state.status === 404);
 
-// A shared write refused because the key was rotated elsewhere: this copy is sealed under a
-// retired key, so there is nothing to overwrite with and the vault has to be re-opened. Every
-// other 409 is an ordinary version conflict and keeps the overwrite/reload choice.
+// A shared write refused over the key epoch: either the key was rotated elsewhere, so this
+// copy is sealed under a retired key, or the write never said which key it used. Neither has
+// anything to overwrite with, and both are answered by re-opening the vault. Every other 409
+// is an ordinary version conflict and keeps the overwrite/reload choice.
 export const rotatedElsewhere = (selected: Selected, state: SaveState): boolean =>
   selected.kind === "shared" && state.kind === "error" && state.status === 409 &&
-  /was rotated/.test(state.message);
+  ROTATION_REFUSAL.test(state.message);
 
 // What the tab offers before a rotation elsewhere forces it to re-open the vault. The refused
 // save is itself the proof there are unsaved edits, and they can never be uploaded — they are
-// sealed under a retired key and the server is right to refuse them — but this tab still holds
-// that key and the open database, so a download hands the user a KDBX they can open. Losing
-// them is destructive, so it is never done without an answer to this question.
+// sealed under a retired key and the server is right to refuse them. A KDBX copy would be no
+// copy at all: a shared vault's file is credentialled with the shared vault key, which this
+// product never shows anyone and which this tab is about to zero, so nobody could ever open
+// it. The plain-text CSV is the only form the user can still read, which is why the question
+// says so in as many words. Losing the edits is destructive and is never done unasked.
 export const ROTATED_QUESTION = {
   title: "This vault's key was rotated elsewhere",
-  message: "Your unsaved edits can no longer be saved: they are encrypted with the key that was just retired. " +
-    "You can download a copy of this vault as it stands, then re-open it with the new key.",
+  message: "Your unsaved edits can no longer be saved: they are encrypted with the key that was just retired, " +
+    "and an encrypted copy of them would be unopenable by you or anyone else. The one copy you can still read " +
+    "is a plain-text CSV of this vault's entries — every password and TOTP secret in the clear. " +
+    "Save it only to a device you control and delete it when you are done.",
   label: "Unsaved edits",
   options: [
-    { value: "download", label: "Download a copy, then re-open the vault" },
+    { value: "csv", label: "Export the entries as plain-text CSV, then re-open" },
     { value: "discard", label: "Re-open the vault and lose them" },
   ],
   confirmLabel: "Continue",
@@ -45,8 +50,8 @@ export const ROTATED_QUESTION = {
 
 // The answer, decided: a dismissed question (Escape, or a lock cancelling it) does neither, so
 // the edits stay on screen and the refusal banner stays with them.
-export const rotatedPlan = (answer: string | null): { download: boolean; reopen: boolean } =>
-  ({ download: answer === "download", reopen: answer !== null });
+export const rotatedPlan = (answer: string | null): { csv: boolean; reopen: boolean } =>
+  ({ csv: answer === "csv", reopen: answer !== null });
 
 export type RestorePlan = { action: "wait" } | { action: "none" } | { action: "switch"; id: string } | { action: "notice"; text: string };
 

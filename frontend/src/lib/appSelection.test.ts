@@ -119,6 +119,8 @@ test("a rotation 409 re-opens the vault, an ordinary conflict does not", () => {
   const shared = { kind: "shared", id: "sv_abcdefghijklmnopqrstuv" } as const;
   const err = (message: string, status?: number) => ({ kind: "error", version: 3, message, status } as any);
   assert.equal(rotatedElsewhere(shared, err("the shared vault key was rotated; reload the vault", 409)), true);
+  assert.equal(rotatedElsewhere(shared, err("this write did not say which shared vault key it was made under; reload the vault", 409)), true,
+    "a write with no epoch header cannot be overwritten either: re-open the vault");
   assert.equal(rotatedElsewhere(shared, err("conflict", 409)), false);
   assert.equal(rotatedElsewhere(shared, err("the shared vault key was rotated", 403)), false);
   assert.equal(rotatedElsewhere(personal, err("the shared vault key was rotated; reload the vault", 409)), false);
@@ -126,10 +128,14 @@ test("a rotation 409 re-opens the vault, an ordinary conflict does not", () => {
 
 test("a rotation elsewhere never discards the edits without an answer", () => {
   // The two answers the question offers, and the dismissal a lock or Escape produces.
-  assert.deepEqual(rotatedPlan("download"), { download: true, reopen: true });
-  assert.deepEqual(rotatedPlan("discard"), { download: false, reopen: true });
-  assert.deepEqual(rotatedPlan(null), { download: false, reopen: false });
-  // Anything unexpected re-opens without claiming a download was made, never silently.
-  assert.deepEqual(rotatedPlan("what"), { download: false, reopen: true });
-  assert.deepEqual(ROTATED_QUESTION.options.map((o) => o.value), ["download", "discard"]);
+  assert.deepEqual(rotatedPlan("csv"), { csv: true, reopen: true });
+  assert.deepEqual(rotatedPlan("discard"), { csv: false, reopen: true });
+  assert.deepEqual(rotatedPlan(null), { csv: false, reopen: false });
+  // Anything unexpected re-opens without claiming an export was made, never silently.
+  assert.deepEqual(rotatedPlan("what"), { csv: false, reopen: true });
+  assert.deepEqual(ROTATED_QUESTION.options.map((o) => o.value), ["csv", "discard"]);
+  // The copy on offer is plain text, and the question says so: an encrypted copy of a shared
+  // vault is credentialled with a key this product never shows and is about to retire.
+  assert.match(ROTATED_QUESTION.message, /plain-text CSV/);
+  assert.match(ROTATED_QUESTION.message, /unopenable/);
 });

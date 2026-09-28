@@ -408,6 +408,9 @@ test("a shared write refused for a rotated key is not an overwritable conflict",
 
 test("a rotation refusal is told apart from every other 409", () => {
   assert.equal(isRotationRefusal(new HttpError(409, "the shared vault key was rotated; reload the vault")), true);
+  // The server's other epoch refusal, word for word. A tab left open across a deploy sends no
+  // epoch header; routing it to the overwrite button would re-fail forever.
+  assert.equal(isRotationRefusal(new HttpError(409, "this write did not say which shared vault key it was made under; reload the vault")), true);
   assert.equal(isRotationRefusal(new HttpError(409, "conflict")), false);
   assert.equal(isRotationRefusal(new HttpError(403, "the shared vault key was rotated")), false);
   assert.equal(isRotationRefusal(new Error("the shared vault key was rotated")), false);

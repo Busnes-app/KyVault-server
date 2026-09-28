@@ -64,8 +64,11 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
 - Rotation commit order: the re-encrypted ciphertext is written inside `writeVault`, before
   the record commits. A crash between them leaves the live vault under the new key while
   the record still carries the old epoch and old sealed keys — the pre-rotation snapshot is
-  still in history and still restorable, so a member rolls back with the key they hold and
-  the rotation is run again. `writeVault` must therefore neither delete history
+  still in history and still restorable with the key the members hold, so the vault is
+  recovered and the rotation run again. That recovery is API- or host-level only
+  (`POST /api/shared/{id}/history/{id}/restore` at the record's unchanged epoch, or the
+  file-level rollback in `docs/RESTORE.md`): no screen reaches the history of a vault it
+  cannot open. `writeVault` must therefore neither delete history
   (`ClearHistory`) nor mark the key epoch (`MarkKeyEpoch`, which makes older snapshots
   `ErrStaleKey`): the route runs both after the record commits, in that order. The write is
   `vault.Store.SaveRekeyed`, which refuses when it cannot archive that snapshot. The closure

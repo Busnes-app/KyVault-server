@@ -334,7 +334,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   a missing CSRF token is still 403; `TestSharedWritesCarryTheKeyEpoch`). The two refusals
   say different things: a stale epoch is `the shared vault key was rotated`, which the client
   branches on, and a missing or unparseable one says the write did not say which key it was
-  made under — nothing was rotated, and that is what a tab left open across a deploy reads. That epoch rides on
+  made under — nothing was rotated, and that is what a tab left open across a deploy reads.
+  Both are in `vaultSave.ts`'s `ROTATION_REFUSAL`, so neither is ever offered the overwrite
+  button, which would re-fail forever. That epoch rides on
   the `vaultTarget` and `shared.Store.WithWriter` re-checks it under the membership lock, so a
   rotation that commits after the gate refuses the write too rather than letting a pre-rotation
   snapshot land on the live vault (`TestSharedWriteIsRefusedWhenARotationCommitsMidRequest`).
@@ -389,8 +391,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   must leave the pre-rotation snapshot restorable — the bytes are then under the new key and
   every sealed copy is the old one, and that snapshot is the only way back into the vault. It
   is also the only save that fails when it cannot archive the version it replaces, for the
-  same reason. `vault.Store.MarkKeyEpoch` runs after the commit and before
-  `vault.Store.ClearHistory`, both outside the lock and both best effort: the epoch marker
+  same reason (`vault.ErrArchive` → 503 naming the cause, since nothing changed and it is the
+  host's storage, not the request). `vault.Store.MarkKeyEpoch(key, version)` runs after the
+  commit and before `vault.Store.ClearHistory`, both outside the lock and both best effort:
+  the marker takes the version the rotation *wrote*, never the vault's current one — a member
+  it re-sealed may have saved in between, and that save is under the new key and has to stay
+  restorable — never lowers an existing marker, refuses a version the vault has not reached,
   makes every older snapshot `staleKey` and refuses it for rollback with 409 whatever epoch
   header the caller sends (that header proves which key a writer holds, never that the bytes
   are current), and the clear removes snapshots and conflicts, which are ciphertext under the
@@ -533,7 +539,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   queue holds that epoch (fifth constructor argument, `keyEpoch` getter) and `setKeyEpoch`
   moves it after a rotation this tab committed, so the next save claims the new key.
   `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, retry,
-  and that epoch 0 is sent as `"0"` rather than treated as absent.
+  and that epoch 0 is sent as `"0"` rather than treated as absent. `isRotationRefusal` /
+  `ROTATION_REFUSAL` match both of the server's epoch refusals (rotated key, and a write that
+  named no key), so neither is routed to the overwrite button.
 
 - `frontend/src/lib/appSelection.ts`, `components/VaultSwitcher.tsx` and `App.tsx`: one selected
   vault at a time (`Selected`). `switchTo` confirms discard, closes the old queue, opens the next
@@ -549,10 +557,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   (`reopenShared`); that effect lists `switching`/`rotating` in its deps, because the refs it
   guards on would otherwise never be reconsidered and the banner would stay dead. It asks
   first (`ROTATED_QUESTION`, `rotatedPlan`, guarded by `askingRotatedRef` so it is asked once):
-  those edits can never be uploaded, but this tab still holds the retired key and the open
-  database, so a download through `handleExportKdbx` hands the user a KDBX they can open, and
-  a dismissed question re-opens nothing and leaves the tab as it is. Discarding them is
-  destructive and is never done unasked.
+  those edits can never be uploaded, and the copy on offer is the plain-text CSV
+  (`lib/csvExport.ts`), not a KDBX — a shared vault's file is credentialled with the shared
+  vault key, which this product shows nobody and which this tab zeroes on the re-open, so an
+  encrypted copy would be openable by no one. The question says that in as many words. A
+  dismissed question re-opens nothing and leaves the tab as it is; the export and the re-open
+  both re-check the unlock generation and the selection. Discarding the edits is destructive
+  and is never done unasked.
   `openShared` awaits `loadCrypto` before unsealing, so a lazy HPKE chunk that 404'd after a
   deploy says to reload the page (`CRYPTO_UNAVAILABLE`) instead of sending the user to an owner
   for a re-seal (`RESEAL_NEEDED`) they do not need — the split `adoptUserKey` already makes.

@@ -646,8 +646,19 @@ func TestMarkKeyEpochRetiresOlderSnapshots(t *testing.T) {
 	if _, err := store.SaveRekeyed(key, 4, []byte("rekeyed"), ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkKeyEpoch(key); err != nil {
+	if err := store.MarkKeyEpoch(key, 5); err != nil {
 		t.Fatal(err)
+	}
+	// Idempotent, and never lowered: a later rotation's marker stands, and a version the vault
+	// has not reached is refused rather than retiring everything.
+	if err := store.MarkKeyEpoch(key, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key, 99); err == nil {
+		t.Fatal("a version the vault has not reached was accepted as a key epoch")
 	}
 	if marked, err := store.GetMetadata(key); err != nil || marked.Version != 5 || marked.KeyEpochSince != 5 {
 		t.Fatalf("marked metadata = %+v, %v", marked, err)
@@ -681,6 +692,48 @@ func TestMarkKeyEpochRetiresOlderSnapshots(t *testing.T) {
 	}
 }
 
+// A member the rotation re-sealed can save before the route marks the epoch. That save is
+// under the new key, so the marker must name the version the rotation wrote and leave it
+// restorable; stamping "whatever the vault is on now" would retire it.
+func TestMarkKeyEpochDoesNotRetireASaveThatLandedAfterTheRotation(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_0123456789012345678901"
+	if _, err := store.SaveVault(key, 0, []byte("one"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	rekeyed, err := store.SaveRekeyed(key, 1, []byte("rekeyed"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A member who already holds the new key saves before the mark runs.
+	if _, err := store.SaveVault(key, rekeyed.Version, []byte("theirs"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key, rekeyed.Version); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range history {
+		want := h.Version < rekeyed.Version
+		if h.StaleKey != want {
+			t.Fatalf("snapshot %s (v%d) staleKey = %v, want %v", h.ID, h.Version, h.StaleKey, want)
+		}
+		if h.Version != rekeyed.Version {
+			continue
+		}
+		// The rotation's own version is under the current key: it must still roll back.
+		if _, err := store.RestoreHistory(key, h.ID); err != nil {
+			t.Fatalf("rollback to the rotation's own version = %v, want it to succeed", err)
+		}
+	}
+}
+
 // The pre-rotation snapshot is the only recovery from a crash between the ciphertext and the
 // membership record, so a re-key that cannot archive it is refused rather than left with no
 // way back. An ordinary save keeps its best-effort archive.
@@ -706,8 +759,8 @@ func TestSaveRekeyedRefusesWhenTheSnapshotCannotBeArchived(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if _, err := store.SaveRekeyed(key, 1, []byte("rekeyed"), ""); err == nil {
-		t.Fatal("a re-key that could not archive the pre-rotation snapshot was accepted")
+	if _, err := store.SaveRekeyed(key, 1, []byte("rekeyed"), ""); !errors.Is(err, ErrArchive) {
+		t.Fatalf("re-key with an unarchivable snapshot = %v, want ErrArchive", err)
 	}
 	// An ordinary save still goes through, and the vault is untouched by the refusal.
 	if _, err := store.SaveVault(key, 1, []byte("two"), "", "", ""); err != nil {

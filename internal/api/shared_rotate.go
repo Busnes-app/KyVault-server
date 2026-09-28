@@ -88,6 +88,12 @@ func (s *Server) handleSharedRotate(w http.ResponseWriter, r *http.Request, u us
 	})
 	var conflict *vault.ConflictError
 	switch {
+	case errors.Is(err, vault.ErrArchive):
+		// The re-key refused rather than leave the vault with no way back from a crash, so
+		// nothing changed. It is the host's disk, not the owner's request: say which.
+		log.Printf("shared vault %s: rotation refused, %v", c.vault.ID, err)
+		http.Error(w, "the vault's current version could not be archived, so the rotation was refused and nothing was changed; this is a problem with the server's storage", http.StatusServiceUnavailable)
+		return
 	case errors.Is(err, shared.ErrEpoch), errors.Is(err, errRotateVersion):
 		http.Error(w, "the shared vault changed; reload it and rotate again", http.StatusConflict)
 		return
@@ -108,7 +114,9 @@ func (s *Server) handleSharedRotate(w http.ResponseWriter, r *http.Request, u us
 	// failing is a failed rotation — the vault is correctly re-keyed — so both are logged,
 	// audited and reported instead.
 	epochMarked := true
-	if err := s.vault.MarkKeyEpoch(key); err != nil {
+	// meta.Version, not whatever the vault is on now: a member this rotation re-sealed may
+	// already have saved over it, and that save is under the new key and must stay restorable.
+	if err := s.vault.MarkKeyEpoch(key, meta.Version); err != nil {
 		epochMarked = false
 		log.Printf("shared vault %s: marking the key epoch after a rotation: %v", c.vault.ID, err)
 		s.record(r, "shared.hook_failed", u.ID, c.session.DeviceID, clientIP(r),
