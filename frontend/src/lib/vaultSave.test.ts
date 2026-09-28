@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { VaultSaveQueue, uploadVault, canDiscardVault, PERSONAL_BASE, type SaveState } from "./vaultSave";
+import { VaultSaveQueue, uploadVault, canDiscardVault, isRotationRefusal, PERSONAL_BASE, type SaveState } from "./vaultSave";
+import { HttpError } from "./api";
 import { KeePassVault } from "./kdbx";
 
 function settled(queue: VaultSaveQueue): Promise<SaveState> {
@@ -378,4 +379,36 @@ test("a personal queue sends no epoch at all", async (t) => {
   assert.deepEqual(epochs, [null]);
   assert.equal(queue.keyEpoch, undefined);
   queue.discard();
+});
+
+// A retired-epoch refusal shares its status code with a version conflict and means the
+// opposite: there is nothing on the server this copy may overwrite. The server's own words
+// have to survive, because appSelection.rotatedElsewhere reads them to re-open the vault.
+test("a shared write refused for a rotated key is not an overwritable conflict", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(3));
+  const queue = new VaultSaveQueue(vault, 2, undefined, SHARED_BASE, 1);
+  let uploads = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    uploads++;
+    return new Response("the shared vault key was rotated; reload the vault\n", { status: 409 });
+  });
+  const done = settled(queue);
+  queue.changed();
+  void queue.save();
+  const state = await done;
+  assert.equal(state.kind, "error");
+  assert.equal(state.kind === "error" && state.status, 409);
+  assert.equal(state.kind === "error" && state.conflict, false, "overwrite would upload ciphertext nobody can open");
+  assert.match(state.kind === "error" ? state.message : "", /was rotated/);
+  await queue.save({ overwrite: true });
+  assert.equal(uploads, 1, "not even an explicit overwrite re-sends a retired-epoch copy");
+  queue.discard();
+});
+
+test("a rotation refusal is told apart from every other 409", () => {
+  assert.equal(isRotationRefusal(new HttpError(409, "the shared vault key was rotated; reload the vault")), true);
+  assert.equal(isRotationRefusal(new HttpError(409, "conflict")), false);
+  assert.equal(isRotationRefusal(new HttpError(403, "the shared vault key was rotated")), false);
+  assert.equal(isRotationRefusal(new Error("the shared vault key was rotated")), false);
 });

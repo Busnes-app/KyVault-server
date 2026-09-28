@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HttpError } from "./api";
-import { canOpen, stateLabel, SHARED_ID, sharedBase, sharedApi, type SharedVaultSummary } from "./sharedVaults";
+import { canOpen, stateLabel, optionLabel, SHARED_ID, sharedBase, sharedApi, type SharedVaultSummary } from "./sharedVaults";
 
 const row = (over: Partial<SharedVaultSummary>): SharedVaultSummary => ({
   id: "sv_abcdefghijklmnopqrstuv", name: "Finance", role: "editor", state: "active", keyEpoch: 1,
@@ -77,4 +77,14 @@ test("rotate posts the kdbx part then the keys part, versioned, with no hand-set
   assert.deepEqual(calls[0].parts, ["kdbx", "keys"], "the server reads the parts positionally");
   assert.deepEqual(JSON.parse(calls[0].keys), { epoch: 2, sealed: [{ userId: "u-2", sealedKey: "AAAA", keyFingerprint: "FFFF" }] });
   assert.deepEqual(result, { ok: true, metadata: { version: 9 }, keyEpoch: 3, leftBehind: ["u-4"], historyCleared: false });
+});
+
+// Only an owner can rotate, so only an owner is told the vault needs it.
+test("the switcher label tells an owner a vault needs rotating", () => {
+  const pending = { since: "2026-09-27T10:00:00Z", userId: "u-9", reason: "removed" } as const;
+  assert.equal(optionLabel(row({})), "Finance");
+  assert.equal(optionLabel(row({ role: "owner", rotationPending: pending })), "Finance — Needs rotation");
+  assert.equal(optionLabel(row({ role: "reader", rotationPending: pending })), "Finance — Read-only",
+    "a reader can do nothing about it and is not nagged");
+  assert.equal(optionLabel(row({ role: "owner", state: "stale", rotationPending: pending })), "Finance — Key changed — Needs rotation");
 });

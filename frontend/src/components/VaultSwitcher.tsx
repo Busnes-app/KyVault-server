@@ -1,4 +1,4 @@
-import { canOpen, stateLabel, type SharedVaultSummary } from "../lib/sharedVaults";
+import { canOpen, optionLabel, type SharedVaultSummary } from "../lib/sharedVaults";
 import type { Selected } from "../lib/vaultSelection";
 
 type Props = {
@@ -27,7 +27,7 @@ export function VaultSwitcher({ selected, vaults, onSelect, onCreate, onAccept, 
         onChange={(e) => onSelect(e.target.value === "personal" ? { kind: "personal" } : { kind: "shared", id: e.target.value })}>
         <option value="personal">My vault</option>
         {vaults.filter((v) => v.state !== "invited").map((v) => (
-          <option key={v.id} value={v.id} disabled={!canOpen(v)}>{v.name}{stateLabel(v) ? ` — ${stateLabel(v)}` : ""}</option>
+          <option key={v.id} value={v.id} disabled={!canOpen(v)}>{optionLabel(v)}</option>
         ))}
       </select>
       {selected.kind === "shared" ? <button type="button" className="btn btn-quiet btn-sm" onClick={onMembers} disabled={busy}>Members</button> : null}

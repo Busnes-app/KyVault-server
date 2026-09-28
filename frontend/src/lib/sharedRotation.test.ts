@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateUserKey, fingerprint } from "./userKey";
 import { newSharedKey, sealSharedKey, openSharedKey } from "./sharedKey";
-import { planRotation, rotateSharedVault, rotationLanded, type KeyView, type RotateDeps } from "./sharedRotation";
+import { planRotation, rotateSharedVault, rotationLanded, rotateBlocked, rotationBanner, rotationReport, pendingName,
+  type KeyView, type RotateDeps } from "./sharedRotation";
+import { formatWhen } from "./format";
+import type { Pending } from "./sharedVaults";
 import type { Member, SharedVaultSummary } from "./sharedVaults";
 
 const VAULT = "sv_abcdefghijklmnopqrstuv";
@@ -77,6 +80,7 @@ test("rotateSharedVault seals a fresh key to everyone in the plan and pins the u
     api: {
       rotate: async (_id, kdbx, epoch, version, sealed) => { requests.push({ epoch, version, kdbx, sealed }); return { keyEpoch: 2, leftBehind: [], metadata: { version: 4 }, historyCleared: true }; },
       list: async () => [],
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async (userId) => { pinned.push(userId); },
     // The vault has to be re-encrypted under the key that was sealed, and the bytes that come
@@ -86,6 +90,7 @@ test("rotateSharedVault seals a fresh key to everyone in the plan and pins the u
   };
   const out = await rotateSharedVault(VAULT, 1, 3, plan, deps);
   assert.equal(out.keyEpoch, 2);
+  assert.equal(out.version, 4, "the version the rotation wrote rebuilds the save queue");
   assert.equal(out.historyCleared, true);
   assert.deepEqual(out.leftBehind, []);
   assert.deepEqual(pinned, ["bob"]);
@@ -113,6 +118,7 @@ test("rotateSharedVault reports a history the server could not clear", async () 
     api: {
       rotate: async () => ({ keyEpoch: 2, leftBehind: [], metadata: { version: 4 }, historyCleared: false }),
       list: async () => [],
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async () => { throw new Error("nothing to pin"); },
     reEncrypt: async () => new ArrayBuffer(8),
@@ -134,6 +140,7 @@ test("a lost response is adopted, with the plan's own left-behind list", async (
         throw new Error("network");
       },
       list: async () => [row(VAULT, 2, sealedForMe)],
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async () => { throw new Error("nothing to pin"); },
     reEncrypt: async () => new ArrayBuffer(8),
@@ -154,6 +161,7 @@ test("a rotation that did not land keeps its own error", async () => {
     api: {
       rotate: async () => { throw new Error("network"); },
       list: async () => [row(VAULT, 1, other)],
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async () => { throw new Error("nothing to pin"); },
     reEncrypt: async () => new ArrayBuffer(8),
@@ -170,6 +178,7 @@ test("a failed lookup after a lost response reports the rotation's error", async
     api: {
       rotate: async () => { throw new Error("network"); },
       list: async () => { throw new Error("offline"); },
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async () => { throw new Error("nothing to pin"); },
     reEncrypt: async () => new ArrayBuffer(8),
@@ -191,6 +200,7 @@ test("planRotation leaves behind a member with no published key and pins nothing
     api: {
       rotate: async () => ({ keyEpoch: 2, leftBehind: ["bob"], metadata: { version: 4 }, historyCleared: true }),
       list: async () => [],
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async (userId) => { pinned.push(userId); },
     reEncrypt: async () => new ArrayBuffer(8),
@@ -216,6 +226,7 @@ test("rotateSharedVault refuses a changed pin before anything is pinned", async 
     api: {
       rotate: async () => { rotates++; return { keyEpoch: 2, leftBehind: [], metadata: { version: 4 }, historyCleared: true }; },
       list: async () => [],
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async (userId) => { pinned.push(userId); },
     reEncrypt: async () => new ArrayBuffer(8),
@@ -234,12 +245,13 @@ test("rotationLanded matches our own key and nothing else", async () => {
     api: {
       rotate: async () => { throw new Error("not used here"); },
       list: async () => [row(VAULT, 2, sealedForMe)],
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async () => { throw new Error("nothing to pin"); },
     reEncrypt: async () => new ArrayBuffer(8),
     seed: me.seed,
   };
-  assert.deepEqual(await rotationLanded(VAULT, key, deps), { keyEpoch: 2 });
+  assert.deepEqual(await rotationLanded(VAULT, key, deps), { keyEpoch: 2, version: 4 });
   // A different key means it did not land.
   assert.equal(await rotationLanded(VAULT, newSharedKey(), deps), null);
   // A vault that is no longer in the list means it did not land.
@@ -255,9 +267,108 @@ test("rotationLanded throws when the list itself fails", async () => {
     api: {
       rotate: async () => { throw new Error("not used here"); },
       list: async () => { throw new Error("offline"); },
+      metadata: async () => ({ version: 4 }),
     },
     pinUnknown: async () => { throw new Error("nothing to pin"); },
     reEncrypt: async () => new ArrayBuffer(8),
     seed: me.seed,
   }), /offline/);
+});
+
+// The empty-publicKey rule lives in planRotation and here, exactly as the `changed` rule does:
+// a plan built by hand must not be able to write a pin for zero bytes.
+test("rotateSharedVault refuses an empty public key before anything is pinned", async () => {
+  const me = await generateUserKey();
+  const plan = planRotation([member("me")], {}, { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
+  plan.seal.push({ userId: "bob", publicKey: new Uint8Array(), pin: { state: "unknown", fingerprint: "", publicKey: new Uint8Array() } });
+  const pinned: string[] = [];
+  let rotates = 0;
+  await assert.rejects(rotateSharedVault(VAULT, 1, 3, plan, {
+    api: {
+      rotate: async () => { rotates++; return { keyEpoch: 2, leftBehind: [], metadata: { version: 4 }, historyCleared: true }; },
+      list: async () => [],
+      metadata: async () => ({ version: 4 }),
+    },
+    pinUnknown: async (userId) => { pinned.push(userId); },
+    reEncrypt: async () => new ArrayBuffer(8),
+    seed: me.seed,
+  }), /no published key/i);
+  assert.equal(rotates, 0);
+  assert.deepEqual(pinned, [], "a pin for zero bytes would poison that member's verdict");
+});
+
+// A lost response leaves the version unknown until the server is asked for it, and the
+// caller needs it: the queue it rebuilds has to claim the version the rotation wrote.
+test("a lost response reports the version the server holds now", async () => {
+  const me = await generateUserKey();
+  const plan = planRotation([member("me")], {}, { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
+  let sealedForMe = "";
+  const out = await rotateSharedVault(VAULT, 1, 3, plan, {
+    api: {
+      rotate: async (_id, _kdbx, _epoch, _version, sealed) => { sealedForMe = sealed[0].sealedKey; throw new Error("network"); },
+      list: async () => [row(VAULT, 2, sealedForMe)],
+      metadata: async () => ({ version: 9 }),
+    },
+    pinUnknown: async () => { throw new Error("nothing to pin"); },
+    reEncrypt: async () => new ArrayBuffer(8),
+    seed: me.seed,
+  });
+  assert.equal(out.version, 9);
+});
+
+// A metadata read that fails says nothing about the rotation either, so the rotation's own
+// error stands and the caller keeps the key the server last accepted.
+test("a landed rotation whose version cannot be read keeps the rotation's error", async () => {
+  const me = await generateUserKey();
+  const plan = planRotation([member("me")], {}, { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
+  let sealedForMe = "";
+  await assert.rejects(rotateSharedVault(VAULT, 1, 3, plan, {
+    api: {
+      rotate: async (_id, _kdbx, _epoch, _version, sealed) => { sealedForMe = sealed[0].sealedKey; throw new Error("network"); },
+      list: async () => [row(VAULT, 2, sealedForMe)],
+      metadata: async () => { throw new Error("offline"); },
+    },
+    pinUnknown: async () => { throw new Error("nothing to pin"); },
+    reEncrypt: async () => new ArrayBuffer(8),
+    seed: me.seed,
+  }), /network/);
+});
+
+test("rotateBlocked names the first thing standing in the way, in that order", () => {
+  const ok = { activeOwner: true, keyReady: true, open: true, unsaved: false };
+  assert.equal(rotateBlocked(ok), null);
+  assert.match(rotateBlocked({ ...ok, activeOwner: false })!, /active owner/);
+  assert.match(rotateBlocked({ ...ok, activeOwner: false, unsaved: true })!, /active owner/, "authority is named before housekeeping");
+  assert.match(rotateBlocked({ ...ok, keyReady: false })!, /user key/);
+  assert.match(rotateBlocked({ ...ok, open: false })!, /Open this vault/);
+  assert.match(rotateBlocked({ ...ok, unsaved: true })!, /unsaved edits/);
+});
+
+const SINCE = "2026-09-27T10:00:00Z";
+const pending = (over: Partial<Pending> = {}): Pending => ({ since: SINCE, userId: "u-9", reason: "removed", ...over });
+
+test("the rotation banner names who left, how, when, and what their copy still opens", () => {
+  const members = [{ userId: "u-1", username: "mock-admin" }];
+  const removed = rotationBanner(pending(), members);
+  assert.match(removed, /^u-9 was removed on /, "a departed member is no longer in the list, so their id names them");
+  assert.ok(removed.includes(formatWhen(SINCE)));
+  assert.match(removed, /Their copy of the key still opens anything this vault saved before a rotation\./);
+  assert.match(removed, /Rotating re-keys the vault for everyone who remains\.$/);
+  assert.match(rotationBanner(pending({ reason: "left", userId: "u-1" }), members), /^mock-admin left on /);
+  assert.match(rotationBanner(pending({ reason: "declined" }), members), /^u-9 declined the invitation on /);
+  assert.equal(pendingName(pending({ userId: "u-1" }), members), "mock-admin");
+});
+
+test("the rotation report counts the new copies, names who was left behind, and a history that stayed", () => {
+  const clean = rotationReport(3, { leftBehind: [], historyCleared: true });
+  assert.equal(clean, "Rotated. 3 members have the new key.");
+  assert.equal(rotationReport(1, { leftBehind: [], historyCleared: true }), "Rotated. 1 member has the new key.");
+
+  const left = rotationReport(2, { leftBehind: [{ userId: "u-3", username: "dana", reason: "their key changed since you pinned it" }], historyCleared: true });
+  assert.match(left, /dana \(their key changed since you pinned it\)/);
+  assert.match(left, /Verify their key and re-seal them from this dialog\.$/);
+
+  const kept = rotationReport(2, { leftBehind: [], historyCleared: false });
+  assert.match(kept, /could not be deleted/);
+  assert.match(kept, /Rotate again/);
 });

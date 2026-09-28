@@ -19,6 +19,13 @@ export type SwitchDeps = {
 export const lostAccess = (selected: Selected, state: SaveState): boolean =>
   selected.kind === "shared" && state.kind === "error" && (state.status === 403 || state.status === 404);
 
+// A shared write refused because the key was rotated elsewhere: this copy is sealed under a
+// retired key, so there is nothing to overwrite with and the vault has to be re-opened. Every
+// other 409 is an ordinary version conflict and keeps the overwrite/reload choice.
+export const rotatedElsewhere = (selected: Selected, state: SaveState): boolean =>
+  selected.kind === "shared" && state.kind === "error" && state.status === 409 &&
+  /was rotated/.test(state.message);
+
 export type RestorePlan = { action: "wait" } | { action: "none" } | { action: "switch"; id: string } | { action: "notice"; text: string };
 
 // Which vault an unlocked tab should reopen from its #/shared/<id> route.

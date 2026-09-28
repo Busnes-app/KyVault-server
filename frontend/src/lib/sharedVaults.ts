@@ -80,6 +80,13 @@ export function stateLabel(v: SharedVaultSummary): string | null {
   return null;
 }
 
+// The switcher's option text. "Needs rotation" is shown only to an owner: nobody else can
+// act on it, and a reader told to rotate has nowhere to go.
+export function optionLabel(v: SharedVaultSummary): string {
+  const tags = [stateLabel(v), v.role === "owner" && v.rotationPending ? "Needs rotation" : null].filter(Boolean);
+  return tags.length ? `${v.name} — ${tags.join(" — ")}` : v.name;
+}
+
 const REFRESH_MS = 60_000;
 
 // Loads the caller's shared vaults after unlock and keeps them fresh while the tab is visible.

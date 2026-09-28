@@ -3,7 +3,7 @@ import { KeePassVault, isWrongVaultKey } from "../lib/kdbx";
 import { useState, useEffect, useRef } from "react";
 import { HttpError, getBinary, getJSON, requestJSON, toErrorMessage } from "../lib/api";
 import { diffVaults, type DiffRow, type VaultDiff } from "../lib/vaultDiff";
-import { PERSONAL_BASE } from "../lib/vaultSave";
+import { PERSONAL_BASE, isRotationRefusal } from "../lib/vaultSave";
 import { RotateCcw, AlertTriangle, Trash2, CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { Dialog } from "./Dialog";
 import { useDialogs } from "./DialogHost";
@@ -39,6 +39,9 @@ const countsSentence = (p: Extract<Preview, { kind: "ready" }>) =>
   `The snapshot has ${count(p.diff.counts.other, "entry", "entries")} and ${count(p.folders.snapshot, "folder", "folders")}. ` +
   `The vault has ${count(p.diff.counts.live, "entry", "entries")} and ${count(p.folders.now, "folder", "folders")} now.`;
 const OLD_KEY_REASON = "Saved under a previous vault key. The current key cannot open it, so rolling back to it would leave a vault nobody can unlock.";
+// The other 409 a shared rollback can get, and the opposite fact: the snapshot is fine, this
+// tab's key epoch is not. Marking the row stale would be a lie that survives the reload.
+const ROTATED_REASON = "This vault's key was rotated while this list was open. Reload the vault and try again.";
 
 type Props = {
   snapshot?: { vault: KeePassVault; vaultKey: Uint8Array };
@@ -159,7 +162,9 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
       onNotice("Vault restored to the selected version.");
       onRestored();
     } catch (err) {
-      if (err instanceof HttpError && err.status === 409) {
+      if (isRotationRefusal(err)) {
+        setError(ROTATED_REASON);
+      } else if (err instanceof HttpError && err.status === 409) {
         setHistory((prev) => prev.map((h) => h.id === id ? { ...h, staleKey: true } : h));
         setError(OLD_KEY_REASON);
       } else {

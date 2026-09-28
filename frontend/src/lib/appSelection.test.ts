@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { switchTo, lostAccess, restorePlan, applyRotation, resolveDraft, READ_ONLY_DRAFT, type SwitchDeps } from "./appSelection";
+import { switchTo, lostAccess, rotatedElsewhere, restorePlan, applyRotation, resolveDraft, READ_ONLY_DRAFT, type SwitchDeps } from "./appSelection";
 import { personal } from "./vaultSelection";
 
 const ID = "sv_abcdefghijklmnopqrstuv";
@@ -113,4 +113,13 @@ test("a recovered checkpoint is applied whenever the vault is writable", () => {
   const none = { ...draft, vault: vaultA, version: 9, dirty: false, entry: null, recovered: false };
   assert.equal(resolveDraft({ vault: vaultA, version: 9 }, none, true, notices), none);
   assert.deepEqual(notices, []);
+});
+
+test("a rotation 409 re-opens the vault, an ordinary conflict does not", () => {
+  const shared = { kind: "shared", id: "sv_abcdefghijklmnopqrstuv" } as const;
+  const err = (message: string, status?: number) => ({ kind: "error", version: 3, message, status } as any);
+  assert.equal(rotatedElsewhere(shared, err("the shared vault key was rotated; reload the vault", 409)), true);
+  assert.equal(rotatedElsewhere(shared, err("conflict", 409)), false);
+  assert.equal(rotatedElsewhere(shared, err("the shared vault key was rotated", 403)), false);
+  assert.equal(rotatedElsewhere(personal, err("the shared vault key was rotated; reload the vault", 409)), false);
 });

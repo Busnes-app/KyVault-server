@@ -8,6 +8,12 @@ export type SaveState =
 
 export const PERSONAL_BASE = "/api/vault";
 
+// A shared write the server refused because the vault key was rotated. It shares its status
+// code with a version conflict and means the opposite: this copy is sealed under a retired
+// key, so overwriting is the one thing that must not happen. Callers re-open the vault.
+export const isRotationRefusal = (err: unknown): boolean =>
+  err instanceof HttpError && err.status === 409 && /was rotated/.test(err.message);
+
 export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string, basePath = PERSONAL_BASE, keyEpoch?: number): Promise<number> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
@@ -109,6 +115,9 @@ export class VaultSaveQueue {
     this.clearOnlineRetry();
     if (this.controller.signal.aborted || this.running || this.revision === this.savedRevision) return;
     if (this.state.kind === "error" && this.state.conflict && !options.overwrite) return;
+    // A 409 that is not a version conflict is the retired-epoch refusal: this copy is sealed
+    // under a key the server no longer accepts, so no retry and no overwrite can land it.
+    if (this.state.kind === "error" && !this.state.conflict && this.state.status === 409) return;
     this.running = true;
     this.publish({ kind: "saving", version: this.state.version });
     try {
@@ -131,13 +140,16 @@ export class VaultSaveQueue {
       }
     } catch (err) {
       if (this.controller.signal.aborted) return;
-      const conflict = err instanceof HttpError && err.status === 409;
-      if (!conflict && typeof window !== "undefined") {
+      const rotated = isRotationRefusal(err);
+      const conflict = err instanceof HttpError && err.status === 409 && !rotated;
+      // A 409 of either kind is answered by the user, never by a retry when the link returns.
+      if (!(err instanceof HttpError && err.status === 409) && typeof window !== "undefined") {
         this.onlineRetry = () => { this.clearOnlineRetry(); void this.save(); };
         window.addEventListener("online", this.onlineRetry);
       }
       this.publish({ kind: "error", version: this.state.version, conflict, status: err instanceof HttpError ? err.status : undefined, message: conflict
         ? "A newer vault exists on the server. Overwrite it with this copy (the server copy stays in Version History) or reload the server copy and lose these edits."
+        // The server's words, so appSelection.rotatedElsewhere can act on them.
         : toErrorMessage(err, "Unable to save vault. Your edits are still here.") });
     } finally {
       this.running = false;

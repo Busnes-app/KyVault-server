@@ -64,9 +64,16 @@ export async function inviteMember(vaultId: string, invitee: { user: LookupResul
   await deps.api.invite(vaultId, invitee.user.userId, role, s.sealedKey, s.keyFingerprint);
 }
 
+export const EPOCH_STALE = "Your copy of this vault's key is from an older rotation. An owner has to re-seal it.";
+
 // `shown` is the verdict the caller put on screen, not a fresh lookup: the key sealed here
-// has to be the one whose fingerprint the user was looking at when they clicked.
-export async function resealMember(vaultId: string, userId: string, shown: PinStatus, sharedKey: Uint8Array, deps: FlowDeps): Promise<void> {
+// has to be the one whose fingerprint the user was looking at when they clicked. `epochs`
+// compares the vault's key epoch with the row's.
+export async function resealMember(vaultId: string, userId: string, shown: PinStatus, sharedKey: Uint8Array, deps: FlowDeps,
+                                   epochs: { vault: number; row: number }): Promise<void> {
+  // A rotation left this row behind, so the key this tab holds is the retired one: re-sealing
+  // it to myself would store a copy of a key that opens nothing. The server refuses it too.
+  if (userId === deps.me.id && epochs.row !== epochs.vault) throw new Error(EPOCH_STALE);
   // My own key needs no pin: I hold it.
   const pin: PinStatus = userId === deps.me.id
     ? { state: "pinned", fingerprint: deps.me.fingerprint, publicKey: deps.me.publicKey }
