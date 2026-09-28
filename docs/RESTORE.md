@@ -30,7 +30,7 @@ vault:
 | Path in the capsule | What it is |
 |---|---|
 | `data/vaults/<user>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Every user's encrypted KDBX file with its checksum, size and version, plus history and conflict copies. Still encrypted under the user's master password |
-| `data/vaults/shared/<id>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Each shared vault's encrypted KDBX with its version history. Encrypted under a key only its members hold |
+| `data/vaults/shared/<id>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Each shared vault's encrypted KDBX with its version history. Encrypted under a key only its members hold. A rotated vault carries no pre-rotation history: rotating deletes the snapshots and preserved conflicts under the retired key, since nobody left in the vault holds the key that opens them |
 | `data/shared/<id>.json` | Shared vault membership: name, members, roles, states and each member's copy of the vault key sealed to that member's user key. The server cannot open these |
 | `data/shared/deleted/<id>/` | Shared vaults deleted within the retention window (record and vault data), kept for operator recovery |
 | `data/audit/audit.jsonl` | The append-only audit log |
