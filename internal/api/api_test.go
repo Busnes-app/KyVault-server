@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -418,9 +417,9 @@ func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
 	_, cookie := signedInUser(t, srv, "dana", users.RoleAdmin)
 	handler := srv.Routes()
 
-	health := func(path string) map[string]any {
+	health := func(h http.Handler, path string) {
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		var body map[string]any
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("health body %q: %v", rec.Body.String(), err)
@@ -428,14 +427,15 @@ func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
 		if rec.Code != http.StatusOK || body["status"] != "ok" || body["service"] != "kyvault" || body["schema"] != "ky.health/1" {
 			t.Fatalf("GET %s = %d %s", path, rec.Code, rec.Body.String())
 		}
-		if len(body) != 5 {
-			t.Fatalf("GET %s leaked extra fields: %s", path, rec.Body.String())
+		if _, ok := body["time"]; !ok || len(body) != 5 {
+			t.Fatalf("GET %s missing time or leaked extra fields: %s", path, rec.Body.String())
 		}
-		return body
+		if checks, ok := body["checks"].([]any); !ok || len(checks) != 0 {
+			t.Fatalf("GET %s exposed checks: %s", path, rec.Body.String())
+		}
 	}
-	before := make(map[string]map[string]any)
 	for _, path := range []string{"/healthz", "/api/health"} {
-		before[path] = health(path)
+		health(handler, path)
 	}
 
 	// A log the append cannot open, which a full or broken volume also produces. The
@@ -462,13 +462,11 @@ func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
 	if !strings.Contains(logs.String(), "AUDIT WRITE FAILED") || !strings.Contains(logs.String(), "auth.logout") {
 		t.Fatalf("a failed audit write left no line an operator could see: %q", logs.String())
 	}
-	// 200 still — a full audit volume must not become a credential lockout — and the
-	// body must not have moved, because an anonymous caller reading a change here is
-	// reading confirmation that the disk they are filling is full.
+	// A fresh router forces a new evaluation after the failure; the healthy cache
+	// from the earlier requests must not mask any accidental public audit check.
+	postFailureHandler := srv.Routes()
 	for _, path := range []string{"/healthz", "/api/health"} {
-		if after := health(path); !reflect.DeepEqual(before[path], after) {
-			t.Fatalf("GET %s changed after audit failure: before=%v after=%v", path, before[path], after)
-		}
+		health(postFailureHandler, path)
 	}
 	publicVerify := httptest.NewRecorder()
 	handler.ServeHTTP(publicVerify, httptest.NewRequest(http.MethodGet, "/api/audit/verify", nil))
