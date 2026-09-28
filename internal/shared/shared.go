@@ -819,6 +819,25 @@ func (s *Store) MarkStale(userID, currentFingerprint string) ([]string, error) {
 func (s *Store) Snapshot() ([]SnapshotFile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+// WithSnapshot runs fn with that snapshot while the store lock is still held, so a caller
+// that must capture the vault ciphertext consistently with these records — the backup
+// capsule — cannot have a rotation commit between the two reads: it would seal pre-rotation
+// bytes beside post-rotation sealed keys, which restores as a vault no member can open.
+// fn takes vault.mu (lock order shared.mu then vault.mu) and must never re-enter this store.
+func (s *Store) WithSnapshot(fn func([]SnapshotFile) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	files, err := s.snapshotLocked()
+	if err != nil {
+		return err
+	}
+	return fn(files)
+}
+
+func (s *Store) snapshotLocked() ([]SnapshotFile, error) {
 	var files []SnapshotFile
 	err := filepath.WalkDir(s.dir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {

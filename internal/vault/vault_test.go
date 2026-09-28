@@ -600,10 +600,10 @@ func TestClearHistoryRemovesSnapshotsAndConflicts(t *testing.T) {
 	}
 }
 
-// SaveRotated is the shared-vault rotation write: it starts a new key epoch, so every
-// snapshot taken under the retired key is flagged and refused for rollback even if the
-// caller never manages to delete those snapshots.
-func TestSaveRotatedStartsANewKeyEpoch(t *testing.T) {
+// SaveRekeyed writes a shared rotation's ciphertext and MarkKeyEpoch, run once the new sealed
+// keys have committed, starts the new epoch: every snapshot taken under the retired key is
+// then flagged and refused for rollback even if the caller never deletes those snapshots.
+func TestMarkKeyEpochRetiresOlderSnapshots(t *testing.T) {
 	store, err := NewStore(t.TempDir(), 90)
 	if err != nil {
 		t.Fatal(err)
@@ -623,12 +623,34 @@ func TestSaveRotatedStartsANewKeyEpoch(t *testing.T) {
 		t.Fatalf("history before the rotation = %+v", before)
 	}
 
-	meta, err := store.SaveRotated(key, 2, []byte("rekeyed"), "")
+	meta, err := store.SaveRekeyed(key, 2, []byte("rekeyed"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Version != 3 || meta.KeyEpochSince != 3 {
-		t.Fatalf("rotated metadata = %+v", meta)
+	// The write alone must not retire anything: until the sealed keys commit, that snapshot is
+	// the members' only way back from a crash.
+	if meta.Version != 3 || meta.KeyEpochSince != 0 {
+		t.Fatalf("re-keyed metadata = %+v", meta)
+	}
+	// The write alone retires nothing: until the sealed keys commit, the pre-rotation snapshot
+	// is the members' only way back from a crash, so it stays restorable.
+	mid, err := store.ListHistory(key)
+	if err != nil || len(mid) != 2 || mid[0].StaleKey || mid[1].StaleKey {
+		t.Fatalf("history after the re-key = %+v, %v", mid, err)
+	}
+	if _, err := store.RestoreHistory(key, mid[0].ID); err != nil {
+		t.Fatalf("rollback before the epoch was marked = %v, want it to succeed", err)
+	}
+	// Back to where the rotation leaves the vault, then the marker the route sets once the
+	// record has committed.
+	if _, err := store.SaveRekeyed(key, 4, []byte("rekeyed"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key); err != nil {
+		t.Fatal(err)
+	}
+	if marked, err := store.GetMetadata(key); err != nil || marked.Version != 5 || marked.KeyEpochSince != 5 {
+		t.Fatalf("marked metadata = %+v, %v", marked, err)
 	}
 	after, err := store.ListHistory(key)
 	if err != nil {
@@ -654,7 +676,45 @@ func TestSaveRotatedStartsANewKeyEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "rekeyed" || current.Version != 3 {
+	if string(data) != "rekeyed" || current.Version != 5 {
 		t.Fatalf("a refused rollback changed the vault: %q v%d", data, current.Version)
+	}
+}
+
+// The pre-rotation snapshot is the only recovery from a crash between the ciphertext and the
+// membership record, so a re-key that cannot archive it is refused rather than left with no
+// way back. An ordinary save keeps its best-effort archive.
+func TestSaveRekeyedRefusesWhenTheSnapshotCannotBeArchived(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	dir := t.TempDir()
+	store, err := NewStore(dir, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_0123456789012345678901"
+	if _, err := store.SaveVault(key, 0, []byte("one"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	hDir := filepath.Join(dir, key, "history")
+	if err := os.Chmod(hDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(hDir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := store.SaveRekeyed(key, 1, []byte("rekeyed"), ""); err == nil {
+		t.Fatal("a re-key that could not archive the pre-rotation snapshot was accepted")
+	}
+	// An ordinary save still goes through, and the vault is untouched by the refusal.
+	if _, err := store.SaveVault(key, 1, []byte("two"), "", "", ""); err != nil {
+		t.Fatalf("ordinary save = %v", err)
+	}
+	meta, err := store.GetMetadata(key)
+	if err != nil || meta.Version != 2 || meta.KeyEpochSince != 0 {
+		t.Fatalf("metadata = %+v, %v", meta, err)
 	}
 }

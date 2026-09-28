@@ -64,9 +64,13 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
 - Rotation commit order: the re-encrypted ciphertext is written inside `writeVault`, before
   the record commits. A crash between them leaves the live vault under the new key while
   the record still carries the old epoch and old sealed keys — the pre-rotation snapshot is
-  still in history, so a member rolls back with the key they hold and the rotation is run
-  again. Nothing may delete history inside `writeVault`. The closure runs under `shared.mu`
-  and must never re-enter this store (`Get`, `WithWriter`, any method): it self-deadlocks.
+  still in history and still restorable, so a member rolls back with the key they hold and
+  the rotation is run again. `writeVault` must therefore neither delete history
+  (`ClearHistory`) nor mark the key epoch (`MarkKeyEpoch`, which makes older snapshots
+  `ErrStaleKey`): the route runs both after the record commits, in that order. The write is
+  `vault.Store.SaveRekeyed`, which refuses when it cannot archive that snapshot. The closure
+  runs under `shared.mu` and must never re-enter this store (`Get`, `WithWriter`, any
+  method): it self-deadlocks.
 - `WithWriter(id, userID, epoch, fn)` runs `fn` (the vault write) under `shared.mu` only
   while the row is an active owner or editor (`ErrNotMember`, `ErrForbidden`) and the vault
   is still at `epoch` (`ErrEpoch`), so a removal, a demotion or a rotation cannot land
@@ -91,7 +95,10 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   retention window (`RETENTION_DAYS`, default 90); the API runs it at start and on every
   audit flush.
 - `Snapshot` returns every regular file under the store (records and deleted area) for the
-  capsule and refuses symlinks.
+  capsule and refuses symlinks. `WithSnapshot(fn)` hands that snapshot to `fn` with the lock
+  still held, so the backup collector reads the vault ciphertext in the same critical section
+  a rotation commits under and cannot capture pre-rotation bytes beside post-rotation sealed
+  keys; `fn` takes `vault.mu` (same lock order) and must not re-enter this store.
 
 ## Verification
 

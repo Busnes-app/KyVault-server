@@ -110,7 +110,13 @@ func (s *Server) withSharedWrite(next func(http.ResponseWriter, *http.Request, v
 			return
 		}
 		epoch, ok := sharedEpoch(r)
-		if !ok || epoch != c.vault.KeyEpoch {
+		if !ok {
+			// Not a rotation: this client never said which key it holds. Saying it was
+			// rotated would be false, and it is what a tab left open across a deploy reads.
+			http.Error(w, "this write did not say which shared vault key it was made under; reload the vault", http.StatusConflict)
+			return
+		}
+		if epoch != c.vault.KeyEpoch {
 			http.Error(w, "the shared vault key was rotated; reload the vault", http.StatusConflict)
 			return
 		}
@@ -376,8 +382,13 @@ func (s *Server) handleSharedList(w http.ResponseWriter, r *http.Request, u user
 	for _, v := range vaults {
 		m := v.Members[u.ID]
 		rw := row{ID: v.ID, Name: v.Name, Role: m.Role, State: m.State, KeyEpoch: v.KeyEpoch,
-			MyKey:           myKeyView{SealedKey: m.SealedKey, KeyFingerprint: m.KeyFingerprint, KeyEpoch: m.KeyEpoch, SealedBy: m.SealedBy, SealedByFingerprint: m.SealedByFingerprint},
-			RotationPending: v.RotationPending}
+			MyKey: myKeyView{SealedKey: m.SealedKey, KeyFingerprint: m.KeyFingerprint, KeyEpoch: m.KeyEpoch, SealedBy: m.SealedBy, SealedByFingerprint: m.SealedByFingerprint}}
+		// Only an active owner: the flag names a departed member and the date they left, and
+		// only an owner can act on it. An invitation must disclose nothing about the
+		// membership before it is accepted, which is why GET /api/shared/{id} 404s that row.
+		if m.Role == shared.RoleOwner && m.State == shared.StateActive {
+			rw.RotationPending = v.RotationPending
+		}
 		if m.State == shared.StateInvited {
 			rw.InvitedBy = &inviterView{UserID: m.SealedBy, Username: s.username(m.SealedBy), Fingerprint: m.SealedByFingerprint}
 		}

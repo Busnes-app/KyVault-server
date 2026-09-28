@@ -387,7 +387,7 @@ func (s *Store) saveMetadataLocked(userID string, meta Metadata) error {
 
 // SaveVault saves a new encrypted KDBX version atomically.
 func (s *Store) SaveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string) (Metadata, error) {
-	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, false, nil)
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, false, false, nil)
 }
 
 // RotateVault saves a vault re-encrypted under a new key with both new envelopes, and
@@ -403,18 +403,44 @@ func (s *Store) RotateVault(userID string, expectedVersion int64, kdbxData []byt
 			return Metadata{}, err
 		}
 	}
-	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true, userKey)
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true, false, userKey)
 }
 
-// SaveRotated writes a vault re-encrypted under a new key and marks the version it writes as
-// the start of the new key epoch, so every older snapshot is refused for rollback. It is the
-// shared-vault counterpart of RotateVault, which additionally requires the personal envelopes
-// and user key a shared vault does not have.
-func (s *Store) SaveRotated(key string, expectedVersion int64, kdbxData []byte, deviceID string) (Metadata, error) {
-	return s.saveVault(key, expectedVersion, kdbxData, "", "", deviceID, true, nil)
+// SaveRekeyed writes the re-encrypted vault of a shared key rotation. It is an ordinary save
+// otherwise: the new epoch is marked afterwards by MarkKeyEpoch, once the record holding every
+// member's copy of the new key has committed, so a crash between the two leaves the
+// pre-rotation snapshot restorable with the key the members still hold. That snapshot is the
+// only way back from such a crash, so unlike an ordinary save this one fails when it cannot
+// archive it rather than re-keying the vault with no way back.
+func (s *Store) SaveRekeyed(key string, expectedVersion int64, kdbxData []byte, deviceID string) (Metadata, error) {
+	return s.saveVault(key, expectedVersion, kdbxData, "", "", deviceID, false, true, nil)
 }
 
-func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated bool, userKey *userkey.Record) (Metadata, error) {
+// MarkKeyEpoch marks the current version as the start of a new key epoch: ListHistory flags
+// every older snapshot staleKey and RestoreHistory refuses it with ErrStaleKey, so no client
+// can roll ciphertext under a retired key onto the live vault. It is separate from the write
+// that re-encrypted the vault so a shared rotation marks the epoch only once the new sealed
+// keys have committed.
+func (s *Store) MarkKeyEpoch(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retired[key] {
+		return ErrRetired
+	}
+	current, err := s.getMetadataLocked(key)
+	if err != nil {
+		return err
+	}
+	if current.Version == 0 {
+		return ErrNotFound
+	}
+	current.KeyEpochSince = current.Version
+	return s.saveMetadataLocked(key, current)
+}
+
+// mustArchive fails the write when the version it replaces cannot be preserved in history;
+// rotated marks a new key epoch in this same write, which only a personal rotation does.
+func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated, mustArchive bool, userKey *userkey.Record) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.retired[userID] {
@@ -462,7 +488,10 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 		historyID := fmt.Sprintf("%d_v%d", current.UpdatedAt.Unix(), current.Version)
 		currentKdbx, err := os.ReadFile(s.kdbxPath(userID))
 		if err == nil {
-			_ = os.WriteFile(filepath.Join(s.historyDir(userID), historyID+".kdbx"), currentKdbx, 0600)
+			err = os.WriteFile(filepath.Join(s.historyDir(userID), historyID+".kdbx"), currentKdbx, 0600)
+		}
+		if err != nil && mustArchive {
+			return Metadata{}, fmt.Errorf("archive version %d before re-keying: %w", current.Version, err)
 		}
 	}
 

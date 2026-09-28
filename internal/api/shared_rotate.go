@@ -79,10 +79,11 @@ func (s *Server) handleSharedRotate(w http.ResponseWriter, r *http.Request, u us
 		if current.Version != want {
 			return fmt.Errorf("%w: it is at version %d", errRotateVersion, current.Version)
 		}
-		// SaveRotated, not SaveVault: it marks this version as the start of the new key
-		// epoch, so every older snapshot is refused for rollback even if the clear below
-		// fails. The epoch header cannot catch that on its own — only the bytes are stale.
-		meta, err = s.vault.SaveRotated(key, want, kdbx, c.session.DeviceID)
+		// An ordinary save, and deliberately not the epoch mark: marking it here would
+		// leave a crash between this write and the record commit with new ciphertext, the
+		// old sealed keys and no rollback — a vault nobody can open. MarkKeyEpoch runs
+		// below instead, once every member holds the new key.
+		meta, err = s.vault.SaveRekeyed(key, want, kdbx, c.session.DeviceID)
 		return err
 	})
 	var conflict *vault.ConflictError
@@ -101,10 +102,20 @@ func (s *Server) handleSharedRotate(w http.ResponseWriter, r *http.Request, u us
 		}
 		return
 	}
+	// The record is committed, so every remaining member holds the new key and the
+	// pre-rotation snapshot is nobody's way back in any more: mark the epoch, which refuses
+	// it for rollback even if the clear below fails. Both run after the commit, and neither
+	// failing is a failed rotation — the vault is correctly re-keyed — so both are logged,
+	// audited and reported instead.
+	epochMarked := true
+	if err := s.vault.MarkKeyEpoch(key); err != nil {
+		epochMarked = false
+		log.Printf("shared vault %s: marking the key epoch after a rotation: %v", c.vault.ID, err)
+		s.record(r, "shared.hook_failed", u.ID, c.session.DeviceID, clientIP(r),
+			c.vault.ID+": the new key epoch was not marked: "+err.Error())
+	}
 	// Snapshots and preserved conflicts are ciphertext under the retired key: unreadable to
 	// everyone still in the vault, and readable by the member this rotation locked out.
-	// Last, and outside the commit, so a crash before the record lands leaves a pre-rotation
-	// snapshot the remaining members can still roll back to with the key they hold.
 	cleared := true
 	if err := s.vault.ClearHistory(key); err != nil {
 		cleared = false
@@ -123,7 +134,7 @@ func (s *Server) handleSharedRotate(w http.ResponseWriter, r *http.Request, u us
 	s.record(r, "shared.key_rotated", u.ID, c.session.DeviceID, clientIP(r),
 		fmt.Sprintf("%s: rotated to epoch %d, sealed to %d members, %d left behind", c.vault.ID, next.KeyEpoch, len(keys.Sealed), len(left)))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "metadata": meta, "keyEpoch": next.KeyEpoch,
-		"leftBehind": left, "historyCleared": cleared})
+		"leftBehind": left, "historyCleared": cleared, "epochMarked": epochMarked})
 }
 
 // readRotateBody reads the two parts as a stream, in order, each bounded on its own and
