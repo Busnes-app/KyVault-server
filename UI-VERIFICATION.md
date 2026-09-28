@@ -95,7 +95,7 @@ Found while capturing and fixed after it: the Members dialog labelled the signed
 
 ## Shared vault key rotation
 
-Captured 2026-09-28 from `npm run dev:mock` on :5878 (`frontend/mock/api.ts`, dev-only, never built), Chromium through the Playwright MCP tools at 1280×900 CSS pixels, theme System (Busnes) following the OS, which resolved light. No backend and no KySignOn: the mock now serves `rotationPending`, the `X-Shared-Key-Epoch` gate and `POST /api/shared/{id}/rotate`, mirroring the Go handlers by hand. The seeded "Team" vault is owned by the mock user, its key is sealed to the user key the browser published (real HPKE, so it really opens), its pending flag is already set for a removed `u-4`, and `erin` (u-3) publishes no key.
+Captured 2026-09-27 from `npm run dev:mock` on :5878 (`frontend/mock/api.ts`, dev-only, never built), Chromium through the Playwright MCP tools at 1280×900 CSS pixels, theme System (Busnes) following the OS, which resolved light. No backend and no KySignOn: the mock now serves `rotationPending`, the `X-Shared-Key-Epoch` gate and `POST /api/shared/{id}/rotate`, mirroring the Go handlers by hand. The seeded "Team" vault is owned by the mock user, its key is sealed to the user key the browser published (real HPKE, so it really opens), its pending flag is already set for a removed `u-4`, and `erin` (u-3) publishes no key.
 
 Exercised in the browser, in this order:
 

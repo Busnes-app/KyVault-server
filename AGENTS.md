@@ -331,7 +331,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   must send `X-Shared-Key-Epoch` equal to the vault's current `keyEpoch` or it is refused
   409 without writing, absent and unparseable alike, so a tab still holding a retired key
   cannot save ciphertext the remaining members cannot open (checked after `sharedCSRF`, so
-  a missing CSRF token is still 403; `TestSharedWritesCarryTheKeyEpoch`). That epoch rides on
+  a missing CSRF token is still 403; `TestSharedWritesCarryTheKeyEpoch`). The two refusals
+  say different things: a stale epoch is `the shared vault key was rotated`, which the client
+  branches on, and a missing or unparseable one says the write did not say which key it was
+  made under — nothing was rotated, and that is what a tab left open across a deploy reads. That epoch rides on
   the `vaultTarget` and `shared.Store.WithWriter` re-checks it under the membership lock, so a
   rotation that commits after the gate refuses the write too rather than letting a pre-rotation
   snapshot land on the live vault (`TestSharedWriteIsRefusedWhenARotationCommitsMidRequest`).
@@ -350,8 +353,11 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut` (the mover `NewStore` gets):
   lock order `shared.mu` then `vault.mu`, never the reverse; `writeTarget` keeps the same
   order for shared data writes. `GET /api/shared`, `GET /api/shared/{id}` and
-  `GET /api/admin/shared` all carry `rotationPending` (reusing `shared.Pending` as-is),
-  omitted once a rotation clears it. The flag is stamped by every departure — an owner's or
+  `GET /api/shared/{id}` and `GET /api/admin/shared` carry `rotationPending` (reusing
+  `shared.Pending` as-is), omitted once a rotation clears it; on `GET /api/shared` only an
+  active owner's row carries it, since the flag names a departed member and the day they left,
+  only an owner can act on it, and an invitation must disclose nothing about the membership
+  before it is accepted (`TestRotationPendingReachesOnlyActiveOwners`). The flag is stamped by every departure — an owner's or
   admin's removal (`removed`), a member leaving (`left`), an invitee declining (`declined`) —
   because the row goes but the copy of the key it held does not, and only a rotation retires
   that. See `internal/shared/AGENTS.md`. A self-reseal (`PUT …/members/{self}` on a `stale` row)
@@ -378,23 +384,28 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `shared.Store.Rotate` validates and
   commits the record around the vault write, which re-reads the metadata and refuses a
   version mismatch (409) *before* the save, so no refusal leaves the re-encrypted bytes
-  behind as a conflict nobody can open. The save is `vault.Store.SaveRotated` (the shared
-  counterpart of `RotateVault`, without the personal envelopes and user key), so the
-  rotation's version becomes `Metadata.KeyEpochSince` and every older snapshot is flagged
-  `staleKey` and refused for rollback with 409 whatever epoch header the caller sends: that
-  header proves which key a writer holds, never that the bytes are current.
-  `vault.Store.ClearHistory` runs after the commit,
-  outside the lock: snapshots and conflicts are ciphertext under the retired key, and a crash
-  before the record lands leaves the pre-rotation snapshot to roll back to. A failure to clear
-  is logged, audited `shared.hook_failed` and reported as `historyCleared:false` on an
-  otherwise successful rotation so the owner can rotate again; it is not a failed rotation,
-  and `KeyEpochSince` is the backstop meanwhile. Audit
+  behind as a conflict nobody can open. The save is `vault.Store.SaveRekeyed`: an ordinary
+  save that does *not* move the key epoch, because a crash between it and the record commit
+  must leave the pre-rotation snapshot restorable — the bytes are then under the new key and
+  every sealed copy is the old one, and that snapshot is the only way back into the vault. It
+  is also the only save that fails when it cannot archive the version it replaces, for the
+  same reason. `vault.Store.MarkKeyEpoch` runs after the commit and before
+  `vault.Store.ClearHistory`, both outside the lock and both best effort: the epoch marker
+  makes every older snapshot `staleKey` and refuses it for rollback with 409 whatever epoch
+  header the caller sends (that header proves which key a writer holds, never that the bytes
+  are current), and the clear removes snapshots and conflicts, which are ciphertext under the
+  retired key. Either failing is logged, audited `shared.hook_failed` and reported as
+  `epochMarked:false`/`historyCleared:false` on an otherwise successful rotation so the owner
+  can rotate again; neither is a failed rotation, since the vault is correctly re-keyed. Audit
   `shared.key_rotated`, detail `<id>: rotated to epoch N, sealed to X members, Y left
-  behind`; the response is `{ok, metadata, keyEpoch, leftBehind, historyCleared}`.
+  behind`; the response is `{ok, metadata, keyEpoch, leftBehind, historyCleared, epochMarked}`.
   `shared_test.go` covers the rotation (the members it leaves behind and the audit detail
   included), every refusal leaving record/ciphertext/history/conflicts untouched, oversized
   parts, a third part, parts out of order, a retired snapshot that survives a failed clear
-  staying unrestorable, and four simultaneous rotations leaving exactly one winner.
+  staying unrestorable, a record commit that fails after the vault write leaving that snapshot
+  restorable and the rotation retryable, a rotation refused because the snapshot could not be
+  archived, `rotationPending` reaching an active owner's list and no other row's, and four
+  simultaneous rotations leaving exactly one winner.
   `sharedApi.rotate` is the client transport; the owner's screen is the members dialog, reached
   from the vault switcher's Members button.
 
@@ -536,10 +547,18 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   meanwhile. The idle lock fires mid-switch too, with no checkpoint. A save 403/404 on a shared vault (`lostAccess`) switches home without asking, and a
   save 409 naming a rotation (`rotatedElsewhere`) re-opens that same vault with the new key
   (`reopenShared`); that effect lists `switching`/`rotating` in its deps, because the refs it
-  guards on would otherwise never be reconsidered and the banner would stay dead.
+  guards on would otherwise never be reconsidered and the banner would stay dead. It asks
+  first (`ROTATED_QUESTION`, `rotatedPlan`, guarded by `askingRotatedRef` so it is asked once):
+  those edits can never be uploaded, but this tab still holds the retired key and the open
+  database, so a download through `handleExportKdbx` hands the user a KDBX they can open, and
+  a dismissed question re-opens nothing and leaves the tab as it is. Discarding them is
+  destructive and is never done unasked.
   `openShared` awaits `loadCrypto` before unsealing, so a lazy HPKE chunk that 404'd after a
   deploy says to reload the page (`CRYPTO_UNAVAILABLE`) instead of sending the user to an owner
   for a re-seal (`RESEAL_NEEDED`) they do not need — the split `adoptUserKey` already makes.
+  A row that is not `active` (`canOpen`) is refused with `RESEAL_NEEDED` before anything is
+  loaded or fetched: a row a rotation left behind unseals fine — its copy opens the *retired*
+  key — and only the vault bytes would refuse it, as a raw kdbxweb `InvalidKey`.
   Readers get `readOnly` on `VaultPage`/`HistoryModal`: every mutating handler refuses. Security
   hides master password, paper code, rotation, offline key and device cards while shared; Forget
   This Device stays in the replacement card.
@@ -578,9 +597,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   row included, and `rotateBlocked` disables the rotation with a title that names the reason.
   The confirmation states that the version history and preserved conflicts are deleted, and the
   removal and leave confirmations say a departed member's copy still opens anything saved before
-  a rotation. `sealBlocked` is the one verdict behind the Re-seal button and its tooltip: a member
-  with no published key is told that, not that their key is unchecked, and my own row's mismatch
-  is never sent to Security → Known keys, since a pin for yourself is never written.
+  a rotation. A member with no published key is told that, not that their key is unchecked, and
+  my own row's mismatch is never sent to Security → Known keys, since a pin for yourself is
+  never written.
   `resealMember` takes the vault's and the row's `keyEpoch` and refuses a self-reseal from an
   epoch-stale row before any request (`EPOCH_STALE`), matching the server's 409.
   `sealVerdict` is the single verdict behind `ResealButton` (its `disabled` and `title`) and the
@@ -614,7 +633,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   so it reports `false`), a mismatch rethrows the rotation's error, and a list that itself
   failed rethrows it too — never claim a rotation did not land when it may have committed. That
   check spares the owner a wrong error; the vault's openability does not rest on it, since a
-  committed rotation committed every sealed copy with it and a reload recovers. `RotationOutcome.version`
+  committed rotation committed every sealed copy with it and a reload recovers. Every throwing
+  path zeroes the fresh key first: it lives only in this tab's memory, and a call that threw
+  returned no outcome to hold it. `RotationOutcome.version`
   is the version the rotation wrote and is present **only** when the server's own response said so:
   on the adopted-lost-response path nothing proves which version the vault is on — a member this
   rotation re-sealed may have saved since — so it is absent and the caller re-opens the vault
