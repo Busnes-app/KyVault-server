@@ -69,16 +69,19 @@ test("rotateSharedVault seals a fresh key to everyone in the plan and pins the u
   const me = await generateUserKey();
   const bob = await generateUserKey();
   const pinned: string[] = [];
-  const requests: { epoch: number; version: number; sealed: { userId: string; sealedKey: string; keyFingerprint: string }[] }[] = [];
+  const requests: { epoch: number; version: number; kdbx: ArrayBuffer; sealed: { userId: string; sealedKey: string; keyFingerprint: string }[] }[] = [];
+  const reEncrypted: { key: Uint8Array; kdbx: ArrayBuffer }[] = [];
   const plan = planRotation([member("me"), member("bob")], { bob: view("unknown", bob.publicKey) },
     { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
   const deps: RotateDeps = {
     api: {
-      rotate: async (_id, _kdbx, epoch, version, sealed) => { requests.push({ epoch, version, sealed }); return { keyEpoch: 2, leftBehind: [], metadata: { version: 4 }, historyCleared: true }; },
+      rotate: async (_id, kdbx, epoch, version, sealed) => { requests.push({ epoch, version, kdbx, sealed }); return { keyEpoch: 2, leftBehind: [], metadata: { version: 4 }, historyCleared: true }; },
       list: async () => [],
     },
     pinUnknown: async (userId) => { pinned.push(userId); },
-    reEncrypt: async () => new ArrayBuffer(8),
+    // The vault has to be re-encrypted under the key that was sealed, and the bytes that come
+    // back have to be the ones that are sent: either mistake ships a vault nobody can open.
+    reEncrypt: async (key) => { const kdbx = new ArrayBuffer(8); reEncrypted.push({ key, kdbx }); return kdbx; },
     seed: me.seed,
   };
   const out = await rotateSharedVault(VAULT, 1, 3, plan, deps);
@@ -97,6 +100,9 @@ test("rotateSharedVault seals a fresh key to everyone in the plan and pins the u
   const his = await openSharedKey(bob.seed, req.sealed.find((s) => s.userId === "bob")!.sealedKey);
   assert.deepEqual([...mine], [...his]);
   assert.deepEqual([...out.key], [...mine]);
+  assert.equal(reEncrypted.length, 1);
+  assert.deepEqual([...reEncrypted[0].key], [...mine]);
+  assert.equal(req.kdbx, reEncrypted[0].kdbx);
 });
 
 // historyCleared:false is the owner's cue to rotate again, so it has to survive the call.
@@ -171,24 +177,52 @@ test("a failed lookup after a lost response reports the rotation's error", async
   }), /network/);
 });
 
-// planRotation never puts a changed pin in the plan; the seal refuses one anyway, so a
-// hand-built plan cannot hand a departed member the next key.
-test("rotateSharedVault refuses to seal a changed pin", async () => {
+// A user with no published key reads as `unknown` with an empty key, so "unknown" is not on
+// its own permission to seal: pinning zero bytes would leave them "changed" in every later
+// verdict until the owner forgot the pin by hand. This is sharedFlows' NO_KEY rule, here.
+test("planRotation leaves behind a member with no published key and pins nothing", async () => {
   const me = await generateUserKey();
+  const plan = planRotation([member("me"), member("bob")], { bob: view("unknown", new Uint8Array()) },
+    { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
+  assert.deepEqual(plan.seal.map((s) => s.userId), ["me"]);
+  assert.deepEqual(plan.leftBehind, [{ userId: "bob", username: "bob", reason: "No published key" }]);
+  const pinned: string[] = [];
+  const out = await rotateSharedVault(VAULT, 1, 3, plan, {
+    api: {
+      rotate: async () => ({ keyEpoch: 2, leftBehind: ["bob"], metadata: { version: 4 }, historyCleared: true }),
+      list: async () => [],
+    },
+    pinUnknown: async (userId) => { pinned.push(userId); },
+    reEncrypt: async () => new ArrayBuffer(8),
+    seed: me.seed,
+  });
+  assert.deepEqual(pinned, []);
+  assert.deepEqual(out.leftBehind.map((l) => l.reason), ["No published key"]);
+});
+
+// planRotation never puts a changed pin in the plan; the seal refuses one anyway, so a
+// hand-built plan cannot hand a departed member the next key — and refuses it before the
+// loop, so no pin lands for an earlier member on the way to the throw.
+test("rotateSharedVault refuses a changed pin before anything is pinned", async () => {
+  const me = await generateUserKey();
+  const bob = await generateUserKey();
   const dave = await generateUserKey();
-  const plan = planRotation([member("me")], {}, { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
+  const plan = planRotation([member("me"), member("bob")], { bob: view("unknown", bob.publicKey) },
+    { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
   plan.seal.push({ userId: "dave", publicKey: dave.publicKey, pin: { state: "changed", fingerprint: "FP", publicKey: dave.publicKey } });
   let rotates = 0;
+  const pinned: string[] = [];
   await assert.rejects(rotateSharedVault(VAULT, 1, 3, plan, {
     api: {
       rotate: async () => { rotates++; return { keyEpoch: 2, leftBehind: [], metadata: { version: 4 }, historyCleared: true }; },
       list: async () => [],
     },
-    pinUnknown: async () => { throw new Error("nothing to pin"); },
+    pinUnknown: async (userId) => { pinned.push(userId); },
     reEncrypt: async () => new ArrayBuffer(8),
     seed: me.seed,
   }), /Re-pin it/);
   assert.equal(rotates, 0);
+  assert.deepEqual(pinned, []);
 });
 
 test("rotationLanded matches our own key and nothing else", async () => {

@@ -9,6 +9,11 @@ export type RotationPlan = { seal: Seal[]; leftBehind: LeftBehind[] };
 
 const CHANGED = "their key changed since you pinned it";
 const UNCHECKED = "Could not check this key";
+// A user with no published key reads as `unknown` with an empty publicKey, so "unknown" alone
+// is not permission to seal. The same rule guards every caller of sharedFlows.sealFor (NO_KEY),
+// deliberately in two places: without it here, pinning-as-we-use would write a pin for zero
+// bytes and leave that member reading "changed" until the owner forgets the pin by hand.
+const NO_KEY = "No published key";
 
 // planRotation decides who gets a copy of the next key. A member whose published key no
 // longer matches the owner's pin is left behind rather than blocking the rotation: this is
@@ -27,8 +32,8 @@ export function planRotation(members: Member[], views: Record<string, KeyView>,
       leftBehind.push({ userId: m.userId, username: m.username, reason: v ? v.problem : UNCHECKED });
       continue;
     }
-    if (v.key.state === "changed") {
-      leftBehind.push({ userId: m.userId, username: m.username, reason: CHANGED });
+    if (v.key.state === "changed" || !v.key.publicKey.length) {
+      leftBehind.push({ userId: m.userId, username: m.username, reason: v.key.publicKey.length ? CHANGED : NO_KEY });
       continue;
     }
     seal.push({ userId: m.userId, publicKey: v.key.publicKey, pin: v.key });
@@ -49,11 +54,13 @@ export type RotationOutcome = { key: Uint8Array; keyEpoch: number; leftBehind: L
 export async function rotateSharedVault(id: string, epoch: number, version: number,
                                         plan: RotationPlan, deps: RotateDeps): Promise<RotationOutcome> {
   const seal = deps.seal ?? sealSharedKey;
+  // planRotation leaves a changed pin behind; refused here too, where the sealing happens, and
+  // before the loop so the refusal is total: a pin written for one member and then a throw is
+  // the worst of both. Same rule, and same reason, as sharedFlows.sealFor.
+  if (plan.seal.some((s) => s.pin.state === "changed")) throw new Error(REPIN_FIRST);
   const key = newSharedKey();
   const sealed: { userId: string; sealedKey: string; keyFingerprint: string }[] = [];
   for (const s of plan.seal) {
-    // planRotation left these behind; refused here too, where the sealing happens.
-    if (s.pin.state === "changed") throw new Error(REPIN_FIRST);
     // Trust on first use, as invite does: an unpinned key is pinned as it is used.
     if (s.pin.state === "unknown") await deps.pinUnknown(s.userId, s.publicKey);
     sealed.push({ userId: s.userId, sealedKey: await seal(s.publicKey, key), keyFingerprint: s.pin.fingerprint });
@@ -63,9 +70,10 @@ export async function rotateSharedVault(id: string, epoch: number, version: numb
     const res = await deps.api.rotate(id, kdbx, epoch, version, sealed);
     return { key, keyEpoch: res.keyEpoch, leftBehind: plan.leftBehind, historyCleared: res.historyCleared };
   } catch (err) {
-    // A rotation whose response was lost still re-keyed the vault, and this tab holds the
-    // only copy of the new key. Discarding it would leave every member locked out of a vault
-    // only another rotation could recover, so a rejection is checked against the server.
+    // A rotation whose response was lost still re-keyed the vault, and every sealed copy
+    // committed with it, this tab's included — a reload recovers the vault either way. Checking
+    // the server spares the owner an error about a rotation that succeeded; it is not what
+    // keeps the vault openable, so nothing here may be treated as a durability guarantee.
     let landed: { keyEpoch: number } | null;
     try {
       landed = await rotationLanded(id, key, deps);
@@ -81,7 +89,8 @@ export async function rotateSharedVault(id: string, epoch: number, version: numb
 }
 
 // Whether the vault is now sealed to `expected` for me. A list that fails throws: it says
-// nothing about the rotation, and calling that "did not land" would discard a live key.
+// nothing about the rotation, and answering "did not land" would report a rotation that may
+// well have committed as a failure.
 export async function rotationLanded(id: string, expected: Uint8Array, deps: RotateDeps): Promise<{ keyEpoch: number } | null> {
   const open = deps.openKey ?? openSharedKey;
   const row = (await deps.api.list()).find((v) => v.id === id);

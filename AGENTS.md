@@ -563,15 +563,21 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   key this tab holds (the server refuses a rotation that does not name the caller, and a pin
   of my own key is never written), seals to every member whose `KeyView` is a `pinned` or
   `unknown` pin — `suspended` rows too, so a reactivation needs no owner — and leaves behind a
-  `changed` pin or a view that could not be read, carrying the reason the screen shows.
-  `rotateSharedVault` mints one fresh key, pins the unknown keys as it uses them exactly as
-  invite does, seals one copy per planned member and sends them with the re-encrypted vault in
-  one `sharedApi.rotate`. The outcome's `leftBehind` is always the plan's, and `historyCleared`
-  carries the server's value so the owner can be told to rotate again. A rejected call is
-  checked with `rotationLanded`, which opens my own sealed copy from the list and compares the
-  bytes: a match adopts the rotation (the clear is unknown, so it reports `false`), a mismatch
-  rethrows the rotation's error, and a list that itself failed rethrows it too — nothing may
-  claim a rotation did not land when this tab holds the only copy of a key that may be live.
+  `changed` pin, an empty published key (`unknown` with no key is not permission to seal: the
+  same `NO_KEY` rule every `sharedFlows.sealFor` caller applies, deliberately in both places,
+  because pinning zero bytes would read as `changed` forever) or a view that could not be read,
+  carrying the reason the screen shows.
+  `rotateSharedVault` refuses a `changed` pin in the plan before it pins or seals anything, so
+  the refusal is total; then it mints one fresh key, pins the unknown keys as it uses them
+  exactly as invite does, seals one copy per planned member and sends them with the vault
+  re-encrypted under that same key in one `sharedApi.rotate`. The outcome's `leftBehind` is
+  always the plan's, and `historyCleared` carries the server's value so the owner can be told
+  to rotate again. A rejected call is checked with `rotationLanded`, which opens my own sealed
+  copy from the list and compares the bytes: a match adopts the rotation (the clear is unknown,
+  so it reports `false`), a mismatch rethrows the rotation's error, and a list that itself
+  failed rethrows it too — never claim a rotation did not land when it may have committed. That
+  check spares the owner a wrong error; the vault's openability does not rest on it, since a
+  committed rotation committed every sealed copy with it and a reload recovers.
   `sharedRotation.test.ts` uses real X-Wing keys and real HPKE round trips.
 
 - `frontend/src/lib/sharedVaults.ts`, `sharedKey.ts`, `vaultSelection.ts` and

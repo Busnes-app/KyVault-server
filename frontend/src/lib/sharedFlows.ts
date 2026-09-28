@@ -49,7 +49,10 @@ export async function resolveInvitee(username: string, deps: FlowDeps): Promise<
   return { user, pin };
 }
 
-// Trust on first use: an unpinned key is pinned as it is used, a changed one never is.
+// Trust on first use: an unpinned key is pinned as it is used, a changed one never is. Callers
+// check `pin.publicKey.length` first: a user with no published key reads as `unknown` with an
+// empty key, and pinning that would leave them "changed" forever. `sharedRotation.planRotation`
+// carries the same rule for the members of a rotation, deliberately, since it plans its own.
 async function sealFor(userId: string, pin: PinStatus, sharedKey: Uint8Array, deps: FlowDeps): Promise<{ sealedKey: string; keyFingerprint: string }> {
   if (pin.state === "changed") throw new Error(REPIN_FIRST);
   if (pin.state === "unknown") await deps.pinKey(deps.pinVault, userId, pin.publicKey, deps.onPinChanged);
