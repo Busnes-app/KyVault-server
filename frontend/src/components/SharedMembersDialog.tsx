@@ -47,6 +47,12 @@ const pinLabel = (p: PinStatus, mine?: boolean) =>
 const pinColor = (p: PinStatus) =>
   p.state === "pinned" ? "var(--success)" : p.state === "unknown" ? "var(--warning)" : "var(--danger)";
 
+// The three sentences the rotation contract fixes: what a rotation destroys, and what a
+// departed member's copy of the key still opens until one happens.
+export const ROTATE_WARNING = "Everyone who remains gets a new copy. This vault's version history and preserved conflicts are deleted: after the rotation nobody holds the key that opens them.";
+export const REMOVE_WARNING = "They lose access immediately. Their copy of the vault key still opens anything this vault saved before a rotation, so rotate the key once they are gone.";
+export const LEAVE_WARNING = "You will lose access to this vault until an owner invites you again. Your copy of the key still opens anything this vault saved before an owner rotates it.";
+
 export const KEY_UNCHECKED = "This member's key has not been checked yet; reopen this dialog and try again.";
 export const OWN_KEY_MISMATCH = "The key this account publishes is not the one this browser holds, so there is nothing safe to seal. Replace your user key from Security first.";
 
@@ -196,7 +202,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
   const leave = async () => {
     if (!(await dialogs.confirm({
       title: "Leave this vault?",
-      message: "You will lose access to this vault until an owner invites you again. Your copy of the key still opens anything this vault saved before an owner rotates it.",
+      message: LEAVE_WARNING,
       danger: true,
       confirmLabel: "Leave",
     }))) return;
@@ -206,7 +212,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
   const removeMember = async (m: Member) => {
     if (!(await dialogs.confirm({
       title: `Remove ${m.username}?`,
-      message: "They lose access immediately. Their copy of the vault key still opens anything this vault saved before a rotation, so rotate the key once they are gone.",
+      message: REMOVE_WARNING,
       danger: true,
       confirmLabel: "Remove",
     }))) return;
@@ -231,7 +237,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
     if (!detail) return;
     if (!(await dialogs.confirm({
       title: `Rotate the key for “${detail.name}”?`,
-      message: "Everyone who remains gets a new copy. This vault's version history and preserved conflicts are deleted: after the rotation nobody holds the key that opens them.",
+      message: ROTATE_WARNING,
       danger: true,
       confirmLabel: "Rotate key",
     }))) return;

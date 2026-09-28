@@ -3,7 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PinStatus } from "../lib/sharedFlows";
-import { MemberKey, VaultActions, selfView, sealBlocked, type KeyView } from "./SharedMembersDialog";
+import { MemberKey, VaultActions, selfView, sealBlocked, ROTATE_WARNING, REMOVE_WARNING, LEAVE_WARNING, type KeyView } from "./SharedMembersDialog";
 
 const FP = "F77C 6D33 8E2B 552B 6C5B";
 const published = (bytes: number[]): PinStatus => ({ state: "unknown", fingerprint: FP, publicKey: new Uint8Array(bytes) });
@@ -97,4 +97,13 @@ test("a member with no key to seal to is told that, not that the key is unchecke
   const own = sealBlocked(selfView(published([9, 9, 9]), new Uint8Array([1, 2, 3])))!;
   assert.doesNotMatch(own, /Known keys/);
   assert.match(own, /this browser holds/);
+});
+
+// Global Constraints fixes these three sentences: a rotation destroys the history, and until
+// one happens a departed member's copy still opens everything saved before it.
+test("the destructive confirmations say what they destroy and what still opens", () => {
+  assert.match(ROTATE_WARNING, /version history and preserved conflicts are deleted/);
+  assert.match(ROTATE_WARNING, /after the rotation nobody holds the key that opens them/);
+  assert.match(REMOVE_WARNING, /still opens anything this vault saved before a rotation/);
+  assert.match(LEAVE_WARNING, /still opens anything this vault saved before an owner rotates it/);
 });
