@@ -76,9 +76,9 @@ Exercised in the browser, in this order:
 
 Checked against the mock outside the browser (`curl`), because the UI refuses these client-side: a reader's upload is 403, a non-member's vault is 404, an unaccepted row reading data is 403, demoting the last owner is 409, and a re-seal with a fingerprint the user no longer publishes is 400.
 
-Not exercised: a real KyVault server (everything here is the mock), dark mode and mobile widths for these screens, a second signed-in user, shared key rotation (3c, not built), the stale self-reseal screen (it needs another user's key replace), and the KySignOn sign-in behind the "Sign in again" link. The Accept dialog's "changed" state was captured as the invitation drift; the other route to it — a published key that no longer matches the pin — is covered by `sharedFlows.test.ts`, not by a screenshot, because the mock's dana key is fixed for the life of the process. `POST /api/mock/role` is a dev-only mock route with no server counterpart, used in step 8 because the UI deliberately refuses to change your own role.
+Not exercised: a real KyVault server (everything here is the mock), dark mode and mobile widths for these screens, a second signed-in user, the stale self-reseal screen (it needs another user's key replace), and the KySignOn sign-in behind the "Sign in again" link. The Accept dialog's "changed" state was captured as the invitation drift; the other route to it — a published key that no longer matches the pin — is covered by `sharedFlows.test.ts`, not by a screenshot, because the mock's dana key is fixed for the life of the process. `POST /api/mock/role` is a dev-only mock route with no server counterpart, used in step 8 because the UI deliberately refuses to change your own role.
 
-Found while capturing and fixed after it: the Members dialog labelled the signed-in user's own key "Key not verified", because a pin for yourself is never written. Your own row now reads "Your key", or "Not the key this browser holds" when the published key is not the one this tab holds. `docs/shared-members.png` predates the fix and still shows the old label.
+Found while capturing and fixed after it: the Members dialog labelled the signed-in user's own key "Key not verified", because a pin for yourself is never written. Your own row now reads "Your key", or "Not the key this browser holds" when the published key is not the one this tab holds. `docs/shared-members.png` was re-captured in the rotation pass below and shows the current label.
 
 ### Screenshots
 
@@ -92,3 +92,29 @@ Found while capturing and fixed after it: the Members dialog labelled the signed
 | A reader's read-only vault | ![Read-only](docs/shared-readonly.png) |
 | Admin → Shared vaults | ![Admin](docs/shared-admin.png) |
 | Admin refusing a delete without a fresh sign-in | ![Admin re-auth](docs/shared-admin-reauth.png) |
+
+## Shared vault key rotation
+
+Captured 2026-09-28 from `npm run dev:mock` on :5878 (`frontend/mock/api.ts`, dev-only, never built), Chromium through the Playwright MCP tools at 1280×900 CSS pixels, theme System (Busnes) following the OS, which resolved light. No backend and no KySignOn: the mock now serves `rotationPending`, the `X-Shared-Key-Epoch` gate and `POST /api/shared/{id}/rotate`, mirroring the Go handlers by hand. The seeded "Team" vault is owned by the mock user, its key is sealed to the user key the browser published (real HPKE, so it really opens), its pending flag is already set for a removed `u-4`, and `erin` (u-3) publishes no key.
+
+Exercised in the browser, in this order:
+
+1. Created a vault (master password `correct horse battery staple`), which published a user key and let the mock seed "Team". The switcher read "Team — Needs rotation": the pending badge is shown to an owner.
+2. Selected "Team". It opened — the sealed copy the mock made opened with this tab's seed — and created and uploaded its KDBX at key epoch 1.
+3. Members: the red banner "u-4 was removed on 9/27/2026, 8:29:18 PM. Their copy of the key still opens anything this vault saved before a rotation. Rotating re-keys the vault for everyone who remains." above an enabled "Rotate key". My own row read "Your key", dana "Key not verified" (no pin yet), erin "No published key". The banner names the departed member by user id, because their row is gone: the server has nothing else to call them by. (`docs/shared-rotate.png`)
+4. Rotate key → the confirm spelling out that the version history and preserved conflicts are deleted → confirmed. The report read "Rotated. 2 members have the new key. erin (No published key) did not get a copy. Verify their key and re-seal them from this dialog." Dana's row came back `active` and "Key pinned" — trust on first use pinned her key as the rotation sealed to it — and erin's went `stale` with Re-seal key disabled, since there is still no key to seal to. The banner was gone. (`docs/shared-rotated.png`)
+5. Read back from the mock: `keyEpoch` 2, `rotationPending` cleared, u-1 and u-2 at epoch 2, u-3 left at 1, version 2 and **no** history rows — the snapshots under the retired key went with it.
+6. Added an entry to the rotated vault: it autosaved to version 3 and the status read "All changes saved", so the tab adopted the new epoch rather than writing under the retired one.
+7. Re-opened Members with no rotation pending for the `docs/shared-members.png` re-capture.
+
+Checked against the mock outside the browser (`curl`), because the UI never sends these: an upload claiming epoch 1 after the rotation is 409 "the shared vault key was rotated; reload the vault", an upload with no `X-Shared-Key-Epoch` at all is the same 409, an upload at the current epoch but a stale `If-Match` is still the ordinary version conflict, a rotate whose parts arrive `keys` before `kdbx` is 400 `rotate takes exactly two parts, "kdbx" then "keys"`, a rotate at a stale epoch is 409 "the shared vault changed; reload it and rotate again", and a rotate sealing to a fingerprint that user does not publish is 400. Removing a member set `rotationPending` `removed` on the list, and declining an invitation set `declined`; both reached the admin payload.
+
+Not exercised: a real KyVault server (everything here is the mock), dark mode and mobile widths for these screens, the "left" pending reason (the same ternary as "declined"; the mock user is an owner in the only vault where they could leave), the rotation whose response was lost and is re-opened rather than adopted (`sharedRotation.test.ts` covers it; the mock cannot drop its own response), a rotation racing another member's save, the admin "Rotation pending" badge as a screenshot, and the fresh-sign-in and CSRF gates the real route puts in front of a rotation, which the mock has no notion of.
+
+### Screenshots
+
+| What | Image |
+| --- | --- |
+| Members with a pending rotation and the Rotate key button | ![Rotate](docs/shared-rotate.png) |
+| The report after a rotation that left a member behind | ![Rotated](docs/shared-rotated.png) |
+| Members, re-captured after the rotation | ![Members](docs/shared-members.png) |
