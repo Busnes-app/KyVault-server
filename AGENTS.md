@@ -557,6 +557,23 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   rule. Known keys lists the pins in the personal vault with Re-pin (both fingerprints, then
   confirm) and Forget.
 
+- `frontend/src/lib/sharedRotation.ts`: the decision behind a shared-vault key rotation and
+  the call that performs it, with no React and injected dependencies, so it is tested without
+  a browser. `planRotation(members, views, me)` seals to my own row unconditionally from the
+  key this tab holds (the server refuses a rotation that does not name the caller, and a pin
+  of my own key is never written), seals to every member whose `KeyView` is a `pinned` or
+  `unknown` pin — `suspended` rows too, so a reactivation needs no owner — and leaves behind a
+  `changed` pin or a view that could not be read, carrying the reason the screen shows.
+  `rotateSharedVault` mints one fresh key, pins the unknown keys as it uses them exactly as
+  invite does, seals one copy per planned member and sends them with the re-encrypted vault in
+  one `sharedApi.rotate`. The outcome's `leftBehind` is always the plan's, and `historyCleared`
+  carries the server's value so the owner can be told to rotate again. A rejected call is
+  checked with `rotationLanded`, which opens my own sealed copy from the list and compares the
+  bytes: a match adopts the rotation (the clear is unknown, so it reports `false`), a mismatch
+  rethrows the rotation's error, and a list that itself failed rethrows it too — nothing may
+  claim a rotation did not land when this tab holds the only copy of a key that may be live.
+  `sharedRotation.test.ts` uses real X-Wing keys and real HPKE round trips.
+
 - `frontend/src/lib/sharedVaults.ts`, `sharedKey.ts`, `vaultSelection.ts` and
   `components/AdminShared.tsx`: `sharedApi`/`adminSharedApi` are the whole shared surface, and
   `useSharedVaults` reloads the list after unlock and while the tab is visible (`loaded` stays
