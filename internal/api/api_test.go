@@ -401,7 +401,7 @@ func TestAbortedRequestStillRecordsTheAudit(t *testing.T) {
 // The request still succeeds. The operation it is recording has already happened, so a
 // 500 would not undo it — it would ask the client to retry something the server has
 // already done, and the retry would be just as unrecorded. What changes is that the
-// failure is reported: on stderr, in the health body, and to an admin asking whether
+// failure is reported: on stderr and to an admin asking whether
 // the trail is sound.
 //
 // Health stays 200 in both states. A sticky counter wired to 503 is a credential vault
@@ -417,19 +417,25 @@ func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
 	_, cookie := signedInUser(t, srv, "dana", users.RoleAdmin)
 	handler := srv.Routes()
 
-	health := func() (int, string) {
+	health := func(h http.Handler, path string) {
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
-		var body struct {
-			Status string `json:"status"`
-		}
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		var body map[string]any
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("health body %q: %v", rec.Body.String(), err)
 		}
-		return rec.Code, body.Status
+		if rec.Code != http.StatusOK || body["status"] != "ok" || body["service"] != "kyvault" || body["schema"] != "ky.health/1" {
+			t.Fatalf("GET %s = %d %s", path, rec.Code, rec.Body.String())
+		}
+		if _, ok := body["time"]; !ok || len(body) != 5 {
+			t.Fatalf("GET %s missing time or leaked extra fields: %s", path, rec.Body.String())
+		}
+		if checks, ok := body["checks"].([]any); !ok || len(checks) != 0 {
+			t.Fatalf("GET %s exposed checks: %s", path, rec.Body.String())
+		}
 	}
-	if code, status := health(); code != http.StatusOK || status != "ok" {
-		t.Fatalf(`GET /api/health = %d %q with a working audit log, want 200 "ok"`, code, status)
+	for _, path := range []string{"/healthz", "/api/health"} {
+		health(handler, path)
 	}
 
 	// A log the append cannot open, which a full or broken volume also produces. The
@@ -456,11 +462,16 @@ func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
 	if !strings.Contains(logs.String(), "AUDIT WRITE FAILED") || !strings.Contains(logs.String(), "auth.logout") {
 		t.Fatalf("a failed audit write left no line an operator could see: %q", logs.String())
 	}
-	// 200 still — a full audit volume must not become a credential lockout — and the
-	// body must not have moved, because an anonymous caller reading a change here is
-	// reading confirmation that the disk they are filling is full.
-	if code, status := health(); code != http.StatusOK || status != "ok" {
-		t.Fatalf(`GET /api/health = %d %q after an audit write failed, want an unchanged 200 "ok"`, code, status)
+	// A fresh router forces a new evaluation after the failure; the healthy cache
+	// from the earlier requests must not mask any accidental public audit check.
+	postFailureHandler := srv.Routes()
+	for _, path := range []string{"/healthz", "/api/health"} {
+		health(postFailureHandler, path)
+	}
+	publicVerify := httptest.NewRecorder()
+	handler.ServeHTTP(publicVerify, httptest.NewRequest(http.MethodGet, "/api/audit/verify", nil))
+	if publicVerify.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous audit verify = %d, want 401", publicVerify.Code)
 	}
 
 	// And the admin asking whether the trail is sound is told, which VerifyIntegrity

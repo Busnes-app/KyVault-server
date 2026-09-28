@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/health"
+	"github.com/Busnes-app/ky-primitives/logging"
 	"github.com/Busnes-app/ky-primitives/oidcverify"
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/backup"
@@ -75,8 +77,7 @@ type Server struct {
 
 	// auditFailures counts audit writes that did not reach the log. Sticky: the
 	// missing record never comes back, so only a restart — after someone has
-	// looked — clears it. It is reported, never acted on: see handleHealth for why
-	// a sticky counter must not be allowed to take a credential vault out of service.
+	// looked — clears it. Only the admin audit route reports this counter.
 	auditFailures atomic.Int64
 
 	// rejects bounds the audit writes an unauthenticated caller can cause, and
@@ -210,6 +211,14 @@ func NewServer(cfg Config) (*Server, error) {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/scim/v2/", s.scimRoutes())
+	lg, err := logging.New(logging.Config{App: "kyvault"})
+	if err != nil {
+		panic(err) // Static application name is valid.
+	}
+	// Public health describes process availability only. Audit failure is admin-only.
+	h := health.Handler("kyvault", lg)
+	mux.Handle("GET /healthz", h)
+	mux.Handle("GET /api/health", h)
 
 	// Public auth. KySignOn is the only way in: there is no local login, no login
 	// parameters to fetch, no recovery-as-site-access and no first-run setup. Paper
@@ -222,7 +231,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /auth/oidc/callback", s.handleSSOCallback)
 	mux.HandleFunc("GET /auth/sso/callback", s.handleSSOCallback)
 	mux.HandleFunc("POST /api/auth/oidc/backchannel-logout", s.handleBackchannelLogout) // issuer-facing
-	mux.HandleFunc("GET /api/health", s.handleHealth)
 
 	// Self & Session. Changing the master password is a client-side re-wrap of the vault
 	// key envelope against PUT /api/vault/envelopes; the server has no password to change.

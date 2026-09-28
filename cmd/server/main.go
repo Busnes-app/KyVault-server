@@ -106,9 +106,7 @@ func main() {
 	}
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/api/", srv.Routes())
-	rootMux.Handle("/auth/", srv.Routes())
-	rootMux.Handle("/scim/", srv.Routes())
+	mountAPIRoutes(rootMux, srv.Routes())
 
 	// Static SPA file serving
 	webDir := os.Getenv("WEB_DIR")
@@ -179,6 +177,13 @@ func main() {
 	srv.WaitForBackups()
 	srv.Close()
 	log.Println("server stopped.")
+}
+
+func mountAPIRoutes(mux *http.ServeMux, handler http.Handler) {
+	mux.Handle("/healthz", handler)
+	mux.Handle("/api/", handler)
+	mux.Handle("/auth/", handler)
+	mux.Handle("/scim/", handler)
 }
 
 func buildVersion() string {
