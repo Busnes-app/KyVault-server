@@ -392,7 +392,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   included), every refusal leaving record/ciphertext/history/conflicts untouched, oversized
   parts, a third part, parts out of order, a retired snapshot that survives a failed clear
   staying unrestorable, and four simultaneous rotations leaving exactly one winner.
-  `sharedApi.rotate` is the client transport; Security → the members dialog is the owner's screen.
+  `sharedApi.rotate` is the client transport; the owner's screen is the members dialog, reached
+  from the vault switcher's Members button.
 
 - `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
   History reads native KeePass history in the unlocked browser. Changed Apply Edits
@@ -502,7 +503,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   shared CSRF request helper. A shared write refused because the key was rotated
   (`isRotationRefusal`: 409 whose body names it) is not a conflict: the server's own words become
   the error message, `conflict` stays false, and neither a retry nor an overwrite is allowed to
-  re-send ciphertext sealed under a retired key. `App.tsx` retains
+  re-send ciphertext sealed under a retired key. `saveAction` is what the banner may offer
+  (`overwrite`/`reload`/`retry`), so `VaultPage` shows Reload server copy — never a Retry the
+  queue would ignore — for that refusal. `App.tsx` retains
   the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
   rollback. Lock/logout/forget always allow the user to confirm discarding unsaved or in-flight
   edits; saving cannot refuse those actions. `canDiscardVault` takes an async confirmer (the
@@ -528,7 +531,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   settled unusable shows a notice instead); later vault-tab routes follow. A finished rotation
   replaces the live vault only if no switch took over (`applyRotation`); the switcher is busy
   meanwhile. The idle lock fires mid-switch too, with no checkpoint. A save 403/404 on a shared vault (`lostAccess`) switches home without asking, and a
-  save 409 naming a rotation (`rotatedElsewhere`) re-opens that same vault with the new key.
+  save 409 naming a rotation (`rotatedElsewhere`) re-opens that same vault with the new key
+  (`reopenShared`); that effect lists `switching`/`rotating` in its deps, because the refs it
+  guards on would otherwise never be reconsidered and the banner would stay dead.
+  `openShared` awaits `loadCrypto` before unsealing, so a lazy HPKE chunk that 404'd after a
+  deploy says to reload the page (`CRYPTO_UNAVAILABLE`) instead of sending the user to an owner
+  for a re-seal (`RESEAL_NEEDED`) they do not need — the split `adoptUserKey` already makes.
   Readers get `readOnly` on `VaultPage`/`HistoryModal`: every mutating handler refuses. Security
   hides master password, paper code, rotation, offline key and device cards while shared; Forget
   This Device stays in the replacement card.
@@ -572,11 +580,15 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   is never sent to Security → Known keys, since a pin for yourself is never written.
   `resealMember` takes the vault's and the row's `keyEpoch` and refuses a self-reseal from an
   epoch-stale row before any request (`EPOCH_STALE`), matching the server's 409.
+  `sealVerdict` is the single verdict behind `ResealButton` (its `disabled` and `title`) and the
+  re-seal handler, returning either the key the row displayed or the reason there is none.
   `App.rotateShared` is the performing half: an active owner only, inside `queue.exclusive`, with
   `KeePassVault.rekey` + `exportBinary` as `reEncrypt` and a re-key back to the accepted key on
-  any failure, so a refused rotation leaves the tab working. On success it swaps `sharedKeyRef`,
-  zeroes the old key and rebuilds the save queue at the version and epoch the rotation wrote,
-  which is also what re-renders `HistoryModal` at the new epoch.
+  any failure, so a refused rotation leaves the tab working. With a version in the outcome it
+  swaps `sharedKeyRef`, zeroes the old key and rebuilds the save queue at the version and epoch
+  the rotation wrote, which is also what re-renders `HistoryModal` at the new epoch; without one
+  it re-opens the vault through `reopenShared`, the same path a rotation committed by another tab
+  takes.
 
 - `frontend/src/lib/sharedRotation.ts`: the decision behind a shared-vault key rotation and
   the call that performs it, with no React and injected dependencies, so it is tested without
@@ -599,12 +611,18 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   so it reports `false`), a mismatch rethrows the rotation's error, and a list that itself
   failed rethrows it too — never claim a rotation did not land when it may have committed. That
   check spares the owner a wrong error; the vault's openability does not rest on it, since a
-  committed rotation committed every sealed copy with it and a reload recovers. `rotationLanded`
-  reports the vault version too (from `sharedApi.metadata`), because the queue the caller rebuilds
-  has to claim the version the rotation wrote; a metadata read that fails rethrows like a failed
-  list. The screen's own decisions are pure functions here as well: `rotateBlocked` (active owner,
-  user key ready, vault open, nothing unsaved — in that order), `rotationBanner`/`pendingName`
-  (the departed member is usually gone from the record, so their id names them) and
+  committed rotation committed every sealed copy with it and a reload recovers. `RotationOutcome.version`
+  is the version the rotation wrote and is present **only** when the server's own response said so:
+  on the adopted-lost-response path nothing proves which version the vault is on — a member this
+  rotation re-sealed may have saved since — so it is absent and the caller re-opens the vault
+  instead of letting a queue claim a version and upload pre-rotation content over those edits.
+  The screen's own decisions are pure functions here as well: `rotateBlocked` (active owner,
+  user key ready, vault open, **every member's key verdict loaded**, nothing unsaved — in that
+  order; the key-verdict step is load-bearing, since `planRotation` reads the verdicts on screen
+  and a member with none yet plans as left behind, so a rotation fired before they resolve strands
+  everyone in the same irreversible commit that deletes the history), `rotationBanner`/`pendingName`
+  (the departed member is usually gone from the record, so their id names them), `adminRotationNote`
+  (the same sentence without the call to action, for an admin who cannot rotate) and
   `rotationReport` (how many hold the new key, who was left behind with the reason, and a
   `historyCleared:false` telling the owner to rotate again).
   `sharedRotation.test.ts` uses real X-Wing keys and real HPKE round trips.

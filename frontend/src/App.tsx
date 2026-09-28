@@ -721,6 +721,14 @@ export function App() {
 
   const sharedRow = (id: string) => shared.vaults.find((v) => v.id === id);
 
+  // Re-open a shared vault whose key moved under this tab. The refreshed row carries the new
+  // sealed copy, and the edits in hand can never be saved, so nothing is asked.
+  const reopenShared = (sel: Extract<Selected, { kind: "shared" }>, notice: string): Promise<void> =>
+    shared.refresh().then(async (rows) => {
+      if (!sameSelection(selectedRef.current, sel)) return;
+      if (await switchVault(sel, rows.find((r) => r.id === sel.id), { force: true })) setLockNotice(notice);
+    });
+
   // Rotating a shared vault key. Inside the queue's serializer, like the personal rotation,
   // so no autosave or download exports while the live vault holds a key the server has not
   // accepted yet. The dialog planned it; everything the plan cannot see is checked here.
@@ -730,10 +738,11 @@ export function App() {
     const epoch = queue.keyEpoch;
     if (epoch === undefined) throw new Error("This vault's key epoch is unknown; reopen it and try again.");
     const generation = unlockGeneration.current;
+    let outcome: RotationOutcome;
     rotatingRef.current = true;
     setRotating(true);
     try {
-      const outcome = await queue.exclusive(async (live) => {
+      outcome = await queue.exclusive(async (live) => {
         if (queue.getSnapshot().kind !== "saved") throw new Error("Save or discard your unsaved edits first.");
         try {
           return await rotateSharedVault(sel.id, epoch, queue.getSnapshot().version, plan, {
@@ -749,25 +758,35 @@ export function App() {
           throw err;
         }
       });
-      if (generation !== unlockGeneration.current) {
-        outcome.key.fill(0);
-        throw new Error("The vault locked while its key was rotating. Unlock and open the vault again.");
-      }
-      // The new key replaces the old one everywhere it lives, and the queue is rebuilt at the
-      // version and epoch the rotation wrote, so the next save is neither a conflict nor a
-      // retired-epoch refusal. Replacing it, rather than moving its epoch, is also what makes
-      // every consumer re-render: HistoryModal reads the epoch off the queue at render time.
-      sharedKeyRef.current = outcome.key;
-      setVaultKey(outcome.key);
-      oldKey.fill(0);
-      queue.discard();
-      setSaveQueue(new VaultSaveQueue(vault, outcome.version, undefined, selectionBase(sel), outcome.keyEpoch));
-      void shared.refresh();
-      return outcome;
     } finally {
+      // Cleared before anything below runs: the re-open path goes through switchVault, which
+      // refuses while a rotation is in flight.
       rotatingRef.current = false;
       setRotating(false);
     }
+    if (generation !== unlockGeneration.current) {
+      outcome.key.fill(0);
+      throw new Error("The vault locked while its key was rotating. Unlock and open the vault again.");
+    }
+    if (outcome.version === undefined) {
+      // The rotation committed but its answer was lost, so nothing here knows which version the
+      // vault is on — a member it re-sealed may already have saved over it. Re-open rather than
+      // let the queue claim a version and upload this pre-rotation content over their edits.
+      outcome.key.fill(0);
+      void reopenShared(sel, "This vault's key was rotated, but the server's answer was lost, so it was re-opened from the server.");
+      return outcome;
+    }
+    // The new key replaces the old one everywhere it lives, and the queue is rebuilt at the
+    // version and epoch the rotation wrote, so the next save is neither a conflict nor a
+    // retired-epoch refusal. Replacing it, rather than moving its epoch, is also what makes
+    // every consumer re-render: HistoryModal reads the epoch off the queue at render time.
+    sharedKeyRef.current = outcome.key;
+    setVaultKey(outcome.key);
+    oldKey.fill(0);
+    queue.discard();
+    setSaveQueue(new VaultSaveQueue(vault, outcome.version, undefined, selectionBase(sel), outcome.keyEpoch));
+    void shared.refresh();
+    return outcome;
   };
 
   // Create, then select from the list the server just gave us: the sealed copy of the key
@@ -840,16 +859,12 @@ export function App() {
 
   // A shared write refused because someone rotated the key: this copy is sealed under a
   // retired key, so there is nothing to overwrite with. Re-open the vault with the new one.
+  // `switching`/`rotating` are in the dep list because their refs are what the guard reads:
+  // a refusal here would otherwise never be reconsidered, leaving a dead error banner.
   useEffect(() => {
     if (selected.kind !== "shared" || !rotatedElsewhere(selected, saveState) || switchingRef.current || rotatingRef.current) return;
-    const sel = selected;
-    void shared.refresh().then((rows) => {
-      if (!sameSelection(selectedRef.current, sel)) return;
-      void switchVault(sel, rows.find((r) => r.id === sel.id), { force: true }).then((ok) => {
-        if (ok) setLockNotice("This vault's key was rotated, so it was re-opened with the new key. Unsaved edits could not be saved.");
-      });
-    });
-  }, [saveState, selected]);
+    void reopenShared(selected, "This vault's key was rotated, so it was re-opened with the new key. Unsaved edits could not be saved.");
+  }, [saveState, selected, switching, rotating]);
 
   const autoLock = useRef(() => {});
   autoLock.current = () => {

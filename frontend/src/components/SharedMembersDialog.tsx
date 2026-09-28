@@ -56,16 +56,39 @@ export const LEAVE_WARNING = "You will lose access to this vault until an owner 
 export const KEY_UNCHECKED = "This member's key has not been checked yet; reopen this dialog and try again.";
 export const OWN_KEY_MISMATCH = "The key this account publishes is not the one this browser holds, so there is nothing safe to seal. Replace your user key from Security first.";
 
-// Why this member cannot be sealed to right now, or null. A row with no published key and a
-// row whose lookup failed are different facts, and neither of them is "not checked yet". My
-// own row has no pin to re-pin, so it is never sent to Security → Known keys.
-export const sealBlocked = (view: KeyView | undefined): string | null => {
-  if (!view) return KEY_UNCHECKED;
-  if ("problem" in view) return `${view.problem}: there is no key to seal to.`;
-  if (!view.key.publicKey.length) return "No published key: there is no key to seal to.";
-  if (view.key.state === "changed") return view.mine ? OWN_KEY_MISMATCH : REPIN_FIRST;
-  return null;
+// Either the key this member can be sealed to, or the reason there is none. One function
+// behind the button, its tooltip and the handler, so they cannot disagree. A row with no
+// published key and a row whose lookup failed are different facts, and neither of them is
+// "not checked yet"; my own row has no pin to re-pin, so it is never sent to Known keys.
+export type SealVerdict = { key: PinStatus } | { why: string };
+export const sealVerdict = (view: KeyView | undefined): SealVerdict => {
+  if (!view) return { why: KEY_UNCHECKED };
+  if ("problem" in view) return { why: `${view.problem}: there is no key to seal to.` };
+  if (!view.key.publicKey.length) return { why: "No published key: there is no key to seal to." };
+  if (view.key.state === "changed") return { why: view.mine ? OWN_KEY_MISMATCH : REPIN_FIRST };
+  return { key: view.key };
 };
+
+export function ResealButton({ view, busy, hasKey, onClick }: {
+  view: KeyView | undefined;
+  busy: boolean;
+  hasKey: boolean;
+  onClick: () => void;
+}) {
+  const v = sealVerdict(view);
+  const why = "why" in v ? v.why : null;
+  return (
+    <button type="button" className="btn btn-secondary btn-sm" onClick={onClick}
+      disabled={busy || !hasKey || why !== null}
+      title={why ?? (!hasKey ? "Open this vault first." : undefined)}>Re-seal key</button>
+  );
+}
+
+// Every member's key verdict has arrived. planRotation reads those verdicts, and a member
+// with none yet plans as left behind, so a rotation fired in that window strands everyone but
+// the owner — irreversibly, in the same commit that deletes the version history.
+export const keysReady = (members: { userId: string }[], keys: Record<string, KeyView>) =>
+  members.every((m) => keys[m.userId] !== undefined);
 
 // The vault-wide actions. Rotation is an owner's, and only while their own row is active:
 // a stale owner holds the retired key and the server refuses the rotation anyway. Leaving
@@ -74,7 +97,7 @@ export function VaultActions({ isOwner, myState, banner, gate, busy, onRename, o
   isOwner: boolean;
   myState: MemberState | undefined;
   banner: string | null;
-  gate: { keyReady: boolean; open: boolean; unsaved: boolean };
+  gate: { keyReady: boolean; open: boolean; keysLoaded: boolean; unsaved: boolean };
   busy: boolean;
   onRename: () => void;
   onDelete: () => void;
@@ -224,11 +247,9 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
   // The key sealed is the one whose fingerprint this row is showing, not a fresh lookup.
   const reseal = (m: Member) => void run(async () => {
     if (!sharedKey || !detail) throw new Error("Open this vault before re-sealing a member's key.");
-    const view = keys[m.userId];
-    const why = sealBlocked(view);
-    if (why) throw new Error(why);
-    if (!view || !("key" in view)) throw new Error(KEY_UNCHECKED); // sealBlocked already covers both
-    await resealMember(vaultId, m.userId, view.key, sharedKey, deps, { vault: detail.keyEpoch, row: m.keyEpoch });
+    const v = sealVerdict(keys[m.userId]);
+    if ("why" in v) throw new Error(v.why);
+    await resealMember(vaultId, m.userId, v.key, sharedKey, deps, { vault: detail.keyEpoch, row: m.keyEpoch });
   }, `Could not re-seal ${m.username}'s key.`);
 
   // The plan is built from the verdicts this dialog put on screen, so what is sealed is what
@@ -303,7 +324,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
             isOwner={isOwner}
             myState={me?.state}
             banner={detail.rotationPending ? rotationBanner(detail.rotationPending, detail.members) : null}
-            gate={{ keyReady, open: !!sharedKey, unsaved }}
+            gate={{ keyReady, open: !!sharedKey, keysLoaded: keysReady(detail.members, keys), unsaved }}
             busy={busy}
             onRename={() => void rename()}
             onDelete={() => void remove()}
@@ -333,9 +354,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
                     </select>
                   ) : <span style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>{m.role}</span>}
                   {isOwner && m.state === "stale" ? (
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => reseal(m)}
-                      disabled={busy || !sharedKey || sealBlocked(keys[m.userId]) !== null}
-                      title={sealBlocked(keys[m.userId]) ?? (!sharedKey ? "Open this vault first." : undefined)}>Re-seal key</button>
+                    <ResealButton view={keys[m.userId]} busy={busy} hasKey={!!sharedKey} onClick={() => reseal(m)} />
                   ) : null}
                   {isOwner && m.userId !== myId ? (
                     <button type="button" className="btn btn-danger btn-sm" onClick={() => void removeMember(m)} disabled={busy}>Remove</button>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { VaultSaveQueue, uploadVault, canDiscardVault, isRotationRefusal, PERSONAL_BASE, type SaveState } from "./vaultSave";
+import { VaultSaveQueue, uploadVault, canDiscardVault, isRotationRefusal, saveAction, PERSONAL_BASE, type SaveState } from "./vaultSave";
 import { HttpError } from "./api";
 import { KeePassVault } from "./kdbx";
 
@@ -411,4 +411,17 @@ test("a rotation refusal is told apart from every other 409", () => {
   assert.equal(isRotationRefusal(new HttpError(409, "conflict")), false);
   assert.equal(isRotationRefusal(new HttpError(403, "the shared vault key was rotated")), false);
   assert.equal(isRotationRefusal(new Error("the shared vault key was rotated")), false);
+});
+
+// The banner's three answers. A retired-epoch 409 is the one the queue refuses outright, so
+// offering Retry there would render a button that does nothing at all.
+test("the save banner offers reload, not retry, for a rotation refusal", () => {
+  const err = (over: Partial<Extract<SaveState, { kind: "error" }>>): SaveState =>
+    ({ kind: "error", version: 3, message: "x", ...over });
+  assert.equal(saveAction({ kind: "saved", version: 3 }), null);
+  assert.equal(saveAction({ kind: "saving", version: 3 }), null);
+  assert.equal(saveAction(err({ conflict: true, status: 409 })), "overwrite");
+  assert.equal(saveAction(err({ status: 409 })), "reload");
+  assert.equal(saveAction(err({ status: 500 })), "retry");
+  assert.equal(saveAction(err({})), "retry", "a network failure is still worth a retry");
 });

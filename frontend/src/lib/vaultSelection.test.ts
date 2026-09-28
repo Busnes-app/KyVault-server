@@ -22,6 +22,7 @@ test("resolveSelection", () => {
 
 const fakeVault = { name: "v" } as any;
 const deps = (over: Partial<OpenDeps>): OpenDeps => ({
+  loadCrypto: async () => {},
   openKey: async () => new Uint8Array(32),
   fetchMetadata: async () => ({ version: 3 }),
   fetchKdbx: async () => new ArrayBuffer(8),
@@ -58,6 +59,17 @@ test("openShared creates and uploads an empty vault at version 0", async () => {
 
 test("openShared reports an unopenable key", async () => {
   await assert.rejects(openShared(row(), new Uint8Array(32), deps({ openKey: async () => { throw new Error("bad"); } })), /ask an owner to re-seal/);
+});
+
+// A lazy chunk that 404'd after a deploy is not a key anyone has to re-seal, and sending the
+// user to an owner for it would be a wrong answer they cannot act on.
+test("openShared tells a missing crypto chunk apart from a key that will not open", async () => {
+  let opened = 0;
+  await assert.rejects(openShared(row(), new Uint8Array(32), deps({
+    loadCrypto: async () => { throw new Error("Failed to fetch dynamically imported module"); },
+    openKey: async () => { opened++; return new Uint8Array(32); },
+  })), /Reload the page and try again/);
+  assert.equal(opened, 0, "nothing is unsealed before the code that unseals it has loaded");
 });
 
 test("openShared refuses to create for a reader on an empty vault", async () => {

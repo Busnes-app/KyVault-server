@@ -43,16 +43,18 @@ export function planRotation(members: Member[], views: Record<string, KeyView>,
 }
 
 export type RotateDeps = {
-  // metadata answers the one question a lost rotation response leaves open: which version
-  // the vault is on now, which is what the caller's save queue has to claim next.
-  api: Pick<SharedApi, "rotate" | "list" | "metadata">;
+  api: Pick<SharedApi, "rotate" | "list">;
   pinUnknown: (userId: string, publicKey: Uint8Array) => Promise<void>;
   reEncrypt: (key: Uint8Array) => Promise<ArrayBuffer>;   // exports the open vault under a new key
   seal?: typeof sealSharedKey;
   openKey?: typeof openSharedKey;
   seed: Uint8Array;
 };
-export type RotationOutcome = { key: Uint8Array; keyEpoch: number; version: number; leftBehind: LeftBehind[]; historyCleared: boolean };
+// version is the vault version the rotation wrote, present only when the server's own response
+// said so. Absent means the rotation landed but nothing here knows which version the vault is
+// on — a member this rotation re-sealed may have saved since — so the caller re-opens the vault
+// rather than let a save queue claim a version nobody proved and overwrite those edits.
+export type RotationOutcome = { key: Uint8Array; keyEpoch: number; version?: number; leftBehind: LeftBehind[]; historyCleared: boolean };
 
 export async function rotateSharedVault(id: string, epoch: number, version: number,
                                         plan: RotationPlan, deps: RotateDeps): Promise<RotationOutcome> {
@@ -80,7 +82,7 @@ export async function rotateSharedVault(id: string, epoch: number, version: numb
     // committed with it, this tab's included — a reload recovers the vault either way. Checking
     // the server spares the owner an error about a rotation that succeeded; it is not what
     // keeps the vault openable, so nothing here may be treated as a durability guarantee.
-    let landed: { keyEpoch: number; version: number } | null;
+    let landed: { keyEpoch: number } | null;
     try {
       landed = await rotationLanded(id, key, deps);
     } catch {
@@ -88,34 +90,36 @@ export async function rotateSharedVault(id: string, epoch: number, version: numb
       throw err;
     }
     if (!landed) throw err;
-    // The response is gone, so the plan's list is the only one there is and the history clear
-    // is unknown — reported as not done, which asks for a rotation that was harmless anyway.
-    return { key, keyEpoch: landed.keyEpoch, version: landed.version, leftBehind: plan.leftBehind, historyCleared: false };
+    // The response is gone, so the plan's list is the only one there is, the history clear is
+    // unknown — reported as not done, which asks for a rotation that was harmless anyway — and
+    // no version is reported at all: see RotationOutcome.
+    return { key, keyEpoch: landed.keyEpoch, leftBehind: plan.leftBehind, historyCleared: false };
   }
 }
 
 // Whether the vault is now sealed to `expected` for me. A list that fails throws: it says
 // nothing about the rotation, and answering "did not land" would report a rotation that may
 // well have committed as a failure.
-export async function rotationLanded(id: string, expected: Uint8Array, deps: RotateDeps): Promise<{ keyEpoch: number; version: number } | null> {
+export async function rotationLanded(id: string, expected: Uint8Array, deps: RotateDeps): Promise<{ keyEpoch: number } | null> {
   const open = deps.openKey ?? openSharedKey;
   const row = (await deps.api.list()).find((v) => v.id === id);
   if (!row) return null;
   const mine = await open(deps.seed, row.myKey.sealedKey).catch(() => null);
   if (!mine) return null;
   const same = mine.length === expected.length && mine.every((b, i) => b === expected[i]);
-  if (!same) return null;
-  // The response that carried the version is gone; a metadata read that fails throws for the
-  // same reason a failed list does — the caller keeps the key the server last accepted.
-  return { keyEpoch: row.keyEpoch, version: (await deps.api.metadata(id)).version };
+  return same ? { keyEpoch: row.keyEpoch } : null;
 }
 
 // Why the Rotate button refuses, or null when it may run, most fundamental reason first.
-export type RotateGate = { activeOwner: boolean; keyReady: boolean; open: boolean; unsaved: boolean };
+export type RotateGate = { activeOwner: boolean; keyReady: boolean; open: boolean; keysLoaded: boolean; unsaved: boolean };
 export function rotateBlocked(g: RotateGate): string | null {
   if (!g.activeOwner) return "Only an active owner of this vault can rotate its key.";
   if (!g.keyReady) return "Your user key is not ready, so no new copies of the key can be sealed.";
   if (!g.open) return "Open this vault before rotating its key.";
+  // planRotation reads the verdict on screen, and a member with no verdict yet plans as left
+  // behind. Rotating in that window seals only to me and strands everyone else, in the same
+  // commit that deletes the version history — the one step in this feature with no way back.
+  if (!g.keysLoaded) return "Still checking every member's published key; try again in a moment.";
   if (g.unsaved) return "Save or discard your unsaved edits first.";
   return null;
 }
@@ -127,10 +131,14 @@ const REASON: Record<Pending["reason"], string> = { removed: "was removed", left
 export const pendingName = (p: Pending, members: { userId: string; username: string }[]): string =>
   members.find((m) => m.userId === p.userId)?.username ?? p.userId;
 
-export const rotationBanner = (p: Pending, members: { userId: string; username: string }[]): string =>
+// What an admin is told: the diagnosis without the call to action, since only an owner can
+// rotate and an admin reading "Rotating re-keys the vault" has nowhere to go with it.
+export const adminRotationNote = (p: Pending, members: { userId: string; username: string }[]): string =>
   `${pendingName(p, members)} ${REASON[p.reason]} on ${formatWhen(p.since)}. ` +
-  "Their copy of the key still opens anything this vault saved before a rotation. " +
-  "Rotating re-keys the vault for everyone who remains.";
+  "Their copy of the key still opens anything this vault saved before a rotation.";
+
+export const rotationBanner = (p: Pending, members: { userId: string; username: string }[]): string =>
+  `${adminRotationNote(p, members)} Rotating re-keys the vault for everyone who remains.`;
 
 // What the owner is told afterwards: how many copies of the new key exist, who holds none,
 // and — because the server only audits it — whether the retired-key snapshots really went.

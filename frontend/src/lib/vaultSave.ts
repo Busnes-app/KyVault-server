@@ -8,6 +8,11 @@ export type SaveState =
 
 export const PERSONAL_BASE = "/api/vault";
 
+// What the save banner may offer. A retired-epoch 409 can only be answered by the server's
+// copy: `save()` is a no-op for it, so a Retry button there would do nothing at all.
+export const saveAction = (state: SaveState): "overwrite" | "reload" | "retry" | null =>
+  state.kind !== "error" ? null : state.conflict ? "overwrite" : state.status === 409 ? "reload" : "retry";
+
 // A shared write the server refused because the vault key was rotated. It shares its status
 // code with a version conflict and means the opposite: this copy is sealed under a retired
 // key, so overwriting is the one thing that must not happen. Callers re-open the vault.

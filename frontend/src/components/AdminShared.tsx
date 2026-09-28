@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { toErrorMessage } from "../lib/api";
 import { adminSharedApi, type AdminSharedVault } from "../lib/sharedVaults";
-import { rotationBanner } from "../lib/sharedRotation";
+import { adminRotationNote } from "../lib/sharedRotation";
 import { formatWhen } from "../lib/format";
 import { useDialogs } from "./DialogHost";
 import { ErrorLine } from "./ErrorLine";
@@ -66,7 +66,7 @@ export function VaultRow({ vault, expanded, busy, onToggle, onDelete, onRemoveMe
           <span>{formatWhen(vault.createdAt)}</span>
           <span>{vault.members.length} member{vault.members.length === 1 ? "" : "s"}</span>
           {/* Only an owner can rotate, so this line is a diagnosis, not an action an admin has. */}
-          {vault.rotationPending ? <span style={{ color: "var(--danger)" }}>{rotationBanner(vault.rotationPending, vault.members)}</span> : null}
+          {vault.rotationPending ? <span style={{ color: "var(--danger)" }}>{adminRotationNote(vault.rotationPending, vault.members)}</span> : null}
           <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={onDelete}>
             Delete vault
           </button>

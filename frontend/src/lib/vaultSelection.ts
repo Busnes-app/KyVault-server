@@ -1,6 +1,7 @@
 import { KeePassVault } from "./kdbx";
 import { getBinary, getJSON } from "./api";
 import { openSharedKey } from "./sharedKey";
+import { loadCrypto } from "./userKey";
 import { canOpen, sharedBase, type SharedVaultSummary } from "./sharedVaults";
 import { PERSONAL_BASE, uploadVault } from "./vaultSave";
 import type { DraftScope } from "./lockedDraft";
@@ -22,7 +23,13 @@ export function resolveSelection(routeShared: string | undefined, vaults: Shared
   return { selected: { kind: "shared", id: row.id }, notice: null };
 }
 
+export const CRYPTO_UNAVAILABLE = "The encryption code could not be loaded, so this vault could not be opened. Reload the page and try again.";
+export const RESEAL_NEEDED = "Your copy of the key cannot be opened; ask an owner to re-seal it.";
+
 export type OpenDeps = {
+  // Awaited before the unseal so a lazy chunk that 404'd after a deploy is not reported as a
+  // key that needs re-sealing — the same separation adoptUserKey makes for the personal key.
+  loadCrypto: () => Promise<void>;
   openKey: (seed: Uint8Array, sealedKey: string) => Promise<Uint8Array>;
   fetchMetadata: (base: string) => Promise<{ version: number }>;
   fetchKdbx: (base: string, signal?: AbortSignal) => Promise<ArrayBuffer>;
@@ -32,6 +39,7 @@ export type OpenDeps = {
 };
 
 export const defaultOpenDeps: OpenDeps = {
+  loadCrypto,
   openKey: openSharedKey,
   fetchMetadata: (base) => getJSON<{ version: number }>(`${base}/metadata`),
   fetchKdbx: (base, signal) => getBinary(`${base}/kdbx`, signal ?? new AbortController().signal),
@@ -44,11 +52,16 @@ export const defaultOpenDeps: OpenDeps = {
 export type OpenedShared = { vault: KeePassVault; key: Uint8Array; version: number; readOnly: boolean; keyEpoch: number };
 
 export async function openShared(row: SharedVaultSummary, seed: Uint8Array, deps: OpenDeps = defaultOpenDeps): Promise<OpenedShared> {
+  try {
+    await deps.loadCrypto();
+  } catch {
+    throw new Error(CRYPTO_UNAVAILABLE);
+  }
   let key: Uint8Array;
   try {
     key = await deps.openKey(seed, row.myKey.sealedKey);
   } catch {
-    throw new Error("Your copy of the key cannot be opened; ask an owner to re-seal it.");
+    throw new Error(RESEAL_NEEDED);
   }
   const base = sharedBase(row.id);
   const meta = await deps.fetchMetadata(base);
