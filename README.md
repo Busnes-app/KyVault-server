@@ -6,6 +6,20 @@ interface, mobile clients and browser extensions.
 The server stores your encrypted KDBX file and your wrapped key envelopes. It cannot read
 your passwords, and it holds nothing that could be used to authenticate as you.
 
+## Health endpoint
+
+`GET /healthz` is the public Ky suite health endpoint. `GET /api/health` is a
+compatible alias used by the existing container healthcheck. Both return the same
+cached `ky.health/1` JSON response with `service: "kyvault"`, `status: "ok"`, a UTC
+`time` and an empty `checks` array. The evaluation is cached for five seconds;
+responses use `Cache-Control: no-store`. The endpoint answers 200 while the process
+serves requests. With no public dependency checks, it does not return 503 for audit
+or storage failures.
+
+This is a process availability signal, not a readiness or data-integrity check. In
+particular, neither path reveals audit write failures, even as a degraded status.
+Audit failures go to stderr and to the admin-only `GET /api/audit/verify` response.
+
 ## KySignOn is required
 
 **There is no local login.** Signing in to KyVault means signing in to KySignOn; the
