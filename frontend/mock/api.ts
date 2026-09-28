@@ -176,8 +176,12 @@ export function mockApi(): Plugin {
     // withSharedWrite's epoch gate, by hand: a write must claim the vault's current key epoch,
     // or it is ciphertext under a key the vault has retired. A missing header is NaN, so stale.
     const wrongEpoch = () => {
-      if (Number(req.headers["x-shared-key-epoch"]) === keyEpoch) return false;
-      fail(res, 409, "the shared vault key was rotated; reload the vault");
+      const claimed = Number(req.headers["x-shared-key-epoch"]);
+      if (claimed === keyEpoch) return false;
+      // Two refusals, as the server has: a client that said nothing is not a rotation.
+      fail(res, 409, Number.isInteger(claimed)
+        ? "the shared vault key was rotated; reload the vault"
+        : "this write did not say which shared vault key it was made under; reload the vault");
       return true;
     };
     if (sub === "/metadata" && m === "GET") { json(res, 200, metaOf(d)); return true; }
@@ -362,7 +366,10 @@ export function mockApi(): Plugin {
             const me = v.members.find((x) => x.userId === user.id);
             if (!me) return [];
             return [{
-              id: v.id, name: v.name, role: me.role, state: me.state, keyEpoch: v.keyEpoch, rotationPending: v.rotationPending,
+              id: v.id, name: v.name, role: me.role, state: me.state, keyEpoch: v.keyEpoch,
+              // Active owners only, as the server does: the flag names a departed member, and
+              // an invitation discloses nothing about the membership before it is accepted.
+              ...(me.role === "owner" && me.state === "active" ? { rotationPending: v.rotationPending } : {}),
               myKey: { sealedKey: me.sealedKey, keyFingerprint: me.keyFingerprint, keyEpoch: me.keyEpoch, sealedBy: me.sealedBy, sealedByFingerprint: me.sealedByFingerprint },
               ...(me.state === "invited" ? { invitedBy: { userId: me.sealedBy, username: usernameOf(me.sealedBy), fingerprint: me.sealedByFingerprint } } : {}),
             }];
@@ -508,7 +515,7 @@ export function mockApi(): Plugin {
           v.keyEpoch = next; v.rotationPending = undefined;
           v.bytes = kdbx; v.version++;
           v.history = []; v.conflicts = [];
-          return json(res, 200, { ok: true, metadata: metaOf(v), keyEpoch: next, historyCleared: true,
+          return json(res, 200, { ok: true, metadata: metaOf(v), keyEpoch: next, historyCleared: true, epochMarked: true,
             leftBehind: v.members.filter((x) => x.keyEpoch !== next).map((x) => x.userId).sort() });
         }
         if (await vaultData(v, sub, m, req, res, me.role !== "reader", v.keyEpoch)) return;

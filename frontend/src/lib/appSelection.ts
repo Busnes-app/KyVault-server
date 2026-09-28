@@ -26,6 +26,28 @@ export const rotatedElsewhere = (selected: Selected, state: SaveState): boolean 
   selected.kind === "shared" && state.kind === "error" && state.status === 409 &&
   /was rotated/.test(state.message);
 
+// What the tab offers before a rotation elsewhere forces it to re-open the vault. The refused
+// save is itself the proof there are unsaved edits, and they can never be uploaded — they are
+// sealed under a retired key and the server is right to refuse them — but this tab still holds
+// that key and the open database, so a download hands the user a KDBX they can open. Losing
+// them is destructive, so it is never done without an answer to this question.
+export const ROTATED_QUESTION = {
+  title: "This vault's key was rotated elsewhere",
+  message: "Your unsaved edits can no longer be saved: they are encrypted with the key that was just retired. " +
+    "You can download a copy of this vault as it stands, then re-open it with the new key.",
+  label: "Unsaved edits",
+  options: [
+    { value: "download", label: "Download a copy, then re-open the vault" },
+    { value: "discard", label: "Re-open the vault and lose them" },
+  ],
+  confirmLabel: "Continue",
+};
+
+// The answer, decided: a dismissed question (Escape, or a lock cancelling it) does neither, so
+// the edits stay on screen and the refusal banner stays with them.
+export const rotatedPlan = (answer: string | null): { download: boolean; reopen: boolean } =>
+  ({ download: answer === "download", reopen: answer !== null });
+
 export type RestorePlan = { action: "wait" } | { action: "none" } | { action: "switch"; id: string } | { action: "notice"; text: string };
 
 // Which vault an unlocked tab should reopen from its #/shared/<id> route.

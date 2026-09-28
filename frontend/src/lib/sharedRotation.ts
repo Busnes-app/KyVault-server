@@ -67,6 +67,18 @@ export async function rotateSharedVault(id: string, epoch: number, version: numb
   // leave that member reading "changed" in every later verdict until the owner forgot the pin.
   if (plan.seal.some((s) => !s.publicKey.length)) throw new Error(`${NO_KEY}: there is nothing to seal to.`);
   const key = newSharedKey();
+  try {
+    return await rotateWithKey(id, epoch, version, plan, deps, key, seal);
+  } catch (err) {
+    // Nothing that survives holds this key: every caller's copy comes from the outcome, and a
+    // rotation that threw never returned one.
+    key.fill(0);
+    throw err;
+  }
+}
+
+async function rotateWithKey(id: string, epoch: number, version: number, plan: RotationPlan, deps: RotateDeps,
+                             key: Uint8Array, seal: typeof sealSharedKey): Promise<RotationOutcome> {
   const sealed: { userId: string; sealedKey: string; keyFingerprint: string }[] = [];
   for (const s of plan.seal) {
     // Trust on first use, as invite does: an unpinned key is pinned as it is used.

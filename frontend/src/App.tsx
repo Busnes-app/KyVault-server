@@ -24,7 +24,7 @@ import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./l
 import { cacheDeviceKey } from "./lib/deviceKeyCache";
 import { useRoute, type Route } from "./lib/route";
 import { personal, selectionScope, selectionBase, sameSelection, resolveSelection, openShared, type Selected } from "./lib/vaultSelection";
-import { switchTo, lostAccess, rotatedElsewhere, restorePlan, applyRotation, resolveDraft, type OpenedPersonal } from "./lib/appSelection";
+import { switchTo, lostAccess, rotatedElsewhere, rotatedPlan, ROTATED_QUESTION, restorePlan, applyRotation, resolveDraft, type OpenedPersonal } from "./lib/appSelection";
 import { rotateSharedVault, type RotationOutcome, type RotationPlan } from "./lib/sharedRotation";
 import { useSharedVaults, sharedApi, sharedNameError, type SharedVaultSummary } from "./lib/sharedVaults";
 import { retryPending, zeroKeys, type ResealPending } from "./lib/keyReplaceReseal";
@@ -130,6 +130,8 @@ export function App() {
   const switchingRef = useRef(false);
   const [rotating, setRotating] = useState(false);
   const rotatingRef = useRef(false);
+  // The rotated-elsewhere question is open: the effect must not ask it twice.
+  const askingRotatedRef = useRef(false);
   const personalRef = useRef<(OpenedPersonal & { stale?: boolean }) | null>(null);
   const sharedKeyRef = useRef<Uint8Array | null>(null);
   const pendingOpen = useRef<PendingOpen | null>(null);
@@ -858,12 +860,29 @@ export function App() {
   }, [saveState, selected]);
 
   // A shared write refused because someone rotated the key: this copy is sealed under a
-  // retired key, so there is nothing to overwrite with. Re-open the vault with the new one.
+  // retired key, so there is nothing to overwrite with and the vault has to be re-opened with
+  // the new one. The unsaved edits die with the old key, so the user is offered a download
+  // under the key still in memory before that happens, and may also leave the tab as it is.
   // `switching`/`rotating` are in the dep list because their refs are what the guard reads:
   // a refusal here would otherwise never be reconsidered, leaving a dead error banner.
   useEffect(() => {
-    if (selected.kind !== "shared" || !rotatedElsewhere(selected, saveState) || switchingRef.current || rotatingRef.current) return;
-    void reopenShared(selected, "This vault's key was rotated, so it was re-opened with the new key. Unsaved edits could not be saved.");
+    if (selected.kind !== "shared" || !rotatedElsewhere(selected, saveState) || switchingRef.current || rotatingRef.current || askingRotatedRef.current) return;
+    const sel = selected;
+    askingRotatedRef.current = true;
+    void (async () => {
+      try {
+        const plan = rotatedPlan(await dialogs.choose({ ...ROTATED_QUESTION, danger: true }));
+        if (!plan.reopen) return;
+        if (plan.download) await handleExportKdbx();
+        await reopenShared(sel, plan.download
+          ? "This vault's key was rotated, so it was re-opened with the new key. Your unsaved edits could not be saved to the server; the copy you downloaded is the only one."
+          : "This vault's key was rotated, so it was re-opened with the new key. Unsaved edits could not be saved.");
+      } catch (err) {
+        setLockNotice(toErrorMessage(err, "This vault's key was rotated elsewhere and it could not be re-opened."));
+      } finally {
+        askingRotatedRef.current = false;
+      }
+    })();
   }, [saveState, selected, switching, rotating]);
 
   const autoLock = useRef(() => {});

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { switchTo, lostAccess, rotatedElsewhere, restorePlan, applyRotation, resolveDraft, READ_ONLY_DRAFT, type SwitchDeps } from "./appSelection";
+import { switchTo, lostAccess, rotatedElsewhere, rotatedPlan, ROTATED_QUESTION, restorePlan, applyRotation, resolveDraft, READ_ONLY_DRAFT, type SwitchDeps } from "./appSelection";
 import { personal } from "./vaultSelection";
 
 const ID = "sv_abcdefghijklmnopqrstuv";
@@ -122,4 +122,14 @@ test("a rotation 409 re-opens the vault, an ordinary conflict does not", () => {
   assert.equal(rotatedElsewhere(shared, err("conflict", 409)), false);
   assert.equal(rotatedElsewhere(shared, err("the shared vault key was rotated", 403)), false);
   assert.equal(rotatedElsewhere(personal, err("the shared vault key was rotated; reload the vault", 409)), false);
+});
+
+test("a rotation elsewhere never discards the edits without an answer", () => {
+  // The two answers the question offers, and the dismissal a lock or Escape produces.
+  assert.deepEqual(rotatedPlan("download"), { download: true, reopen: true });
+  assert.deepEqual(rotatedPlan("discard"), { download: false, reopen: true });
+  assert.deepEqual(rotatedPlan(null), { download: false, reopen: false });
+  // Anything unexpected re-opens without claiming a download was made, never silently.
+  assert.deepEqual(rotatedPlan("what"), { download: false, reopen: true });
+  assert.deepEqual(ROTATED_QUESTION.options.map((o) => o.value), ["download", "discard"]);
 });

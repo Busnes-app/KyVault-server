@@ -348,3 +348,23 @@ test("the rotation report counts the new copies, names who was left behind, and 
   assert.match(kept, /could not be deleted/);
   assert.match(kept, /Rotate again/);
 });
+
+// The fresh key exists only in this tab's memory until the rotation returns it. A throw returns
+// nothing, so the bytes must not be left behind in a live buffer.
+test("a rotation that throws zeroes the key it generated", async () => {
+  const me = await generateUserKey();
+  const plan = planRotation([member("me")], {}, { id: "me", publicKey: me.publicKey, fingerprint: "MY FP" });
+  let generated: Uint8Array | null = null;
+  await assert.rejects(rotateSharedVault(VAULT, 1, 3, plan, {
+    api: {
+      rotate: async () => { throw new Error("network down"); },
+      // The lost-response check fails too, so the rotation's own error is what propagates.
+      list: async () => { throw new Error("list down"); },
+    },
+    pinUnknown: async () => { throw new Error("nothing to pin"); },
+    reEncrypt: async (key) => { generated = key; return new ArrayBuffer(8); },
+    seed: me.seed,
+  }), /network down/);
+  assert.ok(generated, "the vault was re-encrypted, so a key was generated");
+  assert.deepEqual([...generated!], new Array(32).fill(0), "the fresh key was left in memory");
+});

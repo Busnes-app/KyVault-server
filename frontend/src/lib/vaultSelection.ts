@@ -52,6 +52,9 @@ export const defaultOpenDeps: OpenDeps = {
 export type OpenedShared = { vault: KeePassVault; key: Uint8Array; version: number; readOnly: boolean; keyEpoch: number };
 
 export async function openShared(row: SharedVaultSummary, seed: Uint8Array, deps: OpenDeps = defaultOpenDeps): Promise<OpenedShared> {
+  // A row a rotation left behind still unseals: its sealed copy opens the *retired* key, and
+  // only the vault bytes refuse it. Say so here rather than let kdbxweb's InvalidKey surface.
+  if (!canOpen(row)) throw new Error(RESEAL_NEEDED);
   try {
     await deps.loadCrypto();
   } catch {

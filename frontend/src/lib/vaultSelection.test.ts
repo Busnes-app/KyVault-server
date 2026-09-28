@@ -78,3 +78,19 @@ test("openShared refuses to create for a reader on an empty vault", async () => 
     /empty; an owner or editor must add the first entry/,
   );
 });
+
+// A rotation leaves a member it could not seal for `stale` at the retired epoch. Their sealed
+// copy still unseals — it opens the old key — so only the vault bytes would refuse it, as a raw
+// kdbxweb InvalidKey. The row's state is checked first, before anything is fetched.
+test("openShared refuses a row a rotation left behind before it fetches anything", async () => {
+  for (const state of ["stale", "invited", "suspended"] as const) {
+    let touched = 0;
+    await assert.rejects(openShared(row({ state, keyEpoch: 1 }), new Uint8Array(32), deps({
+      loadCrypto: async () => { touched++; },
+      openKey: async () => { touched++; return new Uint8Array(32); },
+      fetchMetadata: async () => { touched++; return { version: 3 }; },
+      fetchKdbx: async () => { touched++; return new ArrayBuffer(8); },
+    })), /ask an owner to re-seal/, state);
+    assert.equal(touched, 0, `${state}: nothing was loaded, unsealed or fetched`);
+  }
+});
