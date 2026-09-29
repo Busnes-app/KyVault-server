@@ -22,7 +22,7 @@
     "@zxcvbn-ts/language-en": "4.1.1",
     "hash-wasm": "^4.12.0",
     "kdbxweb": "^2.1.1",
-    "lucide-react": "^1.47.0",
+    "lucide-react": "^1.48.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
@@ -38,6 +38,6 @@
     "@vitejs/plugin-react": "^6.1.1",
     "tsx": "4.23.15",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.1"
   }
 }
