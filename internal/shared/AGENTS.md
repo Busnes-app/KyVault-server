@@ -46,34 +46,41 @@ vault key sealed to their user key. Vault bytes live in `internal/vault` under
   vault key still opens the vault. A non-empty flag whose reason or `userId` is invalid
   fails the load with `ErrCorrupt`. Nothing else sets or clears it: a role change, a
   suspension and a `MarkStale` leave it alone.
-- `Rotate(id, actorID, epoch, []SealedFor, writeVault)` is the only thing that retires that
+- `Rotate(id, actorID, epoch, []SealedFor, RotateSteps)` is the only thing that retires that
   copy. Under one hold of the lock it authorizes the actor, refuses an ownerless vault
   (`ErrState`) and a stale `epoch` (`ErrEpoch`), validates every `SealedFor` (a current
   member, `ValidSealedKey`, a non-empty `keyFingerprint`), refuses a rotation that does not
   seal for the actor's own row or would leave no active owner (`ErrShape`, `ErrLastOwner`),
-  then calls `writeVault` and returns its error untouched, and only then re-seals, bumps
-  `keyEpoch`, marks every unnamed member `stale` at the old epoch and clears the flag. Any
-  refusal writes nothing. A named row lands on `freshState` like a `Reseal`, so a stale or
+  then runs `Verify` (a refusal is `ErrShape`) and `WriteVault` (its error returned
+  untouched), and only then re-seals, bumps `keyEpoch`, marks every unnamed member `stale` at
+  the old epoch, clears the flag, commits and runs `AfterCommit`. Any refusal writes nothing. A named row lands on `freshState` like a `Reseal`, so a stale or
   left-behind member who is re-sealed comes back. An admin actor (`""`) can never rotate:
   the actor must be one of the named members and `""` is never a member id.
 - `Rotate` does **not** compare the supplied `keyFingerprint` to the row's: `MarkStale`
   leaves the retired fingerprint on the row, so a member who replaced their user key is
   re-sealed to a fingerprint the row has never held. It overwrites the row's value, exactly
-  as `Reseal` does; checking it against the member's current published key is the route's
-  job, since only the route can read published keys.
-- Rotation commit order: the re-encrypted ciphertext is written inside `writeVault`, before
-  the record commits. A crash between them leaves the live vault under the new key while
-  the record still carries the old epoch and old sealed keys — the pre-rotation snapshot is
-  still in history and still restorable with the key the members hold, so the vault is
-  recovered and the rotation run again. That recovery is API- or host-level only
-  (`POST /api/shared/{id}/history/{id}/restore` at the record's unchanged epoch, or the
-  file-level rollback in `docs/RESTORE.md`): no screen reaches the history of a vault it
-  cannot open. `writeVault` must therefore neither delete history
-  (`ClearHistory`) nor mark the key epoch (`MarkKeyEpoch`, which makes older snapshots
-  `ErrStaleKey`): the route runs both after the record commits, in that order. The write is
-  `vault.Store.SaveRekeyed`, which refuses when it cannot archive that snapshot. The closure
-  runs under `shared.mu` and must never re-enter this store (`Get`, `WithWriter`, any
-  method): it self-deadlocks.
+  as `Reseal` does. The comparison with the member's current published key is the caller's
+  `RotateSteps.Verify`, since only the route can read published keys; it runs under
+  `shared.mu`, so a key replacement committed before it is refused (`ErrShape`, nothing
+  written) and one committed after waits for its `MarkStale` behind the rotation, which then
+  marks the freshly sealed row stale.
+- Rotation commit order, all under one `shared.mu` hold: the store's own checks, then
+  `RotateSteps.Verify`, then `RotateSteps.WriteVault` (the re-encrypted ciphertext), then the
+  record commit (`saveLocked`), then `RotateSteps.AfterCommit` (`MarkKeyEpoch`, then
+  `ClearHistory`, both best effort, outcomes kept by the route). A failed commit skips
+  `AfterCommit`. A crash between the write and the commit leaves the live vault under the
+  new key while the record still carries the old epoch and old sealed keys — the
+  pre-rotation snapshot is still in history, unmarked, and restorable with the key the
+  members hold, so the vault is recovered and the rotation run again. That recovery is API-
+  or host-level only (`POST /api/shared/{id}/history/{id}/restore` at the record's unchanged
+  epoch, or the file-level rollback in `docs/RESTORE.md`): no screen reaches the history of
+  a vault it cannot open. `WriteVault` must therefore neither delete history nor mark the
+  key epoch. It is `vault.Store.SaveRekeyed`, which refuses when it cannot archive that
+  snapshot. Because `AfterCommit` holds the lock, no shared writer lands between the commit
+  and the clear: an editor's next save archives the rotated version after it and keeps it.
+  Every step runs under `shared.mu` and must never re-enter this store (`Get`,
+  `WithWriter`, `MarkStale`, any method): it self-deadlocks. Lock order stays `shared.mu`
+  then `vault.mu`.
 - `WithWriter(id, userID, epoch, fn)` runs `fn` (the vault write) under `shared.mu` only
   while the row is an active owner or editor (`ErrNotMember`, `ErrForbidden`) and the vault
   is still at `epoch` (`ErrEpoch`), so a removal, a demotion or a rotation cannot land

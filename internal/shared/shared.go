@@ -578,80 +578,109 @@ func (s *Store) Remove(id, actorID, userID string, now time.Time) error {
 	})
 }
 
+// RotateSteps are the parts of a rotation only the caller can perform. Each runs under the
+// store lock, in the order listed, so no shared writer, membership change or MarkStale can
+// land between them; each must therefore never re-enter this store (Get, WithWriter, any
+// method): it would deadlock on a lock it already holds. Any may be nil.
+type RotateSteps struct {
+	// Verify checks each sealed copy's fingerprint against that member's currently published
+	// key, which only the caller can read. It runs after the store's own checks and before
+	// WriteVault; a refusal is ErrShape and nothing is written.
+	Verify func([]SealedFor) error
+	// WriteVault writes the re-encrypted vault. It must neither mark the key epoch nor clear
+	// history: a crash before the record commits needs the pre-rotation snapshot restorable.
+	WriteVault func() error
+	// AfterCommit runs only once the record has committed (MarkKeyEpoch, then ClearHistory).
+	// It cannot fail the rotation; the caller keeps whatever it needs to report.
+	AfterCommit func()
+}
+
 // Rotate re-keys a shared vault: it takes one sealed copy of the new key per member the
-// caller could seal for, writes the re-encrypted vault through writeVault, bumps the epoch
-// and leaves everyone else at the old epoch as stale. It is the only thing that stops a
+// caller could seal for, writes the re-encrypted vault through steps.WriteVault, bumps the
+// epoch and leaves everyone else at the old epoch as stale. It is the only thing that stops a
 // departed member's copy of the key from opening what the vault saves next, so it clears
 // the pending flag a departure set.
 //
 // The caller must name their own row: a rotation that locked the last active owner out of
 // their own vault would leave nobody who could invite, accept or re-seal. Each SealedFor
 // needs a non-empty KeyFingerprint, which overwrites the row's, exactly as Reseal does;
-// checking it against the member's current published key is the route's job, because only
-// the route can read published keys. epoch must be the vault's current one.
+// steps.Verify compares it with the member's published key under this lock, so a key
+// replacement either lands before it and is refused, or waits behind the rotation and its
+// MarkStale then marks the freshly sealed row stale. epoch must be the vault's current one.
 //
-// writeVault (nil to skip it) writes the re-encrypted vault and runs under the store lock,
-// so it must never re-enter this store: it would deadlock on a lock it already holds.
-// Nothing here is written unless it succeeds, so a refused vault write leaves the record,
-// the sealed keys and the flag exactly as they were and the rotation can be retried.
-func (s *Store) Rotate(id, actorID string, epoch int, sealed []SealedFor, writeVault func() error) (Vault, error) {
-	var out Vault
-	err := s.update(id, actorID, func(v *Vault) error {
-		if activeOwners(*v) == 0 {
-			return fmt.Errorf("%w: the vault has no owner", ErrState)
-		}
-		if v.KeyEpoch != epoch {
-			return fmt.Errorf("%w: at epoch %d", ErrEpoch, v.KeyEpoch)
-		}
-		named := map[string]bool{}
-		for _, sf := range sealed {
-			if _, ok := v.Members[sf.UserID]; !ok {
-				return fmt.Errorf("%w: %s is not a member", ErrShape, sf.UserID)
-			}
-			if err := ValidSealedKey(sf.SealedKey); err != nil {
-				return err
-			}
-			if sf.KeyFingerprint == "" {
-				return fmt.Errorf("%w: %s has no keyFingerprint", ErrShape, sf.UserID)
-			}
-			named[sf.UserID] = true
-		}
-		if !named[actorID] {
-			return fmt.Errorf("%w: a rotation must seal the new key for the caller's own row", ErrShape)
-		}
-		if postRotationOwners(*v, named) == 0 {
-			return ErrLastOwner
-		}
-		if writeVault != nil {
-			if err := writeVault(); err != nil {
-				return err
-			}
-		}
-		actorFP := v.Members[actorID].KeyFingerprint
-		next := v.KeyEpoch + 1
-		for _, sf := range sealed {
-			m := v.Members[sf.UserID]
-			m.SealedKey, m.KeyFingerprint = sf.SealedKey, sf.KeyFingerprint
-			m.SealedBy, m.SealedByFingerprint = actorID, actorFP
-			m.KeyEpoch = next
-			// A fresh seal lands where a Reseal would: a member left behind by an earlier
-			// rotation, or stale from a user key replacement, comes back.
-			v.Members[sf.UserID] = landOn(m, freshState(m))
-		}
-		for uid, m := range v.Members {
-			if !named[uid] {
-				v.Members[uid] = landOn(m, StateStale)
-			}
-		}
-		v.KeyEpoch = next
-		v.RotationPending = nil
-		out = *v
-		return nil
-	})
+// Nothing is written unless Verify and WriteVault succeed, so a refusal leaves the record,
+// the sealed keys and the flag exactly as they were and the rotation can be retried; a
+// failed record commit skips AfterCommit.
+func (s *Store) Rotate(id, actorID string, epoch int, sealed []SealedFor, steps RotateSteps) (Vault, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, err := s.loadLocked(id)
 	if err != nil {
 		return Vault{}, err
 	}
-	return out, nil
+	if err := authorize(v, actorID); err != nil {
+		return Vault{}, err
+	}
+	if activeOwners(v) == 0 {
+		return Vault{}, fmt.Errorf("%w: the vault has no owner", ErrState)
+	}
+	if v.KeyEpoch != epoch {
+		return Vault{}, fmt.Errorf("%w: at epoch %d", ErrEpoch, v.KeyEpoch)
+	}
+	named := map[string]bool{}
+	for _, sf := range sealed {
+		if _, ok := v.Members[sf.UserID]; !ok {
+			return Vault{}, fmt.Errorf("%w: %s is not a member", ErrShape, sf.UserID)
+		}
+		if err := ValidSealedKey(sf.SealedKey); err != nil {
+			return Vault{}, err
+		}
+		if sf.KeyFingerprint == "" {
+			return Vault{}, fmt.Errorf("%w: %s has no keyFingerprint", ErrShape, sf.UserID)
+		}
+		named[sf.UserID] = true
+	}
+	if !named[actorID] {
+		return Vault{}, fmt.Errorf("%w: a rotation must seal the new key for the caller's own row", ErrShape)
+	}
+	if postRotationOwners(v, named) == 0 {
+		return Vault{}, ErrLastOwner
+	}
+	if steps.Verify != nil {
+		if err := steps.Verify(sealed); err != nil {
+			return Vault{}, fmt.Errorf("%w: %v", ErrShape, err)
+		}
+	}
+	if steps.WriteVault != nil {
+		if err := steps.WriteVault(); err != nil {
+			return Vault{}, err
+		}
+	}
+	actorFP := v.Members[actorID].KeyFingerprint
+	next := v.KeyEpoch + 1
+	for _, sf := range sealed {
+		m := v.Members[sf.UserID]
+		m.SealedKey, m.KeyFingerprint = sf.SealedKey, sf.KeyFingerprint
+		m.SealedBy, m.SealedByFingerprint = actorID, actorFP
+		m.KeyEpoch = next
+		// A fresh seal lands where a Reseal would: a member left behind by an earlier
+		// rotation, or stale from a user key replacement, comes back.
+		v.Members[sf.UserID] = landOn(m, freshState(m))
+	}
+	for uid, m := range v.Members {
+		if !named[uid] {
+			v.Members[uid] = landOn(m, StateStale)
+		}
+	}
+	v.KeyEpoch = next
+	v.RotationPending = nil
+	if err := s.saveLocked(v); err != nil {
+		return Vault{}, err
+	}
+	if steps.AfterCommit != nil {
+		steps.AfterCommit()
+	}
+	return v, nil
 }
 
 // postRotationOwners counts the active owners a rotation sealing for named would leave:

@@ -381,11 +381,15 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   re-encrypted vault) then `keys` (`{"epoch": N, "sealed": [{userId, sealedKey,
   keyFingerprint}]}`), each part bounded on its own (`rotateKdbxLimit`, `rotateKeysLimit`)
   and refused, never truncated, when over; the whole body is capped at their sum. `epoch` is
-  the epoch being rotated **from** and `If-Match` the vault data version. Every
-  `keyFingerprint` must equal that member's current published key (400 otherwise): the store
-  trusts the route for that, as invite and reseal do. Exactly two parts: a third is 400.
-  `shared.Store.Rotate` validates and
-  commits the record around the vault write, which re-reads the metadata and refuses a
+  the epoch being rotated **from** and `If-Match` the vault data version. Exactly two parts:
+  a third is 400. `shared.Store.Rotate` runs every step under one `shared.mu` hold
+  (`shared.RotateSteps`): its own checks, `Verify`, `WriteVault`, the record commit, then
+  `AfterCommit`. `Verify` requires every `keyFingerprint` to equal that member's current
+  published key (400, nothing written, otherwise), read under the lock so a key replacement
+  committed first is refused and one committed later waits for its `MarkStale` behind the
+  rotation, which then marks the re-sealed row stale
+  (`TestRotationRefusesAKeyReplacedBeforeVerify`,
+  `TestKeyReplacedAfterVerifyLeavesTheRotatedRowStale`). `WriteVault` re-reads the metadata and refuses a
   version mismatch (409) *before* the save, so no refusal leaves the re-encrypted bytes
   behind as a conflict nobody can open. The save is `vault.Store.SaveRekeyed`: an ordinary
   save that does *not* move the key epoch, because a crash between it and the record commit
@@ -393,12 +397,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   every sealed copy is the old one, and that snapshot is the only way back into the vault. It
   is also the only save that fails when it cannot archive the version it replaces, for the
   same reason (`vault.ErrArchive` → 503 naming the cause, since nothing changed and it is the
-  host's storage, not the request). `vault.Store.MarkKeyEpoch(key, version)` runs after the
-  commit and before `vault.Store.ClearHistory`, both outside the lock and both best effort:
-  the marker takes the version the rotation *wrote*, never the vault's current one — a member
-  it re-sealed may have saved in between, and that save is under the new key, so the marker must not
-  flag it stale (it stays restorable only if the clear below fails; otherwise the clear
-  deletes it with every other snapshot) — never lowers an existing marker, refuses a version the vault has not reached,
+  host's storage, not the request). `AfterCommit` runs `vault.Store.MarkKeyEpoch(key, version)`
+  and then `vault.Store.ClearHistory`, only once the record committed, both still under
+  `shared.mu` and both best effort. No shared writer can land between the commit and the
+  clear, so an editor's next save archives the rotated version after it and keeps it
+  restorable (`TestEditorSaveDuringARotationWaitsForTheHistoryClear`). The marker takes the
+  version the rotation wrote, which with writers excluded is also the current one, never
+  lowers an existing marker, refuses a version the vault has not reached,
   makes every older snapshot `staleKey` and refuses it for rollback with 409 whatever epoch
   header the caller sends (that header proves which key a writer holds, never that the bytes
   are current), and the clear removes snapshots and conflicts, which are ciphertext under the
@@ -412,8 +417,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   parts, a third part, parts out of order, a retired snapshot that survives a failed clear
   staying unrestorable, a record commit that fails after the vault write leaving that snapshot
   restorable and the rotation retryable, a rotation refused because the snapshot could not be
-  archived, `rotationPending` reaching an active owner's list and no other row's, and four
-  simultaneous rotations leaving exactly one winner.
+  archived, `rotationPending` reaching an active owner's list and no other row's, four
+  simultaneous rotations leaving exactly one winner, an editor's post-rotation save keeping
+  the rotated version, and key replacements on either side of `Verify`. The route's test seams
+  `rotateVerifying` and `rotateCommitted` run inside those steps, under `shared.mu`.
   `sharedApi.rotate` is the client transport; the owner's screen is the members dialog, reached
   from the vault switcher's Members button.
 

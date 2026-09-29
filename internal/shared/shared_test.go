@@ -790,7 +790,7 @@ func TestDepartureFlagsARotation(t *testing.T) {
 		t.Fatalf("after removal: %+v", got.RotationPending)
 	}
 	// A role change does not flag.
-	if _, err := s.Rotate(v.ID, "u-1", got.KeyEpoch, sealedForAll(t, got), nil); err != nil {
+	if _, err := s.Rotate(v.ID, "u-1", got.KeyEpoch, sealedForAll(t, got), RotateSteps{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetRole(v.ID, "u-1", "u-3", RoleEditor); err != nil {
@@ -881,7 +881,7 @@ func TestRotate(t *testing.T) {
 		{UserID: "u-1", SealedKey: newKey, KeyFingerprint: fp(0)},
 		{UserID: "u-2", SealedKey: newKey, KeyFingerprint: fp(1)},
 	}
-	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, sealed, nil); err != nil {
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, sealed, RotateSteps{}); err != nil {
 		t.Fatal(err)
 	}
 	got := mustGet(t, s, v.ID)
@@ -904,7 +904,7 @@ func TestRotate(t *testing.T) {
 		t.Fatalf("u-4 should be left behind stale at the old epoch: %+v", m)
 	}
 	// A second rotation at the same epoch is refused (Review Focus 2).
-	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, sealed, nil); !errors.Is(err, ErrEpoch) {
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, sealed, RotateSteps{}); !errors.Is(err, ErrEpoch) {
 		t.Fatalf("stale epoch = %v", err)
 	}
 }
@@ -949,7 +949,7 @@ func TestRotateKeepsInvitedAndSuspendedStates(t *testing.T) {
 		// u-4 replaced their user key, so the value that reaches the store is their new
 		// published fingerprint, not the retired one still on the row.
 		{UserID: "u-4", SealedKey: key, KeyFingerprint: fp(9)},
-	}, nil)
+	}, RotateSteps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +987,7 @@ func TestRotateNamingASuspendedMember(t *testing.T) {
 	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, []SealedFor{
 		{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)},
 		{UserID: "u-2", SealedKey: key, KeyFingerprint: fp(1)},
-	}, nil); err != nil {
+	}, RotateSteps{}); err != nil {
 		t.Fatal(err)
 	}
 	m := mustGet(t, s, v.ID).Members["u-2"]
@@ -1011,35 +1011,35 @@ func TestRotateRefusals(t *testing.T) {
 	cur := mustGet(t, s, v.ID)
 	ok := []SealedFor{{UserID: "u-1", SealedKey: sealed(), KeyFingerprint: fp(0)}}
 	// Not an owner, and not a member at all.
-	if _, err := s.Rotate(v.ID, "u-2", cur.KeyEpoch, ok, nil); !errors.Is(err, ErrForbidden) {
+	if _, err := s.Rotate(v.ID, "u-2", cur.KeyEpoch, ok, RotateSteps{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("editor = %v", err)
 	}
-	if _, err := s.Rotate(v.ID, "u-9", cur.KeyEpoch, ok, nil); !errors.Is(err, ErrNotMember) {
+	if _, err := s.Rotate(v.ID, "u-9", cur.KeyEpoch, ok, RotateSteps{}); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("stranger = %v", err)
 	}
 	// A stale epoch.
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch+1, ok, nil); !errors.Is(err, ErrEpoch) {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch+1, ok, RotateSteps{}); !errors.Is(err, ErrEpoch) {
 		t.Fatalf("wrong epoch = %v", err)
 	}
 	// Sealing for a non-member aborts everything (Review Focus 4).
 	bad := append([]SealedFor{}, ok...)
 	bad = append(bad, SealedFor{UserID: "u-9", SealedKey: sealed(), KeyFingerprint: fp(9)})
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, bad, nil); !errors.Is(err, ErrShape) {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, bad, RotateSteps{}); !errors.Is(err, ErrShape) {
 		t.Fatalf("non-member = %v", err)
 	}
 	// A missing fingerprint: the row must always record which key its copy was sealed to.
 	noFP := []SealedFor{{UserID: "u-1", SealedKey: sealed(), KeyFingerprint: ""}}
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, noFP, nil); !errors.Is(err, ErrShape) {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, noFP, RotateSteps{}); !errors.Is(err, ErrShape) {
 		t.Fatalf("empty fingerprint = %v", err)
 	}
 	// The caller must seal for their own row, or they lock themselves out of their vault.
 	notSelf := []SealedFor{{UserID: "u-2", SealedKey: sealed(), KeyFingerprint: fp(1)}}
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, notSelf, nil); !errors.Is(err, ErrShape) {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, notSelf, RotateSteps{}); !errors.Is(err, ErrShape) {
 		t.Fatalf("owner not named = %v", err)
 	}
 	// A malformed sealed key.
 	short := []SealedFor{{UserID: "u-1", SealedKey: "AAAA", KeyFingerprint: fp(0)}}
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, short, nil); !errors.Is(err, ErrShape) {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, short, RotateSteps{}); !errors.Is(err, ErrShape) {
 		t.Fatalf("short key = %v", err)
 	}
 	// Every refusal above left the whole record untouched: epoch, sealed keys, states,
@@ -1052,10 +1052,10 @@ func TestRotateRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	epoch := mustGet(t, s, v.ID).KeyEpoch
-	if _, err := s.Rotate(v.ID, "u-2", epoch, ok, nil); !errors.Is(err, ErrForbidden) {
+	if _, err := s.Rotate(v.ID, "u-2", epoch, ok, RotateSteps{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ownerless, editor = %v", err)
 	}
-	if _, err := s.Rotate(v.ID, "", epoch, ok, nil); !errors.Is(err, ErrState) {
+	if _, err := s.Rotate(v.ID, "", epoch, ok, RotateSteps{}); !errors.Is(err, ErrState) {
 		t.Fatalf("ownerless, admin = %v", err)
 	}
 }
@@ -1082,7 +1082,7 @@ func TestRotateChangesNothingWhenTheVaultWriteFails(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, SealedKeyBytes))
 	_, err = s.Rotate(v.ID, "u-1", before.KeyEpoch,
 		[]SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}},
-		func() error { return boom })
+		RotateSteps{WriteVault: func() error { return boom }})
 	if !errors.Is(err, boom) {
 		t.Fatalf("vault write error = %v", err)
 	}
@@ -1092,6 +1092,96 @@ func TestRotateChangesNothingWhenTheVaultWriteFails(t *testing.T) {
 	}
 	if after.RotationPending == nil || after.RotationPending.UserID != "u-2" || after.RotationPending.Reason != ReasonRemoved {
 		t.Fatalf("the pending flag must survive: %+v", after.RotationPending)
+	}
+}
+
+// A Verify refusal is ErrShape and happens before anything is written: the vault write never
+// runs, the record is untouched and AfterCommit is skipped. It runs after the store's own
+// checks, so a rotation at a retired epoch never reaches it.
+func TestRotateVerifyRefusalWritesNothing(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := mustGet(t, s, v.ID)
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, SealedKeyBytes))
+	ok := []SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}}
+	var verified, wrote, committed bool
+	steps := RotateSteps{
+		Verify:      func([]SealedFor) error { verified = true; return errors.New("superseded fingerprint") },
+		WriteVault:  func() error { wrote = true; return nil },
+		AfterCommit: func() { committed = true },
+	}
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch+1, ok, steps); !errors.Is(err, ErrEpoch) || verified {
+		t.Fatalf("retired epoch = %v, verify ran %v", err, verified)
+	}
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, ok, steps); !errors.Is(err, ErrShape) {
+		t.Fatalf("verify refusal = %v", err)
+	}
+	if !verified || wrote || committed {
+		t.Fatalf("verify %v, write %v, afterCommit %v", verified, wrote, committed)
+	}
+	if after := mustGet(t, s, v.ID); !reflect.DeepEqual(after, before) {
+		t.Fatalf("a refused rotation changed the record:\n%+v\n%+v", after, before)
+	}
+}
+
+// AfterCommit runs once the record is on disk and before the store lock is released, so no
+// shared writer can land between the commit and the history clear it performs.
+func TestRotateAfterCommitRunsUnderTheLockAfterTheCommit(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, SealedKeyBytes))
+	ran := false
+	_, err = s.Rotate(v.ID, "u-1", v.KeyEpoch, []SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}}, RotateSteps{
+		AfterCommit: func() {
+			ran = true
+			if s.mu.TryLock() {
+				s.mu.Unlock()
+				t.Error("AfterCommit ran without the store lock")
+			}
+			onDisk, err := s.loadLocked(v.ID)
+			if err != nil || onDisk.KeyEpoch != v.KeyEpoch+1 {
+				t.Errorf("AfterCommit ran before the commit: %+v %v", onDisk, err)
+			}
+		},
+	})
+	if err != nil || !ran {
+		t.Fatalf("rotate = %v, afterCommit ran %v", err, ran)
+	}
+}
+
+// A record commit that fails skips AfterCommit: marking the epoch or clearing the history
+// then would retire the only snapshot the members' keys still open.
+func TestRotateSkipsAfterCommitWhenTheCommitFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(s.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(s.dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, SealedKeyBytes))
+	wrote, committed := false, false
+	_, err = s.Rotate(v.ID, "u-1", v.KeyEpoch, []SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}}, RotateSteps{
+		WriteVault:  func() error { wrote = true; return nil },
+		AfterCommit: func() { committed = true },
+	})
+	if err == nil || !wrote || committed {
+		t.Fatalf("rotate = %v, write %v, afterCommit %v", err, wrote, committed)
 	}
 }
 
@@ -1163,14 +1253,14 @@ func TestRotateKeepsAnActiveOwner(t *testing.T) {
 		{UserID: "u-2", SealedKey: key, KeyFingerprint: fp(1)},
 		{UserID: "u-3", SealedKey: key, KeyFingerprint: fp(2)},
 	}
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, others, nil); !errors.Is(err, ErrShape) {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, others, RotateSteps{}); !errors.Is(err, ErrShape) {
 		t.Fatalf("owner not named = %v", err)
 	}
 	if after := mustGet(t, s, v.ID); !reflect.DeepEqual(after, cur) {
 		t.Fatal("a refused rotation must change nothing")
 	}
 	// Naming the owner is enough.
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, append(others, SealedFor{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}), nil); err != nil {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, append(others, SealedFor{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}), RotateSteps{}); err != nil {
 		t.Fatal(err)
 	}
 	if m := mustGet(t, s, v.ID).Members["u-1"]; m.Role != RoleOwner || m.State != StateActive {
@@ -1202,7 +1292,7 @@ func TestRotateRefusesWhenTheOwnerWouldNotLandActive(t *testing.T) {
 		t.Fatal("acceptedAt should be gone")
 	}
 	ok := []SealedFor{{UserID: "u-1", SealedKey: sealed(), KeyFingerprint: fp(0)}}
-	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, ok, nil); !errors.Is(err, ErrLastOwner) {
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, ok, RotateSteps{}); !errors.Is(err, ErrLastOwner) {
 		t.Fatalf("owner landing on invited = %v", err)
 	}
 	if after := mustGet(t, s, v.ID); !reflect.DeepEqual(after, cur) {

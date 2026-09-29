@@ -66,6 +66,9 @@ type Server struct {
 	sharedSettings *sharedSettings
 	// sharedResolved runs after sharedMember reads the record; tests race writes through it.
 	sharedResolved func()
+	// rotateVerifying and rotateCommitted run inside a rotation's Verify and AfterCommit
+	// steps, under shared.mu; tests race key replacements and writes through them.
+	rotateVerifying, rotateCommitted func()
 
 	// trustedProxies are the peers whose X-Forwarded-For sourceKey may believe.
 	trustedProxies []netip.Prefix

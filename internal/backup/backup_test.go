@@ -469,7 +469,7 @@ func TestCollectCannotCaptureATornRotation(t *testing.T) {
 		for epoch := 1; epoch <= rotations; epoch++ {
 			_, err := c.Shared.Rotate(sv.ID, "u-1", epoch,
 				[]shared.SealedFor{{UserID: "u-1", SealedKey: sealed, KeyFingerprint: "FP"}},
-				func() error { return write(epoch + 1) })
+				shared.RotateSteps{WriteVault: func() error { return write(epoch + 1) }})
 			if err != nil {
 				done <- err
 				return

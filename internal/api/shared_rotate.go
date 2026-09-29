@@ -56,35 +56,50 @@ func (s *Server) handleSharedRotate(w http.ResponseWriter, r *http.Request, u us
 	if !ok {
 		return
 	}
-	// The store checks each sealed copy's shape and membership; only the route can compare
-	// the fingerprint with the member's current published key, as invite and re-seal do.
-	for _, sf := range keys.Sealed {
-		if fp, has := s.currentFingerprint(sf.UserID); !has || fp != sf.KeyFingerprint {
-			http.Error(w, "keyFingerprint does not match that user's current key", http.StatusBadRequest)
-			return
-		}
-	}
-
 	key := shared.StoreKey(c.vault.ID)
 	want := ifMatchVersion(r)
 	var meta vault.Metadata
-	// Rotate validates under the membership lock, runs this write, and only then commits
-	// the record: lock order shared.mu then vault.mu, and any refusal writes nothing. No
-	// other shared write can land between the version check and the save.
-	next, err := s.shared.Rotate(c.vault.ID, u.ID, keys.Epoch, keys.Sealed, func() error {
-		current, err := s.vault.GetMetadata(key)
-		if err != nil {
+	var epochErr, clearErr error
+	// Every step runs under the membership lock (shared.mu, then vault.mu inside each), so
+	// neither a key replacement's MarkStale nor any shared write can land between them.
+	next, err := s.shared.Rotate(c.vault.ID, u.ID, keys.Epoch, keys.Sealed, shared.RotateSteps{
+		// Only the route can read published keys. Checked here, not before the lock, so a
+		// replacement that committed first is refused rather than re-sealed to the old key.
+		Verify: func(sealed []shared.SealedFor) error {
+			if s.rotateVerifying != nil {
+				s.rotateVerifying()
+			}
+			for _, sf := range sealed {
+				if fp, has := s.currentFingerprint(sf.UserID); !has || fp != sf.KeyFingerprint {
+					return errors.New("keyFingerprint does not match that user's current key")
+				}
+			}
+			return nil
+		},
+		WriteVault: func() error {
+			current, err := s.vault.GetMetadata(key)
+			if err != nil {
+				return err
+			}
+			if current.Version != want {
+				return fmt.Errorf("%w: it is at version %d", errRotateVersion, current.Version)
+			}
+			// An ordinary save, not the epoch mark: a crash before the record commits must
+			// leave the pre-rotation snapshot restorable with the keys the members hold.
+			meta, err = s.vault.SaveRekeyed(key, want, kdbx, c.session.DeviceID)
 			return err
-		}
-		if current.Version != want {
-			return fmt.Errorf("%w: it is at version %d", errRotateVersion, current.Version)
-		}
-		// An ordinary save, and deliberately not the epoch mark: marking it here would
-		// leave a crash between this write and the record commit with new ciphertext, the
-		// old sealed keys and no rollback — a vault nobody can open. MarkKeyEpoch runs
-		// below instead, once every member holds the new key.
-		meta, err = s.vault.SaveRekeyed(key, want, kdbx, c.session.DeviceID)
-		return err
+		},
+		// Every member now holds the new key. Mark the epoch, which refuses the retired
+		// snapshots for rollback even if the clear fails, then clear them: they are
+		// ciphertext only the member this rotation locked out can read. Still under the
+		// lock, so an editor's next save archives the rotated version after the clear.
+		AfterCommit: func() {
+			if s.rotateCommitted != nil {
+				s.rotateCommitted()
+			}
+			epochErr = s.vault.MarkKeyEpoch(key, meta.Version)
+			clearErr = s.vault.ClearHistory(key)
+		},
 	})
 	var conflict *vault.ConflictError
 	switch {
@@ -108,29 +123,19 @@ func (s *Server) handleSharedRotate(w http.ResponseWriter, r *http.Request, u us
 		}
 		return
 	}
-	// The record is committed, so every remaining member holds the new key and the
-	// pre-rotation snapshot is nobody's way back in any more: mark the epoch, which refuses
-	// it for rollback even if the clear below fails. Both run after the commit, and neither
-	// failing is a failed rotation — the vault is correctly re-keyed — so both are logged,
-	// audited and reported instead.
-	epochMarked := true
-	// meta.Version, not whatever the vault is on now: a member this rotation re-sealed may
-	// already have saved over it, and that save is under the new key and must stay restorable.
-	if err := s.vault.MarkKeyEpoch(key, meta.Version); err != nil {
-		epochMarked = false
-		log.Printf("shared vault %s: marking the key epoch after a rotation: %v", c.vault.ID, err)
+	// Neither failing is a failed rotation — the vault is correctly re-keyed — so both are
+	// logged, audited and reported for the owner to rotate again.
+	if epochErr != nil {
+		log.Printf("shared vault %s: marking the key epoch after a rotation: %v", c.vault.ID, epochErr)
 		s.record(r, "shared.hook_failed", u.ID, c.session.DeviceID, clientIP(r),
-			c.vault.ID+": the new key epoch was not marked: "+err.Error())
+			c.vault.ID+": the new key epoch was not marked: "+epochErr.Error())
 	}
-	// Snapshots and preserved conflicts are ciphertext under the retired key: unreadable to
-	// everyone still in the vault, and readable by the member this rotation locked out.
-	cleared := true
-	if err := s.vault.ClearHistory(key); err != nil {
-		cleared = false
-		log.Printf("shared vault %s: clearing history after a rotation: %v", c.vault.ID, err)
+	if clearErr != nil {
+		log.Printf("shared vault %s: clearing history after a rotation: %v", c.vault.ID, clearErr)
 		s.record(r, "shared.hook_failed", u.ID, c.session.DeviceID, clientIP(r),
-			c.vault.ID+": history under the retired key was not cleared: "+err.Error())
+			c.vault.ID+": history under the retired key was not cleared: "+clearErr.Error())
 	}
+	epochMarked, cleared := epochErr == nil, clearErr == nil
 
 	left := []string{}
 	for uid, m := range next.Members {

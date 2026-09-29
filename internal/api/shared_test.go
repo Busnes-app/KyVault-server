@@ -1581,7 +1581,7 @@ func TestSharedWriteIsRefusedWhenARotationCommitsMidRequest(t *testing.T) {
 		srv.sharedResolved = func() {
 			srv.sharedResolved = nil
 			v, err := srv.shared.Rotate(id, alice.ID, sharedRecord(t, srv, id).KeyEpoch,
-				[]shared.SealedFor{{UserID: alice.ID, SealedKey: sealedKeyFor(9), KeyFingerprint: aliceFP}}, nil)
+				[]shared.SealedFor{{UserID: alice.ID, SealedKey: sealedKeyFor(9), KeyFingerprint: aliceFP}}, shared.RotateSteps{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1756,6 +1756,129 @@ func TestSharedRotateIsRefusedWhenTheSnapshotCannotBeArchived(t *testing.T) {
 	}
 	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "two" {
 		t.Fatalf("a refused rotation changed the vault: %q", got.Body.String())
+	}
+}
+
+// rotationFixture is an owner and an editor at epoch 1 on version 2 ("two"), with one
+// snapshot in history, and a rotation body sealing the new key to both.
+func rotationFixture(t *testing.T) (srv *Server, id string, alice, bob users.User, aliceC, bobC *http.Cookie, bobFP, body, ct string) {
+	t.Helper()
+	srv = newTestServer(t)
+	alice, aliceC = signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC = signedInUser(t, srv, "bob", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bobFP = publishKey(t, srv, bob, 2)
+	id = createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+	body, ct = rotateBody(t, "rekeyed", 1, []map[string]string{
+		sealedFor(alice.ID, sealedKeyFor(9), aliceFP), sealedFor(bob.ID, sealedKeyFor(9), bobFP)})
+	return
+}
+
+// assertRotatedVersionRestorable checks that the editor's save after the rotation archived
+// the rotated version (v3, "rekeyed") and that it is still a snapshot the new key restores.
+func assertRotatedVersionRestorable(t *testing.T, srv *Server, id string, cookie *http.Cookie) {
+	t.Helper()
+	var hist []vault.HistoryEntry
+	if err := json.Unmarshal(do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", cookie, nil).Body.Bytes(), &hist); err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || hist[0].Version != 3 || hist[0].StaleKey {
+		t.Fatalf("history after the editor's save = %+v, want the rotated v3, restorable", hist)
+	}
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/history/"+hist[0].ID+"/restore", cookie, nil,
+		map[string]string{sharedEpochHeader: "2"}), http.StatusOK, "restore the rotated version")
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", cookie, nil); got.Body.String() != "rekeyed" {
+		t.Fatalf("restored vault body = %q", got.Body.String())
+	}
+}
+
+// An editor's first save after a rotation archives the rotated version, and the rotation's
+// history clear must not take that archive with it.
+func TestEditorSaveAfterARotationKeepsTheRotatedVersion(t *testing.T) {
+	srv, id, _, _, aliceC, bobC, _, body, ct := rotationFixture(t)
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, body, ct), http.StatusOK, "rotate")
+	expectCode(t, uploadShared(srv, bobC, id, `"3"`, "bob", 2, nil), http.StatusOK, "editor save at the new epoch")
+	assertRotatedVersionRestorable(t, srv, id, bobC)
+}
+
+// The editor's save is started between the record commit and the history clear. It cannot
+// complete until the rotation releases the membership lock, so it lands after the clear and
+// its archive of the rotated version survives. The wait gives an unserialised clear the
+// chance to delete that archive; a serialised one can only ever time out here.
+func TestEditorSaveDuringARotationWaitsForTheHistoryClear(t *testing.T) {
+	srv, id, _, _, aliceC, bobC, _, body, ct := rotationFixture(t)
+	done := make(chan int, 1)
+	landedInside := false
+	srv.rotateCommitted = func() {
+		srv.rotateCommitted = nil
+		go func() { done <- uploadShared(srv, bobC, id, `"3"`, "bob", 2, nil).Code }()
+		select {
+		case code := <-done:
+			landedInside = true
+			done <- code
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, body, ct), http.StatusOK, "rotate")
+	if landedInside {
+		t.Fatal("a shared write completed while the rotation still held the membership lock")
+	}
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("editor save after the rotation = %d", code)
+	}
+	assertRotatedVersionRestorable(t, srv, id, bobC)
+}
+
+// A recipient's key replacement that commits before the rotation reads published keys is
+// seen: the rotation is refused before any ciphertext is written, and the replacement's
+// MarkStale leaves the recipient's row stale instead of re-sealed to the superseded key.
+func TestRotationRefusesAKeyReplacedBeforeVerify(t *testing.T) {
+	srv, id, _, bob, aliceC, _, _, body, ct := rotationFixture(t)
+	var newFP string
+	srv.rotateVerifying = func() {
+		srv.rotateVerifying = nil
+		newFP = publishKey(t, srv, bob, 7) // handleUserKeyPut's vault write
+	}
+	rec := rotate(srv, aliceC, id, `"2"`, body, ct)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "keyFingerprint does not match") {
+		t.Fatalf("rotate over a replaced key = %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := srv.shared.MarkStale(bob.ID, newFP); err != nil { // and its hook
+		t.Fatal(err)
+	}
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 || meta.KeyEpochSince != 0 {
+		t.Fatalf("a refused rotation moved the vault: %+v", meta)
+	}
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "two" {
+		t.Fatalf("a refused rotation changed the ciphertext: %q", got.Body.String())
+	}
+	v := sharedRecord(t, srv, id)
+	if m := v.Members[bob.ID]; v.KeyEpoch != 1 || m.SealedKey != sealedKeyFor(0xB2) || m.State != shared.StateStale {
+		t.Fatalf("bob after the refused rotation: epoch %d %+v", v.KeyEpoch, m)
+	}
+}
+
+// A replacement that commits after the check waits behind the rotation for its MarkStale,
+// which then marks the freshly re-sealed row stale: the new copy is sealed to a key the
+// member no longer publishes, and an owner re-seals it.
+func TestKeyReplacedAfterVerifyLeavesTheRotatedRowStale(t *testing.T) {
+	srv, id, _, bob, aliceC, _, bobFP, body, ct := rotationFixture(t)
+	var newFP string
+	srv.rotateCommitted = func() {
+		srv.rotateCommitted = nil
+		newFP = publishKey(t, srv, bob, 7)
+	}
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, body, ct), http.StatusOK, "rotate")
+	if touched, err := srv.shared.MarkStale(bob.ID, newFP); err != nil || len(touched) != 1 {
+		t.Fatalf("MarkStale = %v %v", touched, err)
+	}
+	v := sharedRecord(t, srv, id)
+	if m := v.Members[bob.ID]; v.KeyEpoch != 2 || m.KeyEpoch != 2 || m.KeyFingerprint != bobFP || m.State != shared.StateStale {
+		t.Fatalf("bob after the rotation and the replacement: epoch %d %+v", v.KeyEpoch, m)
 	}
 }
 
