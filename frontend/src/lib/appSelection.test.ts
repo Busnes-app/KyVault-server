@@ -138,4 +138,5 @@ test("a rotation elsewhere never discards the edits without an answer", () => {
   // vault is credentialled with a key this product never shows and is about to retire.
   assert.match(ROTATED_QUESTION.message, /plain-text CSV/);
   assert.match(ROTATED_QUESTION.message, /unopenable/);
+  assert.match(ROTATED_QUESTION.message, /does not include unapplied editor fields, recycled entries, custom fields, attachments or entry history/);
 });

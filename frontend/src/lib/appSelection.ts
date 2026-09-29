@@ -39,6 +39,7 @@ export const ROTATED_QUESTION = {
   message: "Your unsaved edits can no longer be saved: they are encrypted with the key that was just retired, " +
     "and an encrypted copy of them would be unopenable by you or anyone else. The one copy you can still read " +
     "is a plain-text CSV of this vault's entries — every password and TOTP secret in the clear. " +
+    "It does not include unapplied editor fields, recycled entries, custom fields, attachments or entry history. " +
     "Save it only to a device you control and delete it when you are done.",
   label: "Unsaved edits",
   options: [

@@ -875,14 +875,17 @@ export function App() {
         const plan = rotatedPlan(await dialogs.choose({ ...ROTATED_QUESTION, danger: true }));
         // A lock, or a switch made while the question was open, has already answered it.
         if (!plan.reopen || generation !== unlockGeneration.current || !sameSelection(selectedRef.current, sel)) return;
+        const exported = plan.csv && !!live;
         if (plan.csv && live) {
           const name = shared.vaults.find((v) => v.id === sel.id)?.name || "shared-vault";
           const paths = new Map(live.getLiveGroups().map((g) => [g.uuid, g.path]));
           downloadBlob(new Blob([exportCsv(live.getLiveEntries(), paths)], { type: "text/csv" }), `${name}-unsaved.csv`);
         }
-        await reopenShared(sel, plan.csv
-          ? "This vault's key was rotated, so it was re-opened with the new key. Your unsaved edits could not be saved; the plain-text CSV you exported is the only copy of them."
-          : "This vault's key was rotated, so it was re-opened with the new key. Unsaved edits could not be saved.");
+        await reopenShared(sel, exported
+          ? "This vault's key was rotated, so it was re-opened with the new key. Your unsaved edits could not be saved; the plain-text CSV you exported is the only copy of what it contains."
+          : plan.csv
+            ? "This vault's key was rotated, so it was re-opened with the new key. Unsaved edits could not be saved, and nothing was exported."
+            : "This vault's key was rotated, so it was re-opened with the new key. Unsaved edits could not be saved.");
       } catch (err) {
         setLockNotice(toErrorMessage(err, "This vault's key was rotated elsewhere and it could not be re-opened."));
       } finally {

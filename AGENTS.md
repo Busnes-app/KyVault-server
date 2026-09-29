@@ -395,8 +395,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   host's storage, not the request). `vault.Store.MarkKeyEpoch(key, version)` runs after the
   commit and before `vault.Store.ClearHistory`, both outside the lock and both best effort:
   the marker takes the version the rotation *wrote*, never the vault's current one — a member
-  it re-sealed may have saved in between, and that save is under the new key and has to stay
-  restorable — never lowers an existing marker, refuses a version the vault has not reached,
+  it re-sealed may have saved in between, and that save is under the new key, so the marker must not
+  flag it stale (it stays restorable only if the clear below fails; otherwise the clear
+  deletes it with every other snapshot) — never lowers an existing marker, refuses a version the vault has not reached,
   makes every older snapshot `staleKey` and refuses it for rollback with 409 whatever epoch
   header the caller sends (that header proves which key a writer holds, never that the bytes
   are current), and the clear removes snapshots and conflicts, which are ciphertext under the
