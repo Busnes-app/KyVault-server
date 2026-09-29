@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, type ReactNode } from "rea
 import { KeePassVault, VaultEntry, VaultGroup, CustomField } from "../lib/kdbx";
 import { readKdbxFile, describeImport } from "../lib/kdbxImport";
 import type { EntryDraft } from "../lib/lockedDraft";
-import { PERSONAL_BASE, type SaveState } from "../lib/vaultSave";
+import { PERSONAL_BASE, saveAction, type SaveState } from "../lib/vaultSave";
 import { createFromDraft, type NewEntryDraft } from "../lib/newEntryDraft";
 import { findReusedPasswords } from "../lib/passwordReuse";
 import { parseTags, hasReservedTag, sortEntries, entryMatches, isExpired, expiresWithin, RESERVED_FIELDS, type SortKey } from "../lib/entryMeta";
@@ -62,12 +62,13 @@ type Props = {
   route: Route;
   navigate: (next: Route) => void;
   basePath?: string;
+  keyEpoch?: number;
   // Readers: every mutating handler refuses, not only its button.
   readOnly?: boolean;
   header?: ReactNode;
 };
 
-export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate, basePath = PERSONAL_BASE, readOnly = false, header }: Props) {
+export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft, route, navigate, basePath = PERSONAL_BASE, keyEpoch, readOnly = false, header }: Props) {
   const dialogs = useDialogs();
   const narrow = useMediaQuery(NARROW);
   const [pane, setPane] = useState<"folders" | "list" | "detail">(initialDraft ? "detail" : "list");
@@ -816,18 +817,20 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
             {saveState.kind === "error" ? (
               <>
                 <p style={{ color: "var(--danger)" }}>Unsaved edits: {saveState.message}</p>
-                {saveState.conflict ? (
-                  <>
-                    <button className="btn btn-danger btn-sm" onClick={() => void onSave({ overwrite: true })}>Overwrite server copy</button>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={async () => { if (await dialogs.confirm({ title: "Reload server copy?", message: "Discard the unsaved edits in this tab and reload the server copy?", confirmLabel: "Reload", danger: true })) void onReload(); }}
-                    >
-                      Reload server copy
-                    </button>
-                  </>
-                ) : (
+                {/* A retired-epoch 409 offers no Retry: the queue refuses it, so the button
+                    would do nothing, and the server's copy is the only way forward. */}
+                {saveAction(saveState) === "overwrite" ? (
+                  <button className="btn btn-danger btn-sm" onClick={() => void onSave({ overwrite: true })}>Overwrite server copy</button>
+                ) : null}
+                {saveAction(saveState) === "retry" ? (
                   <button className="btn btn-primary btn-sm" onClick={() => void onSave()}>Retry Save</button>
+                ) : (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={async () => { if (await dialogs.confirm({ title: "Reload server copy?", message: "Discard the unsaved edits in this tab and reload the server copy?", confirmLabel: "Reload", danger: true })) void onReload(); }}
+                  >
+                    Reload server copy
+                  </button>
                 )}
               </>
             ) : <span>{saving ? "Saving…" : draftDirty ? "Applied changes saved" : "All changes saved"}</span>}
@@ -1356,6 +1359,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           allowRollback={!readOnly && saveState.kind === "saved" && !draftDirty}
           readOnly={readOnly}
           basePath={basePath}
+          keyEpoch={keyEpoch}
           snapshot={{ vault, vaultKey }}
           recovery={readOnly ? undefined : { vault, vaultKey, onRecovered: (uuid) => {
             onChanged();

@@ -531,3 +531,243 @@ func TestMoveOutMovesDirectoryAndSaveDoesNotResurrect(t *testing.T) {
 		t.Fatalf("save to a retired never-written key = %v", err)
 	}
 }
+
+func TestClearHistoryRemovesSnapshotsAndConflicts(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_abcdefghijklmnopqrstuv"
+	meta, err := store.SaveVault(key, 0, []byte("one"), "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault(key, meta.Version, []byte("two"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// A rejected upload leaves a conflict behind.
+	if _, err := store.SaveVault(key, 1, []byte("stale"), "", "", ""); err == nil {
+		t.Fatal("expected a conflict")
+	}
+	hist, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confs, err := store.ListConflicts(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) == 0 || len(confs) == 0 {
+		t.Fatalf("fixture: %d snapshots, %d conflicts", len(hist), len(confs))
+	}
+	if err := store.ClearHistory(key); err != nil {
+		t.Fatal(err)
+	}
+	if hist, err = store.ListHistory(key); err != nil || len(hist) != 0 {
+		t.Fatalf("history after clear: %d %v", len(hist), err)
+	}
+	if confs, err = store.ListConflicts(key); err != nil || len(confs) != 0 {
+		t.Fatalf("conflicts after clear: %d %v", len(confs), err)
+	}
+	// The current vault is untouched.
+	rc, cur, err := store.OpenVault(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "two" || cur.Version != 2 {
+		t.Fatalf("current vault = %q v%d", data, cur.Version)
+	}
+	// Idempotent, and a key that never existed is not an error.
+	if err := store.ClearHistory(key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClearHistory("shared/sv_zzzzzzzzzzzzzzzzzzzzzz"); err != nil {
+		t.Fatal(err)
+	}
+	// A retired key is refused, like every other writer.
+	if err := store.MoveOut(key, filepath.Join(t.TempDir(), "gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClearHistory(key); !errors.Is(err, ErrRetired) {
+		t.Fatalf("retired = %v", err)
+	}
+}
+
+// SaveRekeyed writes a shared rotation's ciphertext and MarkKeyEpoch, run once the new sealed
+// keys have committed, starts the new epoch: every snapshot taken under the retired key is
+// then flagged and refused for rollback even if the caller never deletes those snapshots.
+func TestMarkKeyEpochRetiresOlderSnapshots(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_0123456789012345678901"
+	if _, err := store.SaveVault(key, 0, []byte("one"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault(key, 1, []byte("two"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 || before[0].StaleKey {
+		t.Fatalf("history before the rotation = %+v", before)
+	}
+
+	meta, err := store.SaveRekeyed(key, 2, []byte("rekeyed"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The write alone must not retire anything: until the sealed keys commit, that snapshot is
+	// the members' only way back from a crash.
+	if meta.Version != 3 || meta.KeyEpochSince != 0 {
+		t.Fatalf("re-keyed metadata = %+v", meta)
+	}
+	// The write alone retires nothing: until the sealed keys commit, the pre-rotation snapshot
+	// is the members' only way back from a crash, so it stays restorable.
+	mid, err := store.ListHistory(key)
+	if err != nil || len(mid) != 2 || mid[0].StaleKey || mid[1].StaleKey {
+		t.Fatalf("history after the re-key = %+v, %v", mid, err)
+	}
+	if _, err := store.RestoreHistory(key, mid[0].ID); err != nil {
+		t.Fatalf("rollback before the epoch was marked = %v, want it to succeed", err)
+	}
+	// Back to where the rotation leaves the vault, then the marker the route sets once the
+	// record has committed.
+	if _, err := store.SaveRekeyed(key, 4, []byte("rekeyed"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key, 5); err != nil {
+		t.Fatal(err)
+	}
+	// Idempotent, and never lowered: a later rotation's marker stands, and a version the vault
+	// has not reached is refused rather than retiring everything.
+	if err := store.MarkKeyEpoch(key, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key, 99); err == nil {
+		t.Fatal("a version the vault has not reached was accepted as a key epoch")
+	}
+	if marked, err := store.GetMetadata(key); err != nil || marked.Version != 5 || marked.KeyEpochSince != 5 {
+		t.Fatalf("marked metadata = %+v, %v", marked, err)
+	}
+	after, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) == 0 {
+		t.Fatal("no snapshots to flag")
+	}
+	for _, h := range after {
+		if !h.StaleKey {
+			t.Fatalf("snapshot %s (v%d) is not flagged stale: %+v", h.ID, h.Version, h)
+		}
+		if _, err := store.RestoreHistory(key, h.ID); !errors.Is(err, ErrStaleKey) {
+			t.Fatalf("restore of %s = %v, want ErrStaleKey", h.ID, err)
+		}
+	}
+	rc, current, err := store.OpenVault(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "rekeyed" || current.Version != 5 {
+		t.Fatalf("a refused rollback changed the vault: %q v%d", data, current.Version)
+	}
+}
+
+// A member the rotation re-sealed can save before the route marks the epoch. That save is
+// under the new key, so the marker must name the version the rotation wrote and leave it
+// restorable; stamping "whatever the vault is on now" would retire it.
+func TestMarkKeyEpochDoesNotRetireASaveThatLandedAfterTheRotation(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_0123456789012345678901"
+	if _, err := store.SaveVault(key, 0, []byte("one"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	rekeyed, err := store.SaveRekeyed(key, 1, []byte("rekeyed"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A member who already holds the new key saves before the mark runs.
+	if _, err := store.SaveVault(key, rekeyed.Version, []byte("theirs"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkKeyEpoch(key, rekeyed.Version); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.ListHistory(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range history {
+		want := h.Version < rekeyed.Version
+		if h.StaleKey != want {
+			t.Fatalf("snapshot %s (v%d) staleKey = %v, want %v", h.ID, h.Version, h.StaleKey, want)
+		}
+		if h.Version != rekeyed.Version {
+			continue
+		}
+		// The rotation's own version is under the current key: it must still roll back.
+		if _, err := store.RestoreHistory(key, h.ID); err != nil {
+			t.Fatalf("rollback to the rotation's own version = %v, want it to succeed", err)
+		}
+	}
+}
+
+// The pre-rotation snapshot is the only recovery from a crash between the ciphertext and the
+// membership record, so a re-key that cannot archive it is refused rather than left with no
+// way back. An ordinary save keeps its best-effort archive.
+func TestSaveRekeyedRefusesWhenTheSnapshotCannotBeArchived(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	dir := t.TempDir()
+	store, err := NewStore(dir, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "shared/sv_0123456789012345678901"
+	if _, err := store.SaveVault(key, 0, []byte("one"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	hDir := filepath.Join(dir, key, "history")
+	if err := os.Chmod(hDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(hDir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := store.SaveRekeyed(key, 1, []byte("rekeyed"), ""); !errors.Is(err, ErrArchive) {
+		t.Fatalf("re-key with an unarchivable snapshot = %v, want ErrArchive", err)
+	}
+	// An ordinary save still goes through, and the vault is untouched by the refusal.
+	if _, err := store.SaveVault(key, 1, []byte("two"), "", "", ""); err != nil {
+		t.Fatalf("ordinary save = %v", err)
+	}
+	meta, err := store.GetMetadata(key)
+	if err != nil || meta.Version != 2 || meta.KeyEpochSince != 0 {
+		t.Fatalf("metadata = %+v, %v", meta, err)
+	}
+}

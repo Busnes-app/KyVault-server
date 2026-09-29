@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/ky-primitives/recoveryclient/guardtest"
 	"io/fs"
@@ -435,5 +437,71 @@ func TestDrillFailsUnexpectedFileUnderSharedDir(t *testing.T) {
 	}
 	if c := sharedRecordsCheck(t, root); c.Passed {
 		t.Fatal("expected failure on unexpected file under data/shared")
+	}
+}
+
+// A capsule must never hold pre-rotation ciphertext beside a post-rotation record: on restore
+// every member's sealed key would open a key the bytes are not under, nobody could open the
+// vault, and no drill could tell. Collect reads the shared records and the vault tree under one
+// hold of the shared store's lock — the lock a rotation commits its ciphertext and its sealed
+// keys under — so the two can never disagree.
+func TestCollectCannotCaptureATornRotation(t *testing.T) {
+	c := testCollector(t)
+	sealed := base64.StdEncoding.EncodeToString(make([]byte, shared.SealedKeyBytes))
+	sv, err := c.Shared.Create("Finance", "u-1", sealed, "FP", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The ciphertext names the epoch it was written for, so a torn capsule is visible.
+	storeKey, version := shared.StoreKey(sv.ID), int64(0)
+	write := func(epoch int) error {
+		meta, err := c.Vault.SaveVault(storeKey, version, []byte(fmt.Sprintf("epoch-%d", epoch)), "", "", "")
+		version = meta.Version
+		return err
+	}
+	if err := write(1); err != nil {
+		t.Fatal(err)
+	}
+
+	const rotations = 30
+	done := make(chan error, 1)
+	go func() {
+		for epoch := 1; epoch <= rotations; epoch++ {
+			_, err := c.Shared.Rotate(sv.ID, "u-1", epoch,
+				[]shared.SealedFor{{UserID: "u-1", SealedKey: sealed, KeyFingerprint: "FP"}},
+				shared.RotateSteps{WriteVault: func() error { return write(epoch + 1) }})
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	// Bounded by collections, not by the rotations finishing first: the loop must not depend
+	// on which goroutine wins.
+	for range 40 {
+		files, _, _, err := c.Collect()
+		if err != nil {
+			t.Fatal(err)
+		}
+		byPath := make(map[string][]byte, len(files))
+		for _, f := range files {
+			byPath[f.Path] = f.Content
+		}
+		var record shared.Vault
+		if err := json.Unmarshal(byPath["data/shared/"+sv.ID+".json"], &record); err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf("epoch-%d", record.KeyEpoch); string(byPath["data/vaults/shared/"+sv.ID+"/vault.kdbx"]) != want {
+			t.Fatalf("capsule caught a torn rotation: record at epoch %d, ciphertext %q",
+				record.KeyEpoch, byPath["data/vaults/shared/"+sv.ID+"/vault.kdbx"])
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if v, err := c.Shared.Get(sv.ID); err != nil || v.KeyEpoch != rotations+1 {
+		t.Fatalf("the rotations did not all run: %+v, %v", v, err)
 	}
 }

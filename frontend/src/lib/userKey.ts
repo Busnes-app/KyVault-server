@@ -36,6 +36,11 @@ function suite() {
   return suitePromise;
 }
 
+// Loads the lazy HPKE chunk and nothing else. A caller that must tell a missing chunk (a
+// deploy moved it) from a key that will not open awaits this first, exactly as adoptUserKey
+// separates publicKeyFromSeed from the unwrap that precedes it.
+export async function loadCrypto(): Promise<void> { await suite(); }
+
 // importKey("raw") is X-Wing's own seed expansion (matches Go's NewPrivateKey(seed)); never
 // deriveKeyPair, which applies HPKE's labelled derivation on top and yields a different key.
 // .slice() copies out of a possible subarray view: hpke-js reads the whole underlying buffer.

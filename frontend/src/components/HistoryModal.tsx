@@ -1,9 +1,9 @@
 import { ConflictComparison } from "./ConflictComparison";
 import { KeePassVault, isWrongVaultKey } from "../lib/kdbx";
 import { useState, useEffect, useRef } from "react";
-import { HttpError, getBinary, getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
+import { HttpError, getBinary, getJSON, requestJSON, toErrorMessage } from "../lib/api";
 import { diffVaults, type DiffRow, type VaultDiff } from "../lib/vaultDiff";
-import { PERSONAL_BASE } from "../lib/vaultSave";
+import { PERSONAL_BASE, isRotationRefusal } from "../lib/vaultSave";
 import { RotateCcw, AlertTriangle, Trash2, CheckCircle2, Eye, EyeOff } from "lucide-react";
 import { Dialog } from "./Dialog";
 import { useDialogs } from "./DialogHost";
@@ -39,6 +39,9 @@ const countsSentence = (p: Extract<Preview, { kind: "ready" }>) =>
   `The snapshot has ${count(p.diff.counts.other, "entry", "entries")} and ${count(p.folders.snapshot, "folder", "folders")}. ` +
   `The vault has ${count(p.diff.counts.live, "entry", "entries")} and ${count(p.folders.now, "folder", "folders")} now.`;
 const OLD_KEY_REASON = "Saved under a previous vault key. The current key cannot open it, so rolling back to it would leave a vault nobody can unlock.";
+// The other 409 a shared rollback can get, and the opposite fact: the snapshot is fine, this
+// tab's key epoch is not. Marking the row stale would be a lie that survives the reload.
+const ROTATED_REASON = "This vault's key was rotated while this list was open. Reload the vault and try again.";
 
 type Props = {
   snapshot?: { vault: KeePassVault; vaultKey: Uint8Array };
@@ -48,12 +51,17 @@ type Props = {
   onRestored: () => void;
   onNotice: (text: string) => void;
   basePath?: string;
+  // The shared vault's key epoch; every shared write has to claim it.
+  keyEpoch?: number;
   // Readers see history and conflicts but cannot roll back or discard.
   readOnly?: boolean;
 };
 
-export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback, basePath = PERSONAL_BASE, readOnly = false }: Props) {
+export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot, allowRollback, basePath = PERSONAL_BASE, keyEpoch, readOnly = false }: Props) {
   const dialogs = useDialogs();
+  // A personal write carries no epoch; a shared one always does.
+  const writeHeaders = (): Record<string, string> | undefined =>
+    basePath !== PERSONAL_BASE && keyEpoch !== undefined ? { "X-Shared-Key-Epoch": String(keyEpoch) } : undefined;
   const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -150,11 +158,13 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await postJSON(`${basePath}/history/${id}/restore`, {});
+      await requestJSON(`${basePath}/history/${id}/restore`, { method: "POST", headers: writeHeaders(), body: "{}" });
       onNotice("Vault restored to the selected version.");
       onRestored();
     } catch (err) {
-      if (err instanceof HttpError && err.status === 409) {
+      if (isRotationRefusal(err)) {
+        setError(ROTATED_REASON);
+      } else if (err instanceof HttpError && err.status === 409) {
         setHistory((prev) => prev.map((h) => h.id === id ? { ...h, staleKey: true } : h));
         setError(OLD_KEY_REASON);
       } else {
@@ -177,7 +187,7 @@ export function HistoryModal({ onClose, onRestored, onNotice, recovery, snapshot
     setMessage("");
     setError("");
     try {
-      await deleteJSON(`${basePath}/conflicts/${id}`);
+      await requestJSON(`${basePath}/conflicts/${id}`, { method: "DELETE", headers: writeHeaders() });
       setConflicts((prev) => prev.filter((c) => c.id !== id));
       setMessage("Conflict upload removed.");
     } catch (err) {

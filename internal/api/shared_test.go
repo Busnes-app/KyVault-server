@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +27,10 @@ import (
 )
 
 var t0 = time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+
+// epoch1 is the key epoch of a shared vault that has never been rotated; every write
+// must prove the epoch its ciphertext was sealed under.
+var epoch1 = map[string]string{sharedEpochHeader: "1"}
 
 // sealedKeyFor is a well-formed sealed key whose bytes are all b, so each member's copy
 // is distinguishable in a response body.
@@ -57,7 +63,7 @@ func publishKey(t *testing.T, srv *Server, u users.User, pk byte) string {
 }
 
 // do sends a request as a browser would: a cookie session also carries its CSRF token.
-func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, body any) *httptest.ResponseRecorder {
+func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, body any, extra ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var rd *bytes.Reader
 	if body == nil {
@@ -71,6 +77,11 @@ func do(t *testing.T, srv *Server, method, path string, cookie *http.Cookie, bod
 	}
 	req := httptest.NewRequest(method, path, rd)
 	req.Header.Set("Content-Type", "application/json")
+	for _, h := range extra {
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+	}
 	if cookie != nil {
 		browserAuth(srv, req, cookie)
 	}
@@ -499,7 +510,7 @@ func TestSharedOwnerRemovedMidRequestIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Removed between resolve and write: 404, and he cannot re-add anyone, himself included.
-	race(func() error { return srv.shared.Remove(id, alice.ID, bob.ID) })
+	race(func() error { return srv.shared.Remove(id, alice.ID, bob.ID, time.Now()) })
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/members", bobC, map[string]any{"userId": dave.ID, "role": "owner", "sealedKey": sealedKeyFor(0xE5), "keyFingerprint": daveFP}), http.StatusNotFound, "removed invite")
 
 	v, err := srv.shared.Get(id)
@@ -532,8 +543,13 @@ func rawReq(srv *Server, method, path string, cookie *http.Cookie, bearer string
 	return rec
 }
 
-func uploadShared(srv *Server, cookie *http.Cookie, id, ifMatch, body string, extra map[string]string) *httptest.ResponseRecorder {
+// uploadShared posts to a shared vault. epoch is the key epoch the ciphertext claims to be
+// encrypted under; a negative epoch sends no epoch header at all.
+func uploadShared(srv *Server, cookie *http.Cookie, id, ifMatch, body string, epoch int, extra map[string]string) *httptest.ResponseRecorder {
 	headers := map[string]string{"If-Match": ifMatch}
+	if epoch >= 0 {
+		headers[sharedEpochHeader] = strconv.Itoa(epoch)
+	}
 	for k, v := range extra {
 		headers[k] = v
 	}
@@ -590,8 +606,8 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", carolC, nil), http.StatusOK, "carol accept")
 
 	// Envelope headers and JSON envelope fields are ignored; the rotation header is refused.
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx-v1", map[string]string{"X-Password-Envelope": "pw-env", "X-Recovery-Envelope": "rec-env"}), http.StatusOK, "owner upload")
-	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "kdbx-rot", map[string]string{"X-Vault-Key-Rotated": "1", "X-Password-Envelope": "p", "X-Recovery-Envelope": "r"}), http.StatusBadRequest, "rotation header")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx-v1", 1, map[string]string{"X-Password-Envelope": "pw-env", "X-Recovery-Envelope": "rec-env"}), http.StatusOK, "owner upload")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "kdbx-rot", 1, map[string]string{"X-Vault-Key-Rotated": "1", "X-Password-Envelope": "p", "X-Recovery-Envelope": "r"}), http.StatusBadRequest, "rotation header")
 	if meta := sharedMeta(t, srv, id); meta.Version != 1 {
 		t.Fatalf("rotation attempt changed the vault: %+v", meta)
 	}
@@ -599,13 +615,13 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, uploadShared(srv, bobC, id, "", string(jsonBody), map[string]string{"Content-Type": "application/json"}), http.StatusOK, "editor JSON upload")
+	expectCode(t, uploadShared(srv, bobC, id, "", string(jsonBody), 1, map[string]string{"Content-Type": "application/json"}), http.StatusOK, "editor JSON upload")
 	if meta := sharedMeta(t, srv, id); meta.Version != 2 || meta.PasswordEnvelope != "" || meta.RecoveryEnvelope != "" || len(meta.DeviceEnvelopes) != 0 {
 		t.Fatalf("shared metadata carries envelopes: %+v", meta)
 	}
 
 	// Reader: reads, cannot write. Writes need CSRF on a cookie session.
-	expectCode(t, uploadShared(srv, carolC, id, `"2"`, "kdbx-v3", nil), http.StatusForbidden, "reader upload")
+	expectCode(t, uploadShared(srv, carolC, id, `"2"`, "kdbx-v3", 1, nil), http.StatusForbidden, "reader upload")
 	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", bobC, "", true, "kdbx-v3", map[string]string{"If-Match": `"2"`}), http.StatusForbidden, "editor upload without CSRF")
 	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
 		t.Fatalf("a refused upload saved: %+v", meta)
@@ -631,7 +647,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	}
 
 	// Conflict: preserved on a stale If-Match; reader downloads but cannot discard.
-	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "kdbx-stale", nil), http.StatusConflict, "stale upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "kdbx-stale", 1, nil), http.StatusConflict, "stale upload")
 	conflicts := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/conflicts", bobC, nil))
 	if len(conflicts) != 1 {
 		t.Fatalf("conflicts: %v", conflicts)
@@ -642,7 +658,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	}
 	expectCode(t, do(t, srv, http.MethodDelete, cpath, carolC, nil), http.StatusForbidden, "reader discard")
 	expectCode(t, rawReq(srv, http.MethodDelete, cpath, bobC, "", true, "", nil), http.StatusForbidden, "editor discard without CSRF")
-	expectCode(t, do(t, srv, http.MethodDelete, cpath, bobC, nil), http.StatusOK, "editor discard")
+	expectCode(t, do(t, srv, http.MethodDelete, cpath, bobC, nil, epoch1), http.StatusOK, "editor discard")
 
 	// Snapshot: reader downloads; restore is a write and leaves envelopes and membership alone.
 	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", bobC, nil))
@@ -659,7 +675,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectCode(t, do(t, srv, http.MethodPost, hpath+"/restore", bobC, nil), http.StatusOK, "editor restore")
+	expectCode(t, do(t, srv, http.MethodPost, hpath+"/restore", bobC, nil, epoch1), http.StatusOK, "editor restore")
 	meta := sharedMeta(t, srv, id)
 	if meta.Version != 3 || meta.PasswordEnvelope != "" || meta.RecoveryEnvelope != "" || meta.UserKey != nil {
 		t.Fatalf("restore polluted metadata: %+v", meta)
@@ -671,7 +687,7 @@ func TestSharedDataRoutesAndRoles(t *testing.T) {
 	// An editor's device token reads and writes; the save records the session's device.
 	deviceID, token := pairDeviceForTest(t, srv.Routes(), bobC)
 	expectCode(t, rawReq(srv, http.MethodGet, "/api/shared/"+id+"/metadata", nil, token, false, "", nil), http.StatusOK, "device read")
-	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", nil, token, false, "kdbx-dev", map[string]string{"If-Match": `"` + strconv.FormatInt(meta.Version, 10) + `"`}), http.StatusOK, "device upload")
+	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/upload", nil, token, false, "kdbx-dev", map[string]string{"If-Match": `"` + strconv.FormatInt(meta.Version, 10) + `"`, sharedEpochHeader: "1"}), http.StatusOK, "device upload")
 	if meta := sharedMeta(t, srv, id); meta.UpdatedByDevice != deviceID {
 		t.Fatalf("shared save device = %q, want %q", meta.UpdatedByDevice, deviceID)
 	}
@@ -692,7 +708,7 @@ func TestSharedDownloadFilenameIsSanitised(t *testing.T) {
 	srv := newTestServer(t)
 	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
 	id := createShared(t, srv, aliceC, `Fin"an;ce`, sealedKeyFor(0xA1), publishKey(t, srv, alice, 1))
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx", nil), http.StatusOK, "upload")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "kdbx", 1, nil), http.StatusOK, "upload")
 	rec := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil)
 	expectCode(t, rec, http.StatusOK, "download")
 	if got := rec.Header().Get("Content-Disposition"); got != `attachment; filename="Fin-an-ce.kdbx"` {
@@ -719,7 +735,7 @@ func TestSharedHooksStaleAndSuspended(t *testing.T) {
 	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), publishKey(t, srv, bob, 2))
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
 	invite(t, srv, aliceC, id, dave.ID, "reader", sealedKeyFor(0xD4), publishKey(t, srv, dave, 4))
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", nil), http.StatusOK, "owner upload")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", 1, nil), http.StatusOK, "owner upload")
 
 	// Bob replaces his user key through the route: his row goes stale, alice's does not.
 	bobMeta, err := srv.vault.GetMetadata(bob.ID)
@@ -737,7 +753,7 @@ func TestSharedHooksStaleAndSuspended(t *testing.T) {
 	for _, p := range []string{"/metadata", "/kdbx", "/history", "/conflicts"} {
 		expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id+p, bobC, nil), http.StatusOK, "stale GET "+p)
 	}
-	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "v2", nil), http.StatusForbidden, "stale upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"1"`, "v2", 1, nil), http.StatusForbidden, "stale upload")
 	newBobFP := userkey.Fingerprint(bytes.Repeat([]byte{9}, userkey.PublicKeyBytes))
 	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC, map[string]any{"sealedKey": sealedKeyFor(0xB3), "keyFingerprint": newBobFP}), http.StatusOK, "reseal")
 	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive {
@@ -1032,8 +1048,8 @@ func TestSharedWriterRemovedMidRequestIsRefused(t *testing.T) {
 	bobFP := publishKey(t, srv, bob, 2)
 	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
 	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
-	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", nil), http.StatusOK, "upload v1")
-	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "v2", nil), http.StatusOK, "upload v2")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "v1", 1, nil), http.StatusOK, "upload v1")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "v2", 1, nil), http.StatusOK, "upload v2")
 	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", bobC, nil))
 	if len(hist) == 0 {
 		t.Fatal("no history")
@@ -1056,23 +1072,23 @@ func TestSharedWriterRemovedMidRequestIsRefused(t *testing.T) {
 		}
 	}
 	demote := func() error { return srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleReader) }
-	remove := func() error { return srv.shared.Remove(id, alice.ID, bob.ID) }
+	remove := func() error { return srv.shared.Remove(id, alice.ID, bob.ID, time.Now()) }
 
 	race(demote)
-	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", nil), http.StatusForbidden, "demoted upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", 1, nil), http.StatusForbidden, "demoted upload")
 	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor); err != nil {
 		t.Fatal(err)
 	}
 	race(demote)
-	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil), http.StatusForbidden, "demoted restore")
+	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil, epoch1), http.StatusForbidden, "demoted restore")
 	if err := srv.shared.SetRole(id, alice.ID, bob.ID, shared.RoleEditor); err != nil {
 		t.Fatal(err)
 	}
 	race(remove)
-	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", nil), http.StatusNotFound, "removed upload")
+	expectCode(t, uploadShared(srv, bobC, id, `"2"`, "v3", 1, nil), http.StatusNotFound, "removed upload")
 	rejoin()
 	race(remove)
-	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil), http.StatusNotFound, "removed restore")
+	expectCode(t, do(t, srv, http.MethodPost, restore, bobC, nil, epoch1), http.StatusNotFound, "removed restore")
 	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
 		t.Fatalf("a refused write moved the vault to v%d", meta.Version)
 	}
@@ -1155,5 +1171,797 @@ func TestSharedHookIsQuietWhenNothingChanges(t *testing.T) {
 	}
 	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive {
 		t.Fatalf("bob = %s", m.State)
+	}
+}
+
+// Every shared write proves which key epoch its ciphertext was sealed under: a member
+// re-sealed by a rotation whose tab still holds the retired key would otherwise upload
+// ciphertext nobody left in the vault can open.
+func TestSharedWritesCarryTheKeyEpoch(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "first upload")
+
+	// A missing header is refused exactly like a stale one, and neither writes. It does not
+	// claim a rotation: nothing was rotated, and that message is what a tab left open across
+	// a deploy would read.
+	rec := uploadShared(srv, aliceC, id, `"1"`, "two", -1, nil)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "did not say which shared vault key") ||
+		strings.Contains(rec.Body.String(), "was rotated") {
+		t.Fatalf("missing epoch = %d %s", rec.Code, rec.Body.String())
+	}
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 0, nil), http.StatusConflict, "stale epoch")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 2, nil), http.StatusConflict, "future epoch")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", -1, map[string]string{sharedEpochHeader: "one"}), http.StatusConflict, "unparseable epoch")
+	if meta := sharedMeta(t, srv, id); meta.Version != 1 {
+		t.Fatalf("a refused write moved the vault to v%d", meta.Version)
+	}
+	if rec := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); rec.Body.String() != "one" {
+		t.Fatalf("vault body = %q", rec.Body.String())
+	}
+
+	// The history restore and the conflict discard carry it too.
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/history/nope/restore", aliceC, nil), http.StatusConflict, "restore without the epoch")
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/conflicts/nope", aliceC, nil), http.StatusConflict, "discard without the epoch")
+
+	// Reads never carry it.
+	expectCode(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/metadata", aliceC, nil), http.StatusOK, "metadata read")
+}
+
+// rotateBody builds the rotate route's multipart body: the re-encrypted vault first, then
+// the keys JSON, which is the order the route reads them in.
+func rotateBody(t *testing.T, kdbx string, epoch int, sealed []map[string]string) (string, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("kdbx", "vault.kdbx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte(kdbx)); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := mw.CreateFormField("keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewEncoder(keys).Encode(map[string]any{"epoch": epoch, "sealed": sealed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String(), mw.FormDataContentType()
+}
+
+// multipartBody writes the named parts in the order given, which is how the rotate route
+// reads them.
+func multipartBody(t *testing.T, parts ...[2]string) (string, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for _, part := range parts {
+		w, err := mw.CreateFormField(part[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(part[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String(), mw.FormDataContentType()
+}
+
+// sealedFor is one entry of the keys part.
+func sealedFor(userID, sealedKey, fingerprint string) map[string]string {
+	return map[string]string{"userId": userID, "sealedKey": sealedKey, "keyFingerprint": fingerprint}
+}
+
+// rotate posts a prepared body to the rotate route as a browser would.
+func rotate(srv *Server, cookie *http.Cookie, id, ifMatch, body, contentType string) *httptest.ResponseRecorder {
+	return rawReq(srv, http.MethodPost, "/api/shared/"+id+"/rotate", cookie, "", false, body,
+		map[string]string{"Content-Type": contentType, "If-Match": ifMatch})
+}
+
+// auditDetail is the newest audit detail recorded for action.
+func auditDetail(t *testing.T, srv *Server, action string) string {
+	t.Helper()
+	entries, err := srv.audit.List(500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Action == action {
+			return e.Details
+		}
+	}
+	t.Fatalf("no audit row for %s", action)
+	return ""
+}
+
+func sharedRecord(t *testing.T, srv *Server, id string) shared.Vault {
+	t.Helper()
+	v, err := srv.shared.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// A rotation re-keys the vault, its members' sealed copies and its ciphertext in one
+// commit, and takes the history and conflicts the retired key still opens with it.
+func TestSharedRotate(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	carol, carolC := signedInUser(t, srv, "carol", users.RoleUser)
+	dave, daveC := signedInUser(t, srv, "dave", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bobFP := publishKey(t, srv, bob, 2)
+	carolFP := publishKey(t, srv, carol, 3)
+	daveFP := publishKey(t, srv, dave, 4)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
+	invite(t, srv, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
+	invite(t, srv, aliceC, id, dave.ID, "reader", sealedKeyFor(0xD4), daveFP)
+	for _, c := range []*http.Cookie{bobC, carolC, daveC} {
+		expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", c, nil), http.StatusOK, "accept")
+	}
+	// Establish contents, a snapshot and a preserved conflict.
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "stale", 1, nil), http.StatusConflict, "preserved conflict")
+	if hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil)); len(hist) == 0 {
+		t.Fatal("fixture has no history")
+	}
+	if confs := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/conflicts", aliceC, nil)); len(confs) == 0 {
+		t.Fatal("fixture has no preserved conflict")
+	}
+
+	// Carol leaves: her copy of the key still opens everything until the rotation.
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+carol.ID, carolC, nil), http.StatusOK, "carol leaves")
+	if p := sharedRecord(t, srv, id).RotationPending; p == nil || p.UserID != carol.ID || p.Reason != shared.ReasonLeft {
+		t.Fatalf("departure did not flag a rotation: %+v", p)
+	}
+	// The pending flag reaches a member's list and the admin list.
+	if got := do(t, srv, http.MethodGet, "/api/shared", aliceC, nil); !strings.Contains(got.Body.String(), `"rotationPending"`) {
+		t.Fatalf("list does not carry the pending flag: %s", got.Body.String())
+	}
+	_, adminC := signedInUser(t, srv, "root", users.RoleAdmin)
+	if got := do(t, srv, http.MethodGet, "/api/admin/shared", adminC, nil); !strings.Contains(got.Body.String(), `"rotationPending"`) {
+		t.Fatalf("admin list does not carry the pending flag: %s", got.Body.String())
+	}
+
+	newKey := sealedKeyFor(9)
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{
+		sealedFor(alice.ID, newKey, aliceFP),
+		sealedFor(bob.ID, newKey, bobFP),
+	})
+	rec := rotate(srv, aliceC, id, `"2"`, body, ct)
+	expectCode(t, rec, http.StatusOK, "rotate")
+	var out struct {
+		OK             bool           `json:"ok"`
+		Metadata       vault.Metadata `json:"metadata"`
+		KeyEpoch       int            `json:"keyEpoch"`
+		LeftBehind     []string       `json:"leftBehind"`
+		HistoryCleared bool           `json:"historyCleared"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("rotate body %s: %v", rec.Body.String(), err)
+	}
+	// Dave was not sealed for: he stays at the retired epoch, stale, with his old copy.
+	if !out.OK || out.KeyEpoch != 2 || out.Metadata.Version != 3 || !out.HistoryCleared ||
+		len(out.LeftBehind) != 1 || out.LeftBehind[0] != dave.ID {
+		t.Fatalf("rotate response = %+v", out)
+	}
+	if want := fmt.Sprintf("%s: rotated to epoch 2, sealed to 2 members, 1 left behind", id); auditDetail(t, srv, "shared.key_rotated") != want {
+		t.Fatalf("audit detail = %q, want %q", auditDetail(t, srv, "shared.key_rotated"), want)
+	}
+
+	// The history and the conflicts the retired key opens are gone; the contents are new.
+	if hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil)); len(hist) != 0 {
+		t.Fatalf("history survived the rotation: %v", hist)
+	}
+	if confs := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/conflicts", aliceC, nil)); len(confs) != 0 {
+		t.Fatalf("conflicts survived the rotation: %v", confs)
+	}
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "rekeyed" {
+		t.Fatalf("vault body = %q", got.Body.String())
+	}
+
+	// The flag is cleared and bob holds the new key at the new epoch.
+	v := sharedRecord(t, srv, id)
+	if v.RotationPending != nil || v.KeyEpoch != 2 {
+		t.Fatalf("record after rotate: %+v", v)
+	}
+	if m := v.Members[bob.ID]; m.SealedKey != newKey || m.KeyEpoch != 2 || m.State != shared.StateActive || m.SealedBy != alice.ID {
+		t.Fatalf("bob after rotate: %+v", m)
+	}
+	if m := v.Members[dave.ID]; m.SealedKey != sealedKeyFor(0xD4) || m.KeyEpoch != 1 || m.State != shared.StateStale {
+		t.Fatalf("dave after rotate: %+v", m)
+	}
+	list := do(t, srv, http.MethodGet, "/api/shared", bobC, nil)
+	if !strings.Contains(list.Body.String(), newKey) {
+		t.Fatalf("bob's list does not carry the new key: %s", list.Body.String())
+	}
+
+	// A write at the retired epoch is refused; at the new one it is accepted.
+	expectCode(t, uploadShared(srv, bobC, id, `"3"`, "bob", 1, nil), http.StatusConflict, "write at the old epoch")
+	expectCode(t, uploadShared(srv, bobC, id, `"3"`, "bob", 2, nil), http.StatusOK, "write at the new epoch")
+	assertAudited(t, srv, "shared.key_rotated")
+}
+
+// Every refusal leaves the record, the ciphertext and the history exactly as they were.
+func TestSharedRotateRefusals(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	dave, _ := signedInUser(t, srv, "dave", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bobFP := publishKey(t, srv, bob, 2)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+
+	newKey := sealedKeyFor(9)
+	good := []map[string]string{sealedFor(alice.ID, newKey, aliceFP), sealedFor(bob.ID, newKey, bobFP)}
+	body, ct := rotateBody(t, "rekeyed", 1, good)
+
+	// An editor cannot rotate; a non-member sees 404.
+	expectCode(t, rotate(srv, bobC, id, `"2"`, body, ct), http.StatusForbidden, "editor rotate")
+	_, malloryC := signedInUser(t, srv, "mallory", users.RoleUser)
+	expectCode(t, rotate(srv, malloryC, id, `"2"`, body, ct), http.StatusNotFound, "stranger rotate")
+
+	// No CSRF token, and a session that is not freshly signed in.
+	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/rotate", aliceC, "", true, body,
+		map[string]string{"Content-Type": ct, "If-Match": `"2"`}), http.StatusForbidden, "rotate without CSRF")
+	expectCode(t, rotate(srv, staleSession(t, srv, alice), id, `"2"`, body, ct), http.StatusForbidden, "rotate from a stale session")
+	// A paired device carries no authentication timestamp, so it can never rotate either.
+	_, token := pairDeviceForTest(t, srv.Routes(), aliceC)
+	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/rotate", nil, token, false, body,
+		map[string]string{"Content-Type": ct, "If-Match": `"2"`}), http.StatusForbidden, "rotate from a device token")
+
+	// The epoch being rotated from, and the vault version, must both be current.
+	stale, staleCT := rotateBody(t, "rekeyed", 0, good)
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, stale, staleCT), http.StatusConflict, "rotate from a retired epoch")
+	expectCode(t, rotate(srv, aliceC, id, `"99"`, body, ct), http.StatusConflict, "rotate over a newer version")
+
+	// A fingerprint that is not the member's current published one, a member with no
+	// published key, a stranger's row, and a rotation that does not seal for the caller.
+	wrongFP, wrongCT := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, newKey, aliceFP), sealedFor(bob.ID, newKey, aliceFP)})
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, wrongFP, wrongCT), http.StatusBadRequest, "rotate with a stale fingerprint")
+	noKey, noKeyCT := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, newKey, aliceFP), sealedFor(dave.ID, newKey, aliceFP)})
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, noKey, noKeyCT), http.StatusBadRequest, "rotate sealing for a user with no key")
+	notMine, notMineCT := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(bob.ID, newKey, bobFP)})
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, notMine, notMineCT), http.StatusBadRequest, "rotate that drops the caller")
+	empty, emptyCT := rotateBody(t, "rekeyed", 1, nil)
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, empty, emptyCT), http.StatusBadRequest, "rotate sealing for nobody")
+
+	// A truncated body, a missing part, a third part, parts in the wrong order, an empty
+	// vault part and a body that is not multipart at all.
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, body[:len(body)/2], ct), http.StatusBadRequest, "truncated body")
+	var one bytes.Buffer
+	mw := multipart.NewWriter(&one)
+	p, err := mw.CreateFormFile("kdbx", "v.kdbx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, one.String(), mw.FormDataContentType()), http.StatusBadRequest, "missing keys part")
+	keysJSON, err := json.Marshal(map[string]any{"epoch": 1, "sealed": good})
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, thirdCT := multipartBody(t, [2]string{"kdbx", "rekeyed"}, [2]string{"keys", string(keysJSON)}, [2]string{"extra", "x"})
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, third, thirdCT), http.StatusBadRequest, "a third part")
+	reversed, reversedCT := multipartBody(t, [2]string{"keys", string(keysJSON)}, [2]string{"kdbx", "rekeyed"})
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, reversed, reversedCT), http.StatusBadRequest, "parts in the wrong order")
+	empt, emptCT := rotateBody(t, "", 1, good)
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, empt, emptCT), http.StatusBadRequest, "empty vault part")
+	expectCode(t, rawReq(srv, http.MethodPost, "/api/shared/"+id+"/rotate", aliceC, "", false, body,
+		map[string]string{"Content-Type": "application/json", "If-Match": `"2"`}), http.StatusBadRequest, "not multipart")
+
+	// Not one of those refusals moved the vault, its key or its history.
+	v := sharedRecord(t, srv, id)
+	if v.KeyEpoch != 1 || v.Members[alice.ID].SealedKey != sealedKeyFor(0xA1) || v.Members[bob.ID].SealedKey != sealedKeyFor(0xB2) {
+		t.Fatalf("a refused rotation changed the record: %+v", v)
+	}
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
+		t.Fatalf("a refused rotation moved the vault to v%d", meta.Version)
+	}
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "two" {
+		t.Fatalf("vault body = %q", got.Body.String())
+	}
+	if hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil)); len(hist) != 1 {
+		t.Fatalf("history after refusals = %v", hist)
+	}
+	// A refused rotation never leaves its ciphertext behind as a conflict nobody can open.
+	if confs := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/conflicts", aliceC, nil)); len(confs) != 0 {
+		t.Fatalf("a refused rotation preserved a conflict: %v", confs)
+	}
+}
+
+// Each part is bounded on its own: an oversized keys part is refused, never truncated
+// into something that parses.
+func TestSharedRotateRefusesOversizedParts(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, sealedKeyFor(9), aliceFP)})
+	defer func(kdbx, keys int64) { rotateKdbxLimit, rotateKeysLimit = kdbx, keys }(rotateKdbxLimit, rotateKeysLimit)
+
+	rotateKdbxLimit = 4 // the vault part alone is over the limit; the body is not
+	rec := rotate(srv, aliceC, id, `"1"`, body, ct)
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "too large") {
+		t.Fatalf("oversized vault part = %d %s", rec.Code, rec.Body.String())
+	}
+	rotateKdbxLimit, rotateKeysLimit = 50<<20, 1<<10 // the keys part alone is over the limit
+	rec = rotate(srv, aliceC, id, `"1"`, body, ct)
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "too large") {
+		t.Fatalf("oversized keys part = %d %s", rec.Code, rec.Body.String())
+	}
+	if meta := sharedMeta(t, srv, id); meta.Version != 1 {
+		t.Fatalf("an oversized rotation moved the vault to v%d", meta.Version)
+	}
+	if v := sharedRecord(t, srv, id); v.KeyEpoch != 1 {
+		t.Fatalf("an oversized rotation moved the epoch to %d", v.KeyEpoch)
+	}
+}
+
+// Simultaneous rotations: the record's epoch admits exactly one.
+func TestConcurrentRotationsLeaveOneEpoch(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	// Built once: t.Fatal off the test goroutine is a race.
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, sealedKeyFor(9), aliceFP)})
+
+	var wg sync.WaitGroup
+	codes := make([]int, 4)
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = rotate(srv, aliceC, id, `"1"`, body, ct).Code
+		}(i)
+	}
+	wg.Wait()
+	wins := 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusOK:
+			wins++
+		case http.StatusConflict:
+		default:
+			t.Fatalf("codes %v: a losing rotation must be 409", codes)
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("codes %v: exactly one rotation must win", codes)
+	}
+	if v := sharedRecord(t, srv, id); v.KeyEpoch != 2 {
+		t.Fatalf("epoch = %d", v.KeyEpoch)
+	}
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
+		t.Fatalf("version = %d", meta.Version)
+	}
+}
+
+// A write that passed the gate at epoch N is refused if a rotation commits before it
+// reaches the store: otherwise a restore could copy a pre-rotation snapshot over the
+// live vault, under a key no remaining member holds.
+func TestSharedWriteIsRefusedWhenARotationCommitsMidRequest(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil))
+	if len(hist) == 0 {
+		t.Fatal("no history")
+	}
+	rotateNow := func() {
+		srv.sharedResolved = func() {
+			srv.sharedResolved = nil
+			v, err := srv.shared.Rotate(id, alice.ID, sharedRecord(t, srv, id).KeyEpoch,
+				[]shared.SealedFor{{UserID: alice.ID, SealedKey: sealedKeyFor(9), KeyFingerprint: aliceFP}}, shared.RotateSteps{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v.KeyEpoch < 2 {
+				t.Fatalf("racing rotation left epoch %d", v.KeyEpoch)
+			}
+		}
+	}
+	rotateNow()
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/history/"+hist[0]+"/restore", aliceC, nil, epoch1),
+		http.StatusConflict, "restore after a rotation committed")
+	rotateNow()
+	expectCode(t, uploadShared(srv, aliceC, id, `"2"`, "three", 2, nil), http.StatusConflict, "upload after a rotation committed")
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 {
+		t.Fatalf("a refused write moved the vault to v%d", meta.Version)
+	}
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "two" {
+		t.Fatalf("vault body = %q", got.Body.String())
+	}
+}
+
+// Once the record commits, the route marks the new key epoch, so a snapshot taken under the
+// retired key can never be rolled back onto the live vault — not even by an owner sending the
+// current epoch header, because only the bytes are stale. The clear is made to fail here so
+// those snapshots are still on disk, which is also how the owner learns to rotate again.
+func TestSharedRotateLeavesRetiredSnapshotsUnrestorable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions this test relies on")
+	}
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil))
+	if len(hist) != 1 {
+		t.Fatalf("history fixture = %v", hist)
+	}
+
+	// A history directory the server can write but not read: the rotation archives the
+	// pre-rotation snapshot into it and then cannot list it to clear it.
+	dir := filepath.Join(srv.dataDir, "vaults", "shared", id, "history")
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	restoreDir := func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(restoreDir)
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, sealedKeyFor(9), aliceFP)})
+	rec := rotate(srv, aliceC, id, `"2"`, body, ct)
+	expectCode(t, rec, http.StatusOK, "rotate")
+	if !strings.Contains(rec.Body.String(), `"historyCleared":false`) || !strings.Contains(rec.Body.String(), `"epochMarked":true`) {
+		t.Fatalf("a failed clear must be reported, and the epoch marked anyway: %s", rec.Body.String())
+	}
+	assertAudited(t, srv, "shared.key_rotated", "shared.hook_failed")
+	restoreDir()
+
+	// The retired snapshot is still there, flagged, and refused at the current epoch.
+	list := do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil)
+	if !strings.Contains(list.Body.String(), `"staleKey":true`) {
+		t.Fatalf("history after the rotation = %s", list.Body.String())
+	}
+	restore := do(t, srv, http.MethodPost, "/api/shared/"+id+"/history/"+hist[0]+"/restore", aliceC, nil,
+		map[string]string{sharedEpochHeader: "2"})
+	if restore.Code != http.StatusConflict || !strings.Contains(restore.Body.String(), "previous vault key") {
+		t.Fatalf("restore of a retired snapshot = %d %s", restore.Code, restore.Body.String())
+	}
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "rekeyed" {
+		t.Fatalf("a refused rollback changed the vault: %q", got.Body.String())
+	}
+}
+
+// The process can die between the ciphertext and the record: the vault's bytes are then under
+// the new key while every member's sealed copy is the old one, and the pre-rotation snapshot
+// is the only way back in. It must still be restorable — with the old epoch header, because
+// the record never moved — so the vault is recoverable and the rotation can be run again.
+func TestSharedRotateCrashBeforeTheRecordLeavesTheSnapshotRestorable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+
+	// A shared store directory the server cannot write: the record commit fails after the
+	// vault write has landed, which is the crash window.
+	dir := filepath.Join(srv.dataDir, "shared")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	restoreDir := func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(restoreDir)
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, sealedKeyFor(9), aliceFP)})
+	if rec := rotate(srv, aliceC, id, `"2"`, body, ct); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("rotate with an unwritable record = %d %s", rec.Code, rec.Body.String())
+	}
+	restoreDir()
+
+	// The torn state: new bytes, the old record. Nobody can open the vault, so the snapshot
+	// under the key the members hold has to still be there and still be restorable.
+	v := sharedRecord(t, srv, id)
+	if v.KeyEpoch != 1 || v.Members[alice.ID].SealedKey != sealedKeyFor(0xA1) {
+		t.Fatalf("a failed record commit changed the record: %+v", v)
+	}
+	hist := decodeIDs(t, do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil))
+	if len(hist) != 2 {
+		t.Fatalf("history after the failed rotation = %v", hist)
+	}
+	list := do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", aliceC, nil)
+	if strings.Contains(list.Body.String(), `"staleKey":true`) {
+		t.Fatalf("a rotation that never committed retired a snapshot: %s", list.Body.String())
+	}
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/history/"+hist[0]+"/restore", aliceC, nil, epoch1),
+		http.StatusOK, "rollback after the crash")
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "two" {
+		t.Fatalf("recovered vault body = %q, want the pre-rotation bytes", got.Body.String())
+	}
+	// And the rotation can be run again, now at the version the rollback wrote.
+	body, ct = rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, sealedKeyFor(9), aliceFP)})
+	expectCode(t, rotate(srv, aliceC, id, `"4"`, body, ct), http.StatusOK, "rotate again")
+	if v := sharedRecord(t, srv, id); v.KeyEpoch != 2 {
+		t.Fatalf("the retried rotation left epoch %d", v.KeyEpoch)
+	}
+}
+
+// The pre-rotation snapshot is the only recovery from that crash, so a rotation that cannot
+// archive it is refused outright: re-keying with no way back is the loss this guards against.
+func TestSharedRotateIsRefusedWhenTheSnapshotCannotBeArchived(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+
+	dir := filepath.Join(srv.dataDir, "vaults", "shared", id, "history")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, sealedKeyFor(9), aliceFP)})
+	// Not a bare 500: the owner is told what failed and that nothing changed, and the status
+	// says it is the server's storage, not their request.
+	rec := rotate(srv, aliceC, id, `"2"`, body, ct)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "could not be archived") ||
+		!strings.Contains(rec.Body.String(), "nothing was changed") {
+		t.Fatalf("rotate with an unarchivable snapshot = %d %s", rec.Code, rec.Body.String())
+	}
+	if v := sharedRecord(t, srv, id); v.KeyEpoch != 1 || v.Members[alice.ID].SealedKey != sealedKeyFor(0xA1) {
+		t.Fatalf("a refused rotation changed the record: %+v", v)
+	}
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 || meta.KeyEpochSince != 0 {
+		t.Fatalf("a refused rotation moved the vault: %+v", meta)
+	}
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "two" {
+		t.Fatalf("a refused rotation changed the vault: %q", got.Body.String())
+	}
+}
+
+// rotationFixture is an owner and an editor at epoch 1 on version 2 ("two"), with one
+// snapshot in history, and a rotation body sealing the new key to both.
+func rotationFixture(t *testing.T) (srv *Server, id string, alice, bob users.User, aliceC, bobC *http.Cookie, bobFP, body, ct string) {
+	t.Helper()
+	srv = newTestServer(t)
+	alice, aliceC = signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC = signedInUser(t, srv, "bob", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bobFP = publishKey(t, srv, bob, 2)
+	id = createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(0xB2), bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+	expectCode(t, uploadShared(srv, aliceC, id, `"1"`, "two", 1, nil), http.StatusOK, "upload two")
+	body, ct = rotateBody(t, "rekeyed", 1, []map[string]string{
+		sealedFor(alice.ID, sealedKeyFor(9), aliceFP), sealedFor(bob.ID, sealedKeyFor(9), bobFP)})
+	return
+}
+
+// assertRotatedVersionRestorable checks that the editor's save after the rotation archived
+// the rotated version (v3, "rekeyed") and that it is still a snapshot the new key restores.
+func assertRotatedVersionRestorable(t *testing.T, srv *Server, id string, cookie *http.Cookie) {
+	t.Helper()
+	var hist []vault.HistoryEntry
+	if err := json.Unmarshal(do(t, srv, http.MethodGet, "/api/shared/"+id+"/history", cookie, nil).Body.Bytes(), &hist); err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || hist[0].Version != 3 || hist[0].StaleKey {
+		t.Fatalf("history after the editor's save = %+v, want the rotated v3, restorable", hist)
+	}
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/history/"+hist[0].ID+"/restore", cookie, nil,
+		map[string]string{sharedEpochHeader: "2"}), http.StatusOK, "restore the rotated version")
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", cookie, nil); got.Body.String() != "rekeyed" {
+		t.Fatalf("restored vault body = %q", got.Body.String())
+	}
+}
+
+// An editor's first save after a rotation archives the rotated version, and the rotation's
+// history clear must not take that archive with it.
+func TestEditorSaveAfterARotationKeepsTheRotatedVersion(t *testing.T) {
+	srv, id, _, _, aliceC, bobC, _, body, ct := rotationFixture(t)
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, body, ct), http.StatusOK, "rotate")
+	expectCode(t, uploadShared(srv, bobC, id, `"3"`, "bob", 2, nil), http.StatusOK, "editor save at the new epoch")
+	assertRotatedVersionRestorable(t, srv, id, bobC)
+}
+
+// The editor's save is started between the record commit and the history clear. It cannot
+// complete until the rotation releases the membership lock, so it lands after the clear and
+// its archive of the rotated version survives. The wait gives an unserialised clear the
+// chance to delete that archive; a serialised one can only ever time out here.
+func TestEditorSaveDuringARotationWaitsForTheHistoryClear(t *testing.T) {
+	srv, id, _, _, aliceC, bobC, _, body, ct := rotationFixture(t)
+	done := make(chan int, 1)
+	landedInside := false
+	srv.rotateCommitted = func() {
+		srv.rotateCommitted = nil
+		go func() { done <- uploadShared(srv, bobC, id, `"3"`, "bob", 2, nil).Code }()
+		select {
+		case code := <-done:
+			landedInside = true
+			done <- code
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, body, ct), http.StatusOK, "rotate")
+	if landedInside {
+		t.Fatal("a shared write completed while the rotation still held the membership lock")
+	}
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("editor save after the rotation = %d", code)
+	}
+	assertRotatedVersionRestorable(t, srv, id, bobC)
+}
+
+// A recipient's key replacement that commits before the rotation reads published keys is
+// seen: the rotation is refused before any ciphertext is written, and the replacement's
+// MarkStale leaves the recipient's row stale instead of re-sealed to the superseded key.
+func TestRotationRefusesAKeyReplacedBeforeVerify(t *testing.T) {
+	srv, id, _, bob, aliceC, _, _, body, ct := rotationFixture(t)
+	var newFP string
+	srv.rotateVerifying = func() {
+		srv.rotateVerifying = nil
+		newFP = publishKey(t, srv, bob, 7) // handleUserKeyPut's vault write
+	}
+	rec := rotate(srv, aliceC, id, `"2"`, body, ct)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "keyFingerprint does not match") {
+		t.Fatalf("rotate over a replaced key = %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := srv.shared.MarkStale(bob.ID, newFP); err != nil { // and its hook
+		t.Fatal(err)
+	}
+	if meta := sharedMeta(t, srv, id); meta.Version != 2 || meta.KeyEpochSince != 0 {
+		t.Fatalf("a refused rotation moved the vault: %+v", meta)
+	}
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id+"/kdbx", aliceC, nil); got.Body.String() != "two" {
+		t.Fatalf("a refused rotation changed the ciphertext: %q", got.Body.String())
+	}
+	v := sharedRecord(t, srv, id)
+	if m := v.Members[bob.ID]; v.KeyEpoch != 1 || m.SealedKey != sealedKeyFor(0xB2) || m.State != shared.StateStale {
+		t.Fatalf("bob after the refused rotation: epoch %d %+v", v.KeyEpoch, m)
+	}
+}
+
+// A replacement that commits after the check waits behind the rotation for its MarkStale,
+// which then marks the freshly re-sealed row stale: the new copy is sealed to a key the
+// member no longer publishes, and an owner re-seals it.
+func TestKeyReplacedAfterVerifyLeavesTheRotatedRowStale(t *testing.T) {
+	srv, id, _, bob, aliceC, _, bobFP, body, ct := rotationFixture(t)
+	var newFP string
+	srv.rotateCommitted = func() {
+		srv.rotateCommitted = nil
+		newFP = publishKey(t, srv, bob, 7)
+	}
+	expectCode(t, rotate(srv, aliceC, id, `"2"`, body, ct), http.StatusOK, "rotate")
+	if touched, err := srv.shared.MarkStale(bob.ID, newFP); err != nil || len(touched) != 1 {
+		t.Fatalf("MarkStale = %v %v", touched, err)
+	}
+	v := sharedRecord(t, srv, id)
+	if m := v.Members[bob.ID]; v.KeyEpoch != 2 || m.KeyEpoch != 2 || m.KeyFingerprint != bobFP || m.State != shared.StateStale {
+		t.Fatalf("bob after the rotation and the replacement: epoch %d %+v", v.KeyEpoch, m)
+	}
+}
+
+// The pending flag names a departed member and the day they left, and only an owner can act
+// on it. It reaches an active owner's list and nobody else's: an invitation must disclose
+// nothing about the membership before it is accepted, which is why GET /api/shared/{id} 404s
+// an invited row.
+func TestRotationPendingReachesOnlyActiveOwners(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	carol, carolC := signedInUser(t, srv, "carol", users.RoleUser)
+	dave, daveC := signedInUser(t, srv, "dave", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bobFP := publishKey(t, srv, bob, 2)
+	carolFP := publishKey(t, srv, carol, 3)
+	daveFP := publishKey(t, srv, dave, 4)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(0xA1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "reader", sealedKeyFor(0xB2), bobFP)
+	invite(t, srv, aliceC, id, carol.ID, "reader", sealedKeyFor(0xC3), carolFP)
+	invite(t, srv, aliceC, id, dave.ID, "editor", sealedKeyFor(0xD4), daveFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accepts")
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", daveC, nil), http.StatusOK, "dave accepts")
+	// Dave leaves: his copy of the key still opens the vault, which is what the flag is for.
+	expectCode(t, do(t, srv, http.MethodDelete, "/api/shared/"+id+"/members/"+dave.ID, daveC, nil), http.StatusOK, "dave leaves")
+	if sharedRecord(t, srv, id).RotationPending == nil {
+		t.Fatal("the departure did not flag a rotation")
+	}
+	for _, who := range []struct {
+		name   string
+		cookie *http.Cookie
+		wants  bool
+	}{
+		{"the active owner", aliceC, true},
+		{"an accepted reader", bobC, false},
+		{"an invited row", carolC, false},
+	} {
+		got := do(t, srv, http.MethodGet, "/api/shared", who.cookie, nil)
+		expectCode(t, got, http.StatusOK, who.name+"'s list")
+		if strings.Contains(got.Body.String(), `"rotationPending"`) != who.wants {
+			t.Fatalf("%s: rotationPending in %s (want %v)", who.name, got.Body.String(), who.wants)
+		}
+	}
+}
+
+// A row a rotation left behind holds a copy of the retired key. Self-resealing with it
+// would republish that stale copy as current; only an owner, who holds the new key, can
+// bring the row back.
+func TestSelfResealNeedsTheCurrentEpoch(t *testing.T) {
+	srv := newTestServer(t)
+	alice, aliceC := signedInUser(t, srv, "alice", users.RoleUser)
+	bob, bobC := signedInUser(t, srv, "bob", users.RoleUser)
+	aliceFP := publishKey(t, srv, alice, 1)
+	bobFP := publishKey(t, srv, bob, 2)
+	id := createShared(t, srv, aliceC, "Finance", sealedKeyFor(1), aliceFP)
+	invite(t, srv, aliceC, id, bob.ID, "editor", sealedKeyFor(1), bobFP)
+	expectCode(t, do(t, srv, http.MethodPost, "/api/shared/"+id+"/accept", bobC, nil), http.StatusOK, "bob accept")
+	expectCode(t, uploadShared(srv, aliceC, id, `"0"`, "one", 1, nil), http.StatusOK, "upload one")
+
+	// Alice rotates without bob: he is left behind, stale at epoch 1.
+	newKey := sealedKeyFor(9)
+	body, ct := rotateBody(t, "rekeyed", 1, []map[string]string{sealedFor(alice.ID, newKey, aliceFP)})
+	expectCode(t, rotate(srv, aliceC, id, `"1"`, body, ct), http.StatusOK, "rotate")
+
+	// Bob cannot self-reseal: he does not hold the epoch-2 key, so sealing his own row
+	// would publish a copy of a key nobody can open.
+	rec := do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, bobC,
+		map[string]any{"sealedKey": sealedKeyFor(4), "keyFingerprint": bobFP})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("epoch-stale self-reseal = %d %s", rec.Code, rec.Body.String())
+	}
+	if m := memberState(t, srv, id, bob.ID); m.SealedKey != sealedKeyFor(1) || m.KeyEpoch != 1 {
+		t.Fatalf("refused self-reseal changed bob: %+v", m)
+	}
+	// An owner can still re-seal him.
+	expectCode(t, do(t, srv, http.MethodPut, "/api/shared/"+id+"/members/"+bob.ID, aliceC,
+		map[string]any{"sealedKey": newKey, "keyFingerprint": bobFP}), http.StatusOK, "owner reseal")
+	if m := memberState(t, srv, id, bob.ID); m.State != shared.StateActive || m.KeyEpoch != 2 || m.SealedKey != newKey {
+		t.Fatalf("bob after owner reseal: %+v", m)
+	}
+
+	// A rotated-and-recovered vault carries no pending flag.
+	if got := do(t, srv, http.MethodGet, "/api/shared/"+id, aliceC, nil); strings.Contains(got.Body.String(), `"rotationPending"`) {
+		t.Fatalf("a rotated vault carries no flag: %s", got.Body.String())
 	}
 }

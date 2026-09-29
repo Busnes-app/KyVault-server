@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateUserKey, fingerprint } from "./userKey";
 import { openSharedKey } from "./sharedKey";
-import { createSharedVault, resolveInvitee, inviteMember, resealMember, acceptInvitation, inviterStatus, type FlowDeps, type PinStatus } from "./sharedFlows";
+import { createSharedVault, resolveInvitee, inviteMember, resealMember, acceptInvitation, inviterStatus, EPOCH_STALE, type FlowDeps, type PinStatus } from "./sharedFlows";
 import { lookupKey, pinKey, readPin, type PublishedKey } from "./keyPins";
 import type { KeePassVault } from "./kdbx";
 import type { SharedApi, SharedVaultSummary } from "./sharedVaults";
@@ -90,6 +90,8 @@ test("invite refuses a changed pin and an unknown username", async () => {
   assert.equal(await resolveInvitee("nobody", s.deps), null);
 });
 
+const SAME_EPOCH = { vault: 2, row: 2 };
+
 // The row's own verdict, as the dialog loaded it: what resealMember is handed.
 const shown = (s: Awaited<ReturnType<typeof setup>>, userId: string, state: PinStatus["state"] = "unknown"): PinStatus =>
   ({ state, fingerprint: s.published[userId].fingerprint, publicKey: s.published[userId].publicKey });
@@ -97,14 +99,14 @@ const shown = (s: Awaited<ReturnType<typeof setup>>, userId: string, state: PinS
 test("re-seal follows the same pin rules and patches the member", async () => {
   const s = await setup();
   const key = crypto.getRandomValues(new Uint8Array(32));
-  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", shown(s, "u-bob"), key, s.deps);
+  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", shown(s, "u-bob"), key, s.deps, SAME_EPOCH);
   const [, vaultId, userId, patch] = s.calls.find((c) => c[0] === "update")! as [string, string, string, { sealedKey: string; keyFingerprint: string }];
   assert.equal(vaultId, "sv_abcdefghijklmnopqrstuv");
   assert.equal(userId, "u-bob");
   assert.equal(patch.keyFingerprint, s.published["u-bob"].fingerprint);
   assert.deepEqual([...(await openSharedKey(s.bob.seed, patch.sealedKey))], [...key]);
 
-  await assert.rejects(resealMember("sv_x", "u-bob", shown(s, "u-bob", "changed"), key, s.deps), /Re-pin/);
+  await assert.rejects(resealMember("sv_x", "u-bob", shown(s, "u-bob", "changed"), key, s.deps, SAME_EPOCH), /Re-pin/);
 });
 
 test("re-seal seals the key the row displayed, not whatever is published when it is clicked", async () => {
@@ -114,7 +116,7 @@ test("re-seal seals the key the row displayed, not whatever is published when it
   // bob's published key moves after the row was drawn: the seal must still go to the key
   // whose fingerprint the user was looking at.
   s.published["u-bob"] = { ...s.published["u-bob"], publicKey: s.alice.publicKey };
-  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", row, key, s.deps);
+  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", row, key, s.deps, SAME_EPOCH);
   const patch = s.calls.find((c) => c[0] === "update")![3] as { sealedKey: string; keyFingerprint: string };
   assert.deepEqual([...(await openSharedKey(s.bob.seed, patch.sealedKey))], [...key]);
 });
@@ -122,7 +124,7 @@ test("re-seal seals the key the row displayed, not whatever is published when it
 test("re-sealing my own row uses my own key and pins nothing", async () => {
   const s = await setup();
   const key = crypto.getRandomValues(new Uint8Array(32));
-  await resealMember("sv_abcdefghijklmnopqrstuv", "u-alice", shown(s, "u-alice"), key, s.deps);
+  await resealMember("sv_abcdefghijklmnopqrstuv", "u-alice", shown(s, "u-alice"), key, s.deps, SAME_EPOCH);
   const patch = s.calls.find((c) => c[0] === "update")![3] as { sealedKey: string; keyFingerprint: string };
   assert.equal(patch.keyFingerprint, s.deps.me.fingerprint);
   assert.deepEqual([...(await openSharedKey(s.alice.seed, patch.sealedKey))], [...key]);
@@ -199,4 +201,18 @@ test("a user with no published key cannot be invited", async () => {
   const s = await setup();
   delete s.published["u-bob"];
   await assert.rejects(resolveInvitee("bob", s.deps), /no published key/);
+});
+
+// A self-reseal from a row the last rotation left behind would seal the key this tab holds,
+// which is the retired one: the server refuses it with a 409 and so does this, before any
+// request, with a sentence that names who can fix it.
+test("a self-reseal from an epoch-stale row is refused before any request", async () => {
+  const s = await setup();
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  await assert.rejects(resealMember("sv_abcdefghijklmnopqrstuv", "u-alice", shown(s, "u-alice"), key, s.deps, { vault: 3, row: 2 }),
+    new RegExp(EPOCH_STALE.slice(0, 40)));
+  assert.equal(s.calls.filter((c) => c[0] === "update").length, 0);
+  // Someone else's row at an older epoch is an owner re-sealing them, which is the fix.
+  await resealMember("sv_abcdefghijklmnopqrstuv", "u-bob", shown(s, "u-bob"), key, s.deps, { vault: 3, row: 2 });
+  assert.equal(s.calls.filter((c) => c[0] === "update").length, 1);
 });

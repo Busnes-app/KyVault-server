@@ -14,7 +14,7 @@ KyVault Server is a zero-knowledge KeePass v4 management and synchronization ser
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`). `GET /api/audit` pages with `before=<index>` (newest first).
 8. **Web Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Busnes light/dark themes with a browser-local System/Light/Dark selector. The Go server sets a strict CSP (script-src 'self' 'wasm-unsafe-eval', frame-ancestors 'none'), nosniff, no-referrer and HSTS on every response and serves no CORS headers; native and extension clients use Bearer tokens from non-browser or host-permitted contexts. Production builds ship no source maps. Installable as a PWA through `frontend/public/manifest.webmanifest` (icons from `logo.png` and a 512px export of `KyVault.png`; no service worker, so nothing works offline). `pwa.test.ts` validates the manifest and the `index.html` references; `static.go` serves `.webmanifest` as `application/manifest+json`.
 9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
-10. **Shared Vaults (server side)**: `internal/shared` keeps membership (roles, states, each member's copy of the vault key HPKE-sealed to their user key); the KDBX lives in `internal/vault` under key `shared/<id>`. Roles are enforced server-side; neither the server nor an admin can read contents. The web client is the vault switcher, the Accept and Members dialogs, Security → Known keys and Admin → Shared vaults; see the Child DOX Index. See `internal/shared/AGENTS.md`.
+10. **Shared Vaults (server side)**: `internal/shared` keeps membership (roles, states, each member's copy of the vault key HPKE-sealed to their user key); the KDBX lives in `internal/vault` under key `shared/<id>`. Roles are enforced server-side; neither the server nor an admin can read contents. Every departure flags a pending rotation, and an owner's rotation is the only thing that retires the copy of the key the departed member kept. The web client is the vault switcher, the Accept and Members dialogs, Security → Known keys and Admin → Shared vaults; see the Child DOX Index. See `internal/shared/AGENTS.md`.
 11. **Public Health**: `GET /healthz` and the compatible `GET /api/health` alias use one cached `ky-primitives/health` handler. Its `ky.health/1` response has service `kyvault`, status `ok`, a timestamp and empty checks; it returns 200 for process availability only. The five-second evaluation cache is shared across aliases, while HTTP responses use `Cache-Control: no-store`. Keep audit and storage diagnostics out of both public routes, including degraded bits and counters; failed audit writes belong on stderr and the admin-only `GET /api/audit/verify` route. With no public checks, this endpoint cannot report dependency readiness or return 503 for audit/storage failure.
 
 ## Authentication
@@ -197,7 +197,7 @@ the user's, not the directory's.
 - Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`. Run them before `npm ci` in `extension/`: a Go package inside `extension/node_modules` is otherwise picked up by `go vet ./...`.
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
 - UI without KySignOn: `npm run dev:mock` in `frontend/` serves the app with an in-process mock of the API (`frontend/mock/api.ts`, dev only, never built) for manual and screenshot checks.
-  It serves the shared-vault routes with the status codes the client branches on (404 not a member, 403 a reader write or an unaccepted row, 409 the last owner, 400 a fingerprint that moved), seeds two invitations from `dana` (u-2) — one matching her published key, one sealed by a key she no longer publishes — and generates a real X-Wing key pair for her at startup, so sealing from the browser is real HPKE. One admin delete answers a plain-text `re-authenticate to continue` so that refusal and its link are reachable. `POST /api/mock/role` has no server counterpart: it sets the mock user's role in a vault, which the UI cannot do and a reader's read-only screen needs.
+  It serves the shared-vault routes with the status codes the client branches on (404 not a member, 403 a reader write or an unaccepted row, 409 the last owner, 400 a fingerprint that moved), seeds two invitations from `dana` (u-2) — one matching her published key, one sealed by a key she no longer publishes — and generates a real X-Wing key pair for her at startup, so sealing from the browser is real HPKE. It also mirrors the rotation contract by hand — `rotationPending` set by removal, leave and decline; the `X-Shared-Key-Epoch` gate with the server's 409; `POST /api/shared/{id}/rotate` reading the two parts in order and applying the store's transitions — and seeds a "Team" vault the mock user owns, sealed to the user key the browser publishes, with the flag already set and a member (`erin`, u-3) who publishes no key, so the banner and the left-behind report need no removal first. One admin delete answers a plain-text `re-authenticate to continue` so that refusal and its link are reachable. `POST /api/mock/role` has no server counterpart: it sets the mock user's role in a vault, which the UI cannot do and a reader's read-only screen needs.
 - Extension: `npm test && npm run build && npm run lint` in `extension/` (`build` runs `tsc` first, so it is the typecheck gate too; `lint` is `web-ext lint --source-dir dist/firefox` and must report 0 errors). See `extension/AGENTS.md`.
 - Daemon build: `go build -o ./kyvault-server ./cmd/server`
 - Docker build: `docker build -t kyvault-server:latest .`
@@ -317,14 +317,31 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   the key in memory; every writer except `RemoveDeviceEnvelope` (personal ids only, never
   creates a directory) refuses a retired key (`ErrRetired`, an `ErrNotFound`) before creating
   directories, so a racing save cannot resurrect a deleted shared vault
-  (`TestMoveOutMovesDirectoryAndSaveDoesNotResurrect`).
+  (`TestMoveOutMovesDirectoryAndSaveDoesNotResurrect`). `vault.Store.ClearHistory(key)`
+  deletes every snapshot and preserved conflict for a key, leaving the current vault and
+  metadata intact, and refuses a retired key; a shared key rotation calls it after the
+  membership record commits, never inside the rotation's vault write, so a crash mid-rotation
+  still leaves a snapshot the old key opens (`TestClearHistoryRemovesSnapshotsAndConflicts`).
 
 - `internal/api/shared_handlers.go` and `shared_settings.go`: `sharedMember` resolves the
   caller's row (404 otherwise); `withSharedRead`/`withSharedWrite` apply the role and state
   gates and hand the ordinary vault data handlers a `vaultTarget` (`shared.StoreKey`,
   session `DeviceID`, download name `FilenameSafe(name).kdbx`). With `shared` set, envelope
   headers and `X-User-Key` are ignored, `X-Vault-Key-Rotated` is 400 and device revocation is
-  skipped; `auditAction` maps `vault.*` to `shared.*` (`shared.downloaded`,
+  skipped. Every write (upload, history restore, conflict discard, bearer tokens included)
+  must send `X-Shared-Key-Epoch` equal to the vault's current `keyEpoch` or it is refused
+  409 without writing, absent and unparseable alike, so a tab still holding a retired key
+  cannot save ciphertext the remaining members cannot open (checked after `sharedCSRF`, so
+  a missing CSRF token is still 403; `TestSharedWritesCarryTheKeyEpoch`). The two refusals
+  say different things: a stale epoch is `the shared vault key was rotated`, which the client
+  branches on, and a missing or unparseable one says the write did not say which key it was
+  made under — nothing was rotated, and that is what a tab left open across a deploy reads.
+  Both are in `vaultSave.ts`'s `ROTATION_REFUSAL`, so neither is ever offered the overwrite
+  button, which would re-fail forever. That epoch rides on
+  the `vaultTarget` and `shared.Store.WithWriter` re-checks it under the membership lock, so a
+  rotation that commits after the gate refuses the write too rather than letting a pre-rotation
+  snapshot land on the live vault (`TestSharedWriteIsRefusedWhenARotationCommitsMidRequest`).
+  `auditAction` maps `vault.*` to `shared.*` (`shared.downloaded`,
   `shared.rolled_back`, `shared.conflict_downloaded` renamed) and details lead with the
   vault key. Details carry ids, names and roles, never a sealed key. Create checks
   `CONFIG_DIR/shared.json` (`createRestrictedToAdmins`) and that the key fingerprint is the
@@ -338,10 +355,74 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `ownerless`; an ownerless vault takes no invites or accepts and only an admin deletes it.
   Deletion goes `shared.Store.Delete` → `vault.Store.MoveOut` (the mover `NewStore` gets):
   lock order `shared.mu` then `vault.mu`, never the reverse; `writeTarget` keeps the same
-  order for shared data writes. `shared_test.go` covers routes, CSRF, roles, hooks,
-  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3c/3d): no shared key rotation, extension
-  and KyAuth unaware; a removed member's copy of the key is only invalidated by the 3c
-  rotation.
+  order for shared data writes. `GET /api/shared`, `GET /api/shared/{id}` and
+  `GET /api/shared/{id}` and `GET /api/admin/shared` carry `rotationPending` (reusing
+  `shared.Pending` as-is), omitted once a rotation clears it; on `GET /api/shared` only an
+  active owner's row carries it, since the flag names a departed member and the day they left,
+  only an owner can act on it, and an invitation must disclose nothing about the membership
+  before it is accepted (`TestRotationPendingReachesOnlyActiveOwners`). The flag is stamped by every departure — an owner's or
+  admin's removal (`removed`), a member leaving (`left`), an invitee declining (`declined`) —
+  because the row goes but the copy of the key it held does not, and only a rotation retires
+  that. See `internal/shared/AGENTS.md`. A self-reseal (`PUT …/members/{self}` on a `stale` row)
+  is refused 409 (`the shared vault key was rotated; ask an owner to re-seal your copy`) when
+  the row's `keyEpoch` is not the vault's current one — a row a rotation left behind, not one
+  `MarkStale` alone made stale — checked early in the handler for that message and again
+  inside `shared.Store.Reseal` (`ErrEpoch`, mapped by `sharedErr`) so the rule holds even if a
+  future caller skips the handler's own check; an owner re-sealing that same row is
+  unaffected, since that is the documented recovery path (`TestSelfResealNeedsTheCurrentEpoch`).
+  `shared_test.go` covers routes, CSRF, roles, hooks,
+  mid-request owner and writer removal, stale self-reseal and a corrupt record. Not built (3d): the extension
+  and KyAuth are unaware of shared vaults.
+
+- `internal/api/shared_rotate.go`: `POST /api/shared/{id}/rotate` retires a departed
+  member's copy of the vault key. `sharedCSRF`, then the caller's own active-owner row, then
+  `requireFresh` (a device token carries no authentication timestamp, so it can never
+  rotate). The body is `multipart/form-data`, read as a stream in order: `kdbx` (the
+  re-encrypted vault) then `keys` (`{"epoch": N, "sealed": [{userId, sealedKey,
+  keyFingerprint}]}`), each part bounded on its own (`rotateKdbxLimit`, `rotateKeysLimit`)
+  and refused, never truncated, when over; the whole body is capped at their sum. `epoch` is
+  the epoch being rotated **from** and `If-Match` the vault data version. Exactly two parts:
+  a third is 400. `shared.Store.Rotate` runs every step under one `shared.mu` hold
+  (`shared.RotateSteps`): its own checks, `Verify`, `WriteVault`, the record commit, then
+  `AfterCommit`. `Verify` requires every `keyFingerprint` to equal that member's current
+  published key (400, nothing written, otherwise), read under the lock so a key replacement
+  committed first is refused and one committed later waits for its `MarkStale` behind the
+  rotation, which then marks the re-sealed row stale
+  (`TestRotationRefusesAKeyReplacedBeforeVerify`,
+  `TestKeyReplacedAfterVerifyLeavesTheRotatedRowStale`). `WriteVault` re-reads the metadata and refuses a
+  version mismatch (409) *before* the save, so no refusal leaves the re-encrypted bytes
+  behind as a conflict nobody can open. The save is `vault.Store.SaveRekeyed`: an ordinary
+  save that does *not* move the key epoch, because a crash between it and the record commit
+  must leave the pre-rotation snapshot restorable — the bytes are then under the new key and
+  every sealed copy is the old one, and that snapshot is the only way back into the vault. It
+  is also the only save that fails when it cannot archive the version it replaces, for the
+  same reason (`vault.ErrArchive` → 503 naming the cause, since nothing changed and it is the
+  host's storage, not the request). `AfterCommit` runs `vault.Store.MarkKeyEpoch(key, version)`
+  and then `vault.Store.ClearHistory`, only once the record committed, both still under
+  `shared.mu` and both best effort. No shared writer can land between the commit and the
+  clear, so an editor's next save archives the rotated version after it and keeps it
+  restorable (`TestEditorSaveDuringARotationWaitsForTheHistoryClear`). The marker takes the
+  version the rotation wrote, which with writers excluded is also the current one, never
+  lowers an existing marker, refuses a version the vault has not reached,
+  makes every older snapshot `staleKey` and refuses it for rollback with 409 whatever epoch
+  header the caller sends (that header proves which key a writer holds, never that the bytes
+  are current), and the clear removes snapshots and conflicts, which are ciphertext under the
+  retired key. Either failing is logged, audited `shared.hook_failed` and reported as
+  `epochMarked:false`/`historyCleared:false` on an otherwise successful rotation so the owner
+  can rotate again; neither is a failed rotation, since the vault is correctly re-keyed. Audit
+  `shared.key_rotated`, detail `<id>: rotated to epoch N, sealed to X members, Y left
+  behind`; the response is `{ok, metadata, keyEpoch, leftBehind, historyCleared, epochMarked}`.
+  `shared_test.go` covers the rotation (the members it leaves behind and the audit detail
+  included), every refusal leaving record/ciphertext/history/conflicts untouched, oversized
+  parts, a third part, parts out of order, a retired snapshot that survives a failed clear
+  staying unrestorable, a record commit that fails after the vault write leaving that snapshot
+  restorable and the rotation retryable, a rotation refused because the snapshot could not be
+  archived, `rotationPending` reaching an active owner's list and no other row's, four
+  simultaneous rotations leaving exactly one winner, an editor's post-rotation save keeping
+  the rotated version, and key replacements on either side of `Verify`. The route's test seams
+  `rotateVerifying` and `rotateCommitted` run inside those steps, under `shared.mu`.
+  `sharedApi.rotate` is the client transport; the owner's screen is the members dialog, reached
+  from the vault switcher's Members button.
 
 - `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
   History reads native KeePass history in the unlocked browser. Changed Apply Edits
@@ -381,6 +462,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   refused, as is any snapshot that fails to open. The server's `staleKey` flag labels and
   disables those rows without a key, including from the locked screen; the InvalidKey check is
   the second line of defence (vaults rotated before the epoch existed have no flag).
+  A shared rollback can be refused 409 for the opposite reason — the snapshot is fine and this
+  tab's key epoch is retired — so `vaultSave.isRotationRefusal` tells the two apart: a rotation
+  refusal says to reload the vault and marks no row `staleKey`, which would outlive the reload.
   `vaultDiff.test.ts` pins the diff and the InvalidKey signal.
 - `GET /api/vault/conflicts/{id}` returns ciphertext only to the owning authenticated user,
   with no-store caching and a download audit event identifying the validated conflict ID. `Store.OpenConflict` validates a flat
@@ -445,7 +529,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   nothing, Overwrite server copy re-reads the server version and uploads over it (the
   server copy stays in history), refused when the stored password envelope differs from the one
   the queue was unlocked against (key rotated elsewhere; an old-key upload would strand the vault), Reload server copy discards local edits. Uploads use the
-  shared CSRF request helper. `App.tsx` retains
+  shared CSRF request helper. A shared write refused because the key was rotated
+  (`isRotationRefusal`: 409 whose body names it) is not a conflict: the server's own words become
+  the error message, `conflict` stays false, and neither a retry nor an overwrite is allowed to
+  re-send ciphertext sealed under a retired key. `saveAction` is what the banner may offer
+  (`overwrite`/`reload`/`retry`), so `VaultPage` shows Reload server copy — never a Retry the
+  queue would ignore — for that refusal. `App.tsx` retains
   the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
   rollback. Lock/logout/forget always allow the user to confirm discarding unsaved or in-flight
   edits; saving cannot refuse those actions. `canDiscardVault` takes an async confirmer (the
@@ -454,7 +543,14 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   aborts transport and prevents later revisions uploading. An already accepted request cannot
   be undone. Logout clears the visible vault before network I/O; forgetting starts key removal
   independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.
-  `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
+  A shared upload (any `basePath` other than `PERSONAL_BASE`) carries `X-Shared-Key-Epoch`,
+  the epoch its ciphertext is sealed under; the personal vault has none and sends none. The
+  queue holds that epoch (fifth constructor argument, `keyEpoch` getter) and `setKeyEpoch`
+  moves it after a rotation this tab committed, so the next save claims the new key.
+  `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, retry,
+  and that epoch 0 is sent as `"0"` rather than treated as absent. `isRotationRefusal` /
+  `ROTATION_REFUSAL` match both of the server's epoch refusals (rotated key, and a write that
+  named no key), so neither is routed to the overwrite button.
 
 - `frontend/src/lib/appSelection.ts`, `components/VaultSwitcher.tsx` and `App.tsx`: one selected
   vault at a time (`Selected`). `switchTo` confirms discard, closes the old queue, opens the next
@@ -465,7 +561,24 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   `#/shared/<id>` once per unlock after the list loads and the user key is ready (a user key that
   settled unusable shows a notice instead); later vault-tab routes follow. A finished rotation
   replaces the live vault only if no switch took over (`applyRotation`); the switcher is busy
-  meanwhile. The idle lock fires mid-switch too, with no checkpoint. A save 403/404 on a shared vault (`lostAccess`) switches home without asking.
+  meanwhile. The idle lock fires mid-switch too, with no checkpoint. A save 403/404 on a shared vault (`lostAccess`) switches home without asking, and a
+  save 409 naming a rotation (`rotatedElsewhere`) re-opens that same vault with the new key
+  (`reopenShared`); that effect lists `switching`/`rotating` in its deps, because the refs it
+  guards on would otherwise never be reconsidered and the banner would stay dead. It asks
+  first (`ROTATED_QUESTION`, `rotatedPlan`, guarded by `askingRotatedRef` so it is asked once):
+  those edits can never be uploaded, and the copy on offer is the plain-text CSV
+  (`lib/csvExport.ts`), not a KDBX — a shared vault's file is credentialled with the shared
+  vault key, which this product shows nobody and which this tab zeroes on the re-open, so an
+  encrypted copy would be openable by no one. The question says that in as many words. A
+  dismissed question re-opens nothing and leaves the tab as it is; the export and the re-open
+  both re-check the unlock generation and the selection. Discarding the edits is destructive
+  and is never done unasked.
+  `openShared` awaits `loadCrypto` before unsealing, so a lazy HPKE chunk that 404'd after a
+  deploy says to reload the page (`CRYPTO_UNAVAILABLE`) instead of sending the user to an owner
+  for a re-seal (`RESEAL_NEEDED`) they do not need — the split `adoptUserKey` already makes.
+  A row that is not `active` (`canOpen`) is refused with `RESEAL_NEEDED` before anything is
+  loaded or fetched: a row a rotation left behind unseals fine — its copy opens the *retired*
+  key — and only the vault bytes would refuse it, as a raw kdbxweb `InvalidKey`.
   Readers get `readOnly` on `VaultPage`/`HistoryModal`: every mutating handler refuses. Security
   hides master password, paper code, rotation, offline key and device cards while shared; Forget
   This Device stays in the replacement card.
@@ -499,7 +612,64 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   column: the server reports `sealedByFingerprint` only for my own row, which the switcher
   shows in its title. `closeVault` closes both dialogs, matching the lock-cancels-questions
   rule. Known keys lists the pins in the personal vault with Re-pin (both fingerprints, then
-  confirm) and Forget.
+  confirm) and Forget. `VaultActions` carries rename, delete, leave and the owner's `Rotate key`
+  button plus the `rotationPending` banner; leaving is offered in every member state, a `stale`
+  row included, and `rotateBlocked` disables the rotation with a title that names the reason.
+  The confirmation states that the version history and preserved conflicts are deleted, and the
+  removal and leave confirmations say a departed member's copy still opens anything saved before
+  a rotation. A member with no published key is told that, not that their key is unchecked, and
+  my own row's mismatch is never sent to Security → Known keys, since a pin for yourself is
+  never written.
+  `resealMember` takes the vault's and the row's `keyEpoch` and refuses a self-reseal from an
+  epoch-stale row before any request (`EPOCH_STALE`), matching the server's 409.
+  `sealVerdict` is the single verdict behind `ResealButton` (its `disabled` and `title`) and the
+  re-seal handler, returning either the key the row displayed or the reason there is none.
+  `App.rotateShared` is the performing half: an active owner only, inside `queue.exclusive`, with
+  `KeePassVault.rekey` + `exportBinary` as `reEncrypt` and a re-key back to the accepted key on
+  any failure, so a refused rotation leaves the tab working. With a version in the outcome it
+  swaps `sharedKeyRef`, zeroes the old key and rebuilds the save queue at the version and epoch
+  the rotation wrote, which is also what re-renders `HistoryModal` at the new epoch; without one
+  it re-opens the vault through `reopenShared`, the same path a rotation committed by another tab
+  takes.
+
+- `frontend/src/lib/sharedRotation.ts`: the decision behind a shared-vault key rotation and
+  the call that performs it, with no React and injected dependencies, so it is tested without
+  a browser. `planRotation(members, views, me)` seals to my own row unconditionally from the
+  key this tab holds (the server refuses a rotation that does not name the caller, and a pin
+  of my own key is never written), seals to every member whose `KeyView` is a `pinned` or
+  `unknown` pin — `suspended` rows too, so a reactivation needs no owner — and leaves behind a
+  `changed` pin, an empty published key (`unknown` with no key is not permission to seal: the
+  same `NO_KEY` rule every `sharedFlows.sealFor` caller applies, deliberately in both places,
+  because pinning zero bytes would read as `changed` forever) or a view that could not be read,
+  carrying the reason the screen shows.
+  `rotateSharedVault` refuses a `changed` pin, or an empty public key, in the plan before it
+  pins or seals anything, so the refusal is total and a hand-built plan cannot reach
+  `pinUnknown` with zero bytes; then it mints one fresh key, pins the unknown keys as it uses them
+  exactly as invite does, seals one copy per planned member and sends them with the vault
+  re-encrypted under that same key in one `sharedApi.rotate`. The outcome's `leftBehind` is
+  always the plan's, and `historyCleared` carries the server's value so the owner can be told
+  to rotate again. A rejected call is checked with `rotationLanded`, which opens my own sealed
+  copy from the list and compares the bytes: a match adopts the rotation (the clear is unknown,
+  so it reports `false`), a mismatch rethrows the rotation's error, and a list that itself
+  failed rethrows it too — never claim a rotation did not land when it may have committed. That
+  check spares the owner a wrong error; the vault's openability does not rest on it, since a
+  committed rotation committed every sealed copy with it and a reload recovers. Every throwing
+  path zeroes the fresh key first: it lives only in this tab's memory, and a call that threw
+  returned no outcome to hold it. `RotationOutcome.version`
+  is the version the rotation wrote and is present **only** when the server's own response said so:
+  on the adopted-lost-response path nothing proves which version the vault is on — a member this
+  rotation re-sealed may have saved since — so it is absent and the caller re-opens the vault
+  instead of letting a queue claim a version and upload pre-rotation content over those edits.
+  The screen's own decisions are pure functions here as well: `rotateBlocked` (active owner,
+  user key ready, vault open, **every member's key verdict loaded**, nothing unsaved — in that
+  order; the key-verdict step is load-bearing, since `planRotation` reads the verdicts on screen
+  and a member with none yet plans as left behind, so a rotation fired before they resolve strands
+  everyone in the same irreversible commit that deletes the history), `rotationBanner`/`pendingName`
+  (the departed member is usually gone from the record, so their id names them), `adminRotationNote`
+  (the same sentence without the call to action, for an admin who cannot rotate) and
+  `rotationReport` (how many hold the new key, who was left behind with the reason, and a
+  `historyCleared:false` telling the owner to rotate again).
+  `sharedRotation.test.ts` uses real X-Wing keys and real HPKE round trips.
 
 - `frontend/src/lib/sharedVaults.ts`, `sharedKey.ts`, `vaultSelection.ts` and
   `components/AdminShared.tsx`: `sharedApi`/`adminSharedApi` are the whole shared surface, and
@@ -520,7 +690,16 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   fresh-session 403 renders the "Sign in again" link through `components/ErrorLine.tsx`, which
   the members dialog uses too. `AdminShared.test.ts` pins those three.
   Invite lookup is `GET /api/users/lookup?username=` (exact username, 404 for a miss).
-  Not built: shared key rotation (3c), the extension and KyAuth (3d).
+  `rotationPending` rides on the list, detail and admin rows as the server sends it; `optionLabel`
+  appends `Needs rotation` to the switcher option for an owner only, and Admin → Shared vaults
+  shows a `Rotation pending` badge with the same sentence the members dialog banners.
+  `sharedApi.rotate(id, kdbx, epoch, version, sealed)` posts the two parts as `FormData`,
+  `kdbx` then `keys`, and never sets `Content-Type` — only the browser knows the boundary it
+  wrote; `epoch` is the one being rotated from and `RotateResult.historyCleared` is `false`
+  when the snapshots under the retired key outlived the rotation. `openShared` returns the
+  vault's `keyEpoch` (`OpenedShared`), which is what the queue and `HistoryModal`'s restore
+  and conflict-discard writes claim; the empty-vault first upload claims it too.
+  Not built: the extension and KyAuth (3d).
 
 - `frontend/src/lib/download.ts`: every browser download goes through `downloadBlob`, which
   appends the anchor and revokes the object URL a second later so Firefox and Safari do not
@@ -544,7 +723,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   only drills and restores may hold private recovery material.
 
 - `internal/shared/AGENTS.md`: shared vault membership records, roles, states, sealed keys,
-  owner authority at the write, deleted area and pruning.
+  owner authority at the write, the pending-rotation flag every departure sets and the
+  `Rotate` that retires the old key, deleted area and pruning.
 
 - `frontend/src/lib/storage.ts` and `frontend/src/lib/deviceKey.ts`: manages the IndexedDB
   `keys` store on trusted devices for 1-click unlock. The vault key is sealed (AES-GCM)

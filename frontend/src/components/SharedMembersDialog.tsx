@@ -3,7 +3,8 @@ import { Dialog } from "./Dialog";
 import { useDialogs } from "./DialogHost";
 import { toErrorMessage } from "../lib/api";
 import { inviteMember, resealMember, resolveInvitee, REPIN_FIRST, type FlowDeps, type PinStatus } from "../lib/sharedFlows";
-import { sharedNameError, type LookupResult, type Member, type Role, type SharedVaultDetail } from "../lib/sharedVaults";
+import { planRotation, rotateBlocked, rotationBanner, rotationReport, type RotationOutcome, type RotationPlan } from "../lib/sharedRotation";
+import { sharedNameError, type LookupResult, type Member, type MemberState, type Role, type SharedVaultDetail } from "../lib/sharedVaults";
 import { ErrorLine } from "./ErrorLine";
 import { Users } from "lucide-react";
 
@@ -13,6 +14,13 @@ type Props = {
   myRole: Role;
   sharedKey: Uint8Array | null;
   deps: FlowDeps;
+  // App owns the open vault, its save queue and the key in memory, so the dialog plans the
+  // rotation and hands the plan over rather than reaching for any of that itself.
+  onRotate: (plan: RotationPlan) => Promise<RotationOutcome>;
+  // App's half of the rotation gate: the user key that seals the new copies, and whether
+  // anything is still unsaved in the queue the rotation would run inside.
+  keyReady: boolean;
+  unsaved: boolean;
   onChanged: () => void;
   onLeftOrDeleted: () => void;
   onClose: () => void;
@@ -39,6 +47,81 @@ const pinLabel = (p: PinStatus, mine?: boolean) =>
 const pinColor = (p: PinStatus) =>
   p.state === "pinned" ? "var(--success)" : p.state === "unknown" ? "var(--warning)" : "var(--danger)";
 
+// The three sentences the rotation contract fixes: what a rotation destroys, and what a
+// departed member's copy of the key still opens until one happens.
+export const ROTATE_WARNING = "Everyone who remains gets a new copy. This vault's version history and preserved conflicts are deleted: after the rotation nobody holds the key that opens them.";
+export const REMOVE_WARNING = "They lose access immediately. Their copy of the vault key still opens anything this vault saved before a rotation, so rotate the key once they are gone.";
+export const LEAVE_WARNING = "You will lose access to this vault until an owner invites you again. Your copy of the key still opens anything this vault saved before an owner rotates it.";
+
+export const KEY_UNCHECKED = "This member's key has not been checked yet; reopen this dialog and try again.";
+export const OWN_KEY_MISMATCH = "The key this account publishes is not the one this browser holds, so there is nothing safe to seal. Replace your user key from Security first.";
+
+// Either the key this member can be sealed to, or the reason there is none. One function
+// behind the button, its tooltip and the handler, so they cannot disagree. A row with no
+// published key and a row whose lookup failed are different facts, and neither of them is
+// "not checked yet"; my own row has no pin to re-pin, so it is never sent to Known keys.
+export type SealVerdict = { key: PinStatus } | { why: string };
+export const sealVerdict = (view: KeyView | undefined): SealVerdict => {
+  if (!view) return { why: KEY_UNCHECKED };
+  if ("problem" in view) return { why: `${view.problem}: there is no key to seal to.` };
+  if (!view.key.publicKey.length) return { why: "No published key: there is no key to seal to." };
+  if (view.key.state === "changed") return { why: view.mine ? OWN_KEY_MISMATCH : REPIN_FIRST };
+  return { key: view.key };
+};
+
+export function ResealButton({ view, busy, hasKey, onClick }: {
+  view: KeyView | undefined;
+  busy: boolean;
+  hasKey: boolean;
+  onClick: () => void;
+}) {
+  const v = sealVerdict(view);
+  const why = "why" in v ? v.why : null;
+  return (
+    <button type="button" className="btn btn-secondary btn-sm" onClick={onClick}
+      disabled={busy || !hasKey || why !== null}
+      title={why ?? (!hasKey ? "Open this vault first." : undefined)}>Re-seal key</button>
+  );
+}
+
+// Every member's key verdict has arrived. planRotation reads those verdicts, and a member
+// with none yet plans as left behind, so a rotation fired in that window strands everyone but
+// the owner — irreversibly, in the same commit that deletes the version history.
+export const keysReady = (members: { userId: string }[], keys: Record<string, KeyView>) =>
+  members.every((m) => keys[m.userId] !== undefined);
+
+// The vault-wide actions. Rotation is an owner's, and only while their own row is active:
+// a stale owner holds the retired key and the server refuses the rotation anyway. Leaving
+// is offered in every state, a stale row included.
+export function VaultActions({ isOwner, myState, banner, gate, busy, onRename, onDelete, onLeave, onRotate }: {
+  isOwner: boolean;
+  myState: MemberState | undefined;
+  banner: string | null;
+  gate: { keyReady: boolean; open: boolean; keysLoaded: boolean; unsaved: boolean };
+  busy: boolean;
+  onRename: () => void;
+  onDelete: () => void;
+  onLeave: () => void;
+  onRotate: () => void;
+}) {
+  const blocked = rotateBlocked({ activeOwner: isOwner && myState === "active", ...gate });
+  return (
+    <>
+      {isOwner && banner ? (
+        <p role="status" style={{ color: "var(--danger)", background: "var(--danger-soft)", borderRadius: "6px", padding: "0.6rem 0.9rem", margin: "0 0 1rem" }}>{banner}</p>
+      ) : null}
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+        {isOwner ? <button type="button" className="btn btn-secondary btn-sm" onClick={onRename} disabled={busy}>Rename…</button> : null}
+        {isOwner ? <button type="button" className="btn btn-danger btn-sm" onClick={onDelete} disabled={busy}>Delete vault…</button> : null}
+        {isOwner ? (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onRotate} disabled={busy || blocked !== null} title={blocked ?? undefined}>Rotate key</button>
+        ) : null}
+        <button type="button" className="btn btn-quiet btn-sm" onClick={onLeave} disabled={busy}>Leave vault…</button>
+      </div>
+    </>
+  );
+}
+
 export function MemberKey({ username, view }: { username: string; view: KeyView | undefined }) {
   if (!view) return <span>Checking…</span>;
   if ("problem" in view) return <span style={{ color: "var(--warning)" }}>{view.problem}</span>;
@@ -50,14 +133,19 @@ export function MemberKey({ username, view }: { username: string; view: KeyView 
   );
 }
 
-export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, onChanged, onLeftOrDeleted, onClose }: Props) {
+export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, onRotate, keyReady, unsaved, onChanged, onLeftOrDeleted, onClose }: Props) {
   const dialogs = useDialogs();
   const [detail, setDetail] = useState<SharedVaultDetail | null>(null);
   const [keys, setKeys] = useState<Record<string, KeyView>>({});
   const [error, setError] = useState("");
+  // A rotation's report: green when every remaining member got a copy and the old snapshots
+  // went with it, amber when the owner has something left to do.
+  const [notice, setNotice] = useState<{ text: string; warn: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
-  // The loaded record is authoritative about my own role; the summary row may be a minute old.
-  const isOwner = (detail?.members.find((m) => m.userId === myId)?.role ?? myRole) === "owner";
+  // The loaded record is authoritative about my own role and state; the summary row may be a
+  // minute old, and a rotation that left me behind changes both.
+  const me = detail?.members.find((m) => m.userId === myId);
+  const isOwner = (me?.role ?? myRole) === "owner";
 
   const [username, setUsername] = useState("");
   const [invitee, setInvitee] = useState<{ user: LookupResult; pin: PinStatus } | null>(null);
@@ -98,6 +186,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
     setBusy(true);
     setError("");
     try {
+      setNotice(null);
       await what();
       onChanged();
       if (after) { after(); return; }
@@ -136,7 +225,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
   const leave = async () => {
     if (!(await dialogs.confirm({
       title: "Leave this vault?",
-      message: "You will lose access to this vault until an owner invites you again.",
+      message: LEAVE_WARNING,
       danger: true,
       confirmLabel: "Leave",
     }))) return;
@@ -146,7 +235,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
   const removeMember = async (m: Member) => {
     if (!(await dialogs.confirm({
       title: `Remove ${m.username}?`,
-      message: "They lose access immediately. Their copy of the vault key is only invalidated by rotating it, which is not built yet.",
+      message: REMOVE_WARNING,
       danger: true,
       confirmLabel: "Remove",
     }))) return;
@@ -157,11 +246,28 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
 
   // The key sealed is the one whose fingerprint this row is showing, not a fresh lookup.
   const reseal = (m: Member) => void run(async () => {
-    if (!sharedKey) throw new Error("Open this vault before re-sealing a member's key.");
-    const view = keys[m.userId];
-    if (!view || !("key" in view)) throw new Error("This member's key has not been checked yet; reopen this dialog and try again.");
-    await resealMember(vaultId, m.userId, view.key, sharedKey, deps);
+    if (!sharedKey || !detail) throw new Error("Open this vault before re-sealing a member's key.");
+    const v = sealVerdict(keys[m.userId]);
+    if ("why" in v) throw new Error(v.why);
+    await resealMember(vaultId, m.userId, v.key, sharedKey, deps, { vault: detail.keyEpoch, row: m.keyEpoch });
   }, `Could not re-seal ${m.username}'s key.`);
+
+  // The plan is built from the verdicts this dialog put on screen, so what is sealed is what
+  // the owner was looking at. App performs it inside the save queue's serializer.
+  const rotate = async () => {
+    if (!detail) return;
+    if (!(await dialogs.confirm({
+      title: `Rotate the key for “${detail.name}”?`,
+      message: ROTATE_WARNING,
+      danger: true,
+      confirmLabel: "Rotate key",
+    }))) return;
+    const plan = planRotation(detail.members, keys, deps.me);
+    await run(async () => {
+      const outcome = await onRotate(plan);
+      setNotice({ text: rotationReport(plan.seal.length, outcome), warn: outcome.leftBehind.length > 0 || !outcome.historyCleared });
+    }, "Could not rotate this vault's key.");
+  };
 
   const lookup = async () => {
     setInviteError("");
@@ -207,21 +313,24 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
   };
 
   const changed = invitee?.pin.state === "changed";
-  const changedPin = (userId: string) => {
-    const v = keys[userId];
-    return !!v && "key" in v && v.key.state === "changed";
-  };
 
   return (
     <Dialog title={detail ? `Members of “${detail.name}”` : "Members"} onClose={onClose} size="lg">
       {error ? <ErrorLine text={error} /> : null}
+      {notice ? <p role="status" style={{ color: notice.warn ? "var(--warning)" : "var(--success)", margin: "0 0 0.75rem" }}>{notice.text}</p> : null}
       {!detail ? <p style={{ color: "var(--ink-muted)" }}>Loading…</p> : (
         <>
-          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1rem" }}>
-            {isOwner ? <button type="button" className="btn btn-secondary btn-sm" onClick={() => void rename()} disabled={busy}>Rename…</button> : null}
-            {isOwner ? <button type="button" className="btn btn-danger btn-sm" onClick={() => void remove()} disabled={busy}>Delete vault…</button> : null}
-            <button type="button" className="btn btn-quiet btn-sm" onClick={() => void leave()} disabled={busy}>Leave vault…</button>
-          </div>
+          <VaultActions
+            isOwner={isOwner}
+            myState={me?.state}
+            banner={detail.rotationPending ? rotationBanner(detail.rotationPending, detail.members) : null}
+            gate={{ keyReady, open: !!sharedKey, keysLoaded: keysReady(detail.members, keys), unsaved }}
+            busy={busy}
+            onRename={() => void rename()}
+            onDelete={() => void remove()}
+            onLeave={() => void leave()}
+            onRotate={() => void rotate()}
+          />
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {detail.members.map((m) => (
@@ -245,9 +354,7 @@ export function SharedMembersDialog({ vaultId, myId, myRole, sharedKey, deps, on
                     </select>
                   ) : <span style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>{m.role}</span>}
                   {isOwner && m.state === "stale" ? (
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => reseal(m)}
-                      disabled={busy || !sharedKey || changedPin(m.userId)}
-                      title={changedPin(m.userId) ? REPIN_FIRST : !sharedKey ? "Open this vault first." : undefined}>Re-seal key</button>
+                    <ResealButton view={keys[m.userId]} busy={busy} hasKey={!!sharedKey} onClick={() => reseal(m)} />
                   ) : null}
                   {isOwner && m.userId !== myId ? (
                     <button type="button" className="btn btn-danger btn-sm" onClick={() => void removeMember(m)} disabled={busy}>Remove</button>

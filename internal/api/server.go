@@ -66,6 +66,9 @@ type Server struct {
 	sharedSettings *sharedSettings
 	// sharedResolved runs after sharedMember reads the record; tests race writes through it.
 	sharedResolved func()
+	// rotateVerifying and rotateCommitted run inside a rotation's Verify and AfterCommit
+	// steps, under shared.mu; tests race key replacements and writes through them.
+	rotateVerifying, rotateCommitted func()
 
 	// trustedProxies are the peers whose X-Forwarded-For sourceKey may believe.
 	trustedProxies []netip.Prefix
@@ -277,6 +280,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/shared/{id}/members/{userId}", s.withAuth(s.handleSharedMemberRemove))
 	mux.HandleFunc("POST /api/shared/{id}/accept", s.withAuth(s.handleSharedAccept))
 	mux.HandleFunc("POST /api/shared/{id}/decline", s.withAuth(s.handleSharedDecline))
+	mux.HandleFunc("POST /api/shared/{id}/rotate", s.withAuth(s.handleSharedRotate))
 	mux.HandleFunc("GET /api/shared/{id}/metadata", s.withAuth(s.withSharedRead(s.vaultMetadata)))
 	mux.HandleFunc("GET /api/shared/{id}/kdbx", s.withAuth(s.withSharedRead(s.vaultDownload)))
 	mux.HandleFunc("POST /api/shared/{id}/upload", s.withAuth(s.withSharedWrite(s.vaultUpload)))

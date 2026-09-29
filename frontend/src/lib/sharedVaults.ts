@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { getJSON, postJSON, putJSON, patchJSON, deleteJSON, HttpError, toErrorMessage } from "./api";
+import { getJSON, postJSON, putJSON, patchJSON, deleteJSON, requestJSON, HttpError, toErrorMessage } from "./api";
 
 export type Role = "owner" | "editor" | "reader";
 export type MemberState = "invited" | "active" | "stale" | "suspended";
+// A departed member still holds a working copy of the key; an owner clears it by rotating.
+export type Pending = { since: string; userId: string; reason: "removed" | "left" | "declined" };
 export type MyKey = { sealedKey: string; keyFingerprint: string; keyEpoch: number; sealedBy: string; sealedByFingerprint: string };
-export type SharedVaultSummary = { id: string; name: string; role: Role; state: MemberState; keyEpoch: number; myKey: MyKey; invitedBy?: { userId: string; username: string; fingerprint: string } };
+export type SharedVaultSummary = { id: string; name: string; role: Role; state: MemberState; keyEpoch: number; myKey: MyKey; invitedBy?: { userId: string; username: string; fingerprint: string }; rotationPending?: Pending };
 export type Member = { userId: string; username: string; role: Role; state: MemberState; keyFingerprint: string; keyEpoch: number; addedAt: string; acceptedAt?: string };
-export type SharedVaultDetail = { id: string; name: string; createdBy: string; createdAt: string; keyEpoch: number; members: Member[] };
+export type SharedVaultDetail = { id: string; name: string; createdBy: string; createdAt: string; keyEpoch: number; members: Member[]; rotationPending?: Pending };
+// historyCleared is false when the snapshots under the retired key outlived the rotation.
+export type RotateResult = { keyEpoch: number; leftBehind: string[]; metadata: { version: number }; historyCleared: boolean };
 export type LookupResult = { userId: string; username: string; fingerprint: string };
 
 export const SHARED_ID = /^sv_[A-Za-z0-9_-]{22}$/;
@@ -36,6 +40,15 @@ export const sharedApi = {
     }
   },
   metadata: (id: string) => getJSON<{ version: number }>(`${sharedBase(id)}/metadata`),
+  // The re-encrypted vault and one sealed copy of the new key per remaining member commit
+  // together. epoch is the one being rotated from; the parts are read positionally.
+  rotate: (id: string, kdbx: ArrayBuffer, epoch: number, version: number, sealed: { userId: string; sealedKey: string; keyFingerprint: string }[]): Promise<RotateResult> => {
+    const form = new FormData();
+    form.append("kdbx", new Blob([kdbx], { type: "application/octet-stream" }), "vault.kdbx");
+    form.append("keys", JSON.stringify({ epoch, sealed }));
+    // No Content-Type: only the browser knows the multipart boundary it wrote.
+    return requestJSON<RotateResult>(`${sharedBase(id)}/rotate`, { method: "POST", headers: { "If-Match": `"${version}"` }, body: form });
+  },
 };
 export type SharedApi = typeof sharedApi;
 
@@ -46,6 +59,7 @@ export type AdminSharedVault = {
   createdAt: string;
   keyEpoch: number;
   ownerless: boolean;
+  rotationPending?: Pending;
   members: { userId: string; username: string; role: Role; state: MemberState }[];
 };
 
@@ -64,6 +78,13 @@ export function stateLabel(v: SharedVaultSummary): string | null {
   if (v.state === "stale") return "Key changed";
   if (v.role === "reader") return "Read-only";
   return null;
+}
+
+// The switcher's option text. "Needs rotation" is shown only to an owner: nobody else can
+// act on it, and a reader told to rotate has nowhere to go.
+export function optionLabel(v: SharedVaultSummary): string {
+  const tags = [stateLabel(v), v.role === "owner" && v.rotationPending ? "Needs rotation" : null].filter(Boolean);
+  return tags.length ? `${v.name} — ${tags.join(" — ")}` : v.name;
 }
 
 const REFRESH_MS = 60_000;

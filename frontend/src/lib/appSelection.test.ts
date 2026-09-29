@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { switchTo, lostAccess, restorePlan, applyRotation, resolveDraft, READ_ONLY_DRAFT, type SwitchDeps } from "./appSelection";
+import { switchTo, lostAccess, rotatedElsewhere, rotatedPlan, ROTATED_QUESTION, restorePlan, applyRotation, resolveDraft, READ_ONLY_DRAFT, type SwitchDeps } from "./appSelection";
 import { personal } from "./vaultSelection";
 
 const ID = "sv_abcdefghijklmnopqrstuv";
@@ -13,7 +13,7 @@ function deps(over: Partial<SwitchDeps> = {}) {
   const d: SwitchDeps = {
     confirmDiscard: async () => true,
     closeQueue: () => { log.push("close"); },
-    openShared: async () => { log.push("openShared"); return { vault: vaultB, key: new Uint8Array(32), version: 3, readOnly: false }; },
+    openShared: async () => { log.push("openShared"); return { vault: vaultB, key: new Uint8Array(32), version: 3, readOnly: false, keyEpoch: 1 }; },
     openPersonal: async () => { log.push("openPersonal"); return { vault: vaultA, key: new Uint8Array(32), version: 9 }; },
     apply: (next) => { log.push(`apply:${next.selected.kind}:${(next.vault as any).name}:${next.queue.getSnapshot().version}`); },
     notify: (t) => { log.push(`notify:${t}`); },
@@ -38,7 +38,7 @@ test("declining the discard confirm aborts before anything closes", async () => 
 test("a lock during the open is not applied", async () => {
   const h = deps();
   const key = new Uint8Array(32).fill(7);
-  h.d.openShared = async () => { h.bump(); return { vault: vaultB, key, version: 3, readOnly: false }; };
+  h.d.openShared = async () => { h.bump(); return { vault: vaultB, key, version: 3, readOnly: false, keyEpoch: 1 }; };
   assert.equal(await switchTo({ kind: "shared", id: ID }, row, h.d), false);
   assert.ok(!h.log.some((l) => l.startsWith("apply")));
   assert.ok(key.every((b) => b === 0), "a shared key opened for a stale generation is zeroed");
@@ -113,4 +113,30 @@ test("a recovered checkpoint is applied whenever the vault is writable", () => {
   const none = { ...draft, vault: vaultA, version: 9, dirty: false, entry: null, recovered: false };
   assert.equal(resolveDraft({ vault: vaultA, version: 9 }, none, true, notices), none);
   assert.deepEqual(notices, []);
+});
+
+test("a rotation 409 re-opens the vault, an ordinary conflict does not", () => {
+  const shared = { kind: "shared", id: "sv_abcdefghijklmnopqrstuv" } as const;
+  const err = (message: string, status?: number) => ({ kind: "error", version: 3, message, status } as any);
+  assert.equal(rotatedElsewhere(shared, err("the shared vault key was rotated; reload the vault", 409)), true);
+  assert.equal(rotatedElsewhere(shared, err("this write did not say which shared vault key it was made under; reload the vault", 409)), true,
+    "a write with no epoch header cannot be overwritten either: re-open the vault");
+  assert.equal(rotatedElsewhere(shared, err("conflict", 409)), false);
+  assert.equal(rotatedElsewhere(shared, err("the shared vault key was rotated", 403)), false);
+  assert.equal(rotatedElsewhere(personal, err("the shared vault key was rotated; reload the vault", 409)), false);
+});
+
+test("a rotation elsewhere never discards the edits without an answer", () => {
+  // The two answers the question offers, and the dismissal a lock or Escape produces.
+  assert.deepEqual(rotatedPlan("csv"), { csv: true, reopen: true });
+  assert.deepEqual(rotatedPlan("discard"), { csv: false, reopen: true });
+  assert.deepEqual(rotatedPlan(null), { csv: false, reopen: false });
+  // Anything unexpected re-opens without claiming an export was made, never silently.
+  assert.deepEqual(rotatedPlan("what"), { csv: false, reopen: true });
+  assert.deepEqual(ROTATED_QUESTION.options.map((o) => o.value), ["csv", "discard"]);
+  // The copy on offer is plain text, and the question says so: an encrypted copy of a shared
+  // vault is credentialled with a key this product never shows and is about to retire.
+  assert.match(ROTATED_QUESTION.message, /plain-text CSV/);
+  assert.match(ROTATED_QUESTION.message, /unopenable/);
+  assert.match(ROTATED_QUESTION.message, /does not include unapplied editor fields, recycled entries, custom fields, attachments or entry history/);
 });

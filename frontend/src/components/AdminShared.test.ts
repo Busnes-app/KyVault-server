@@ -66,3 +66,18 @@ test("a busy row disables its destructive controls; an expanded row lists member
   assert.doesNotMatch(collapsed, /dana/, "a collapsed row does not render its members");
   assert.match(renderToStaticMarkup(createElement(VaultRow, { ...props, vault: vault({ ownerless: true }) })), /Ownerless/);
 });
+
+// The admin list diagnoses a vault whose key a departed member still holds; only an owner
+// can rotate it, so the row says what happened and offers no button for it.
+test("a vault whose key needs rotating says who left and when", () => {
+  const props = { expanded: false, busy: false, onToggle: () => {}, onDelete: () => {}, onRemoveMember: () => {} };
+  const pending = renderToStaticMarkup(createElement(VaultRow, {
+    ...props, vault: vault({ rotationPending: { since: "2026-09-27T10:00:00Z", userId: "u-2", reason: "removed" } }),
+  }));
+  assert.match(pending, /Rotation pending/);
+  assert.match(pending, /dana was removed on /, "the row names the member while they are still listed");
+  assert.match(pending, /still opens anything this vault saved before a rotation/);
+
+  const clean = renderToStaticMarkup(createElement(VaultRow, { ...props, vault: vault() }));
+  assert.doesNotMatch(clean, /Rotation pending/);
+});

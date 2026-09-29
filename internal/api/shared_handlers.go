@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Busnes-app/kyvault-server/internal/backup"
@@ -107,17 +109,45 @@ func (s *Server) withSharedWrite(next func(http.ResponseWriter, *http.Request, v
 		if !s.sharedCSRF(w, r) {
 			return
 		}
-		next(w, r, sharedTarget(r, c))
+		epoch, ok := sharedEpoch(r)
+		if !ok {
+			// Not a rotation: this client never said which key it holds. Saying it was
+			// rotated would be false, and it is what a tab left open across a deploy reads.
+			http.Error(w, "this write did not say which shared vault key it was made under; reload the vault", http.StatusConflict)
+			return
+		}
+		if epoch != c.vault.KeyEpoch {
+			http.Error(w, "the shared vault key was rotated; reload the vault", http.StatusConflict)
+			return
+		}
+		t := sharedTarget(r, c)
+		t.epoch = epoch
+		next(w, r, t)
 	}
 }
 
+const sharedEpochHeader = "X-Shared-Key-Epoch"
+
+// sharedEpoch reads the key epoch a write claims its ciphertext was sealed under. It is
+// required: a client that does not send it cannot prove it holds the current key, and a
+// member re-sealed by a rotation whose tab still holds the retired key would otherwise
+// write ciphertext nobody left in the vault can open.
+func sharedEpoch(r *http.Request) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(r.Header.Get(sharedEpochHeader)))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // writeTarget runs a vault store write; for a shared target, only while the caller's row
-// still permits writing, checked under the membership lock (shared.Store.WithWriter).
+// still permits writing and the key epoch it claimed is still the vault's, both checked
+// under the membership lock (shared.Store.WithWriter).
 func (s *Server) writeTarget(t vaultTarget, fn func() error) error {
 	if !t.shared {
 		return fn()
 	}
-	return s.shared.WithWriter(t.sharedID, t.user.ID, fn)
+	return s.shared.WithWriter(t.sharedID, t.user.ID, t.epoch, fn)
 }
 
 // sharedRefused answers a WithWriter refusal and reports whether it did.
@@ -127,6 +157,9 @@ func sharedRefused(w http.ResponseWriter, err error) bool {
 		http.Error(w, "this shared vault is read-only for you", http.StatusForbidden)
 	case errors.Is(err, shared.ErrNotFound), errors.Is(err, shared.ErrNotMember), errors.Is(err, shared.ErrCorrupt):
 		sharedErr(w, err)
+	case errors.Is(err, shared.ErrEpoch):
+		// A rotation committed between the gate and the write.
+		http.Error(w, "the shared vault key was rotated; reload the vault", http.StatusConflict)
 	default:
 		return false
 	}
@@ -217,6 +250,8 @@ func sharedErr(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, shared.ErrAlreadyMember), errors.Is(err, shared.ErrLastOwner), errors.Is(err, shared.ErrMemberCap), errors.Is(err, shared.ErrOwnedCap), errors.Is(err, shared.ErrState):
 		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, shared.ErrEpoch):
+		http.Error(w, "the shared vault key was rotated; ask an owner to re-seal your copy", http.StatusConflict)
 	default:
 		log.Printf("shared vault error: %v", err)
 		http.Error(w, "shared vault error", http.StatusInternalServerError)
@@ -334,19 +369,26 @@ func (s *Server) handleSharedList(w http.ResponseWriter, r *http.Request, u user
 		return
 	}
 	type row struct {
-		ID        string       `json:"id"`
-		Name      string       `json:"name"`
-		Role      shared.Role  `json:"role"`
-		State     shared.State `json:"state"`
-		KeyEpoch  int          `json:"keyEpoch"`
-		MyKey     myKeyView    `json:"myKey"`
-		InvitedBy *inviterView `json:"invitedBy,omitempty"`
+		ID              string          `json:"id"`
+		Name            string          `json:"name"`
+		Role            shared.Role     `json:"role"`
+		State           shared.State    `json:"state"`
+		KeyEpoch        int             `json:"keyEpoch"`
+		MyKey           myKeyView       `json:"myKey"`
+		InvitedBy       *inviterView    `json:"invitedBy,omitempty"`
+		RotationPending *shared.Pending `json:"rotationPending,omitempty"`
 	}
 	out := make([]row, 0, len(vaults))
 	for _, v := range vaults {
 		m := v.Members[u.ID]
 		rw := row{ID: v.ID, Name: v.Name, Role: m.Role, State: m.State, KeyEpoch: v.KeyEpoch,
 			MyKey: myKeyView{SealedKey: m.SealedKey, KeyFingerprint: m.KeyFingerprint, KeyEpoch: m.KeyEpoch, SealedBy: m.SealedBy, SealedByFingerprint: m.SealedByFingerprint}}
+		// Only an active owner: the flag names a departed member and the date they left, and
+		// only an owner can act on it. An invitation must disclose nothing about the
+		// membership before it is accepted, which is why GET /api/shared/{id} 404s that row.
+		if m.Role == shared.RoleOwner && m.State == shared.StateActive {
+			rw.RotationPending = v.RotationPending
+		}
 		if m.State == shared.StateInvited {
 			rw.InvitedBy = &inviterView{UserID: m.SealedBy, Username: s.username(m.SealedBy), Fingerprint: m.SealedByFingerprint}
 		}
@@ -365,10 +407,14 @@ func (s *Server) handleSharedGet(w http.ResponseWriter, r *http.Request, u users
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"id": c.vault.ID, "name": c.vault.Name, "createdBy": c.vault.CreatedBy, "createdAt": c.vault.CreatedAt,
 		"keyEpoch": c.vault.KeyEpoch, "members": s.memberViews(c.vault),
-	})
+	}
+	if c.vault.RotationPending != nil {
+		resp["rotationPending"] = c.vault.RotationPending
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // PATCH /api/shared/{id}
@@ -495,6 +541,10 @@ func (s *Server) handleSharedMemberUpdate(w http.ResponseWriter, r *http.Request
 		http.Error(w, "only an owner can change members", http.StatusForbidden)
 		return
 	}
+	if selfReseal && c.me.KeyEpoch != c.vault.KeyEpoch {
+		http.Error(w, "the shared vault key was rotated; ask an owner to re-seal your copy", http.StatusConflict)
+		return
+	}
 	target, _, found := targetRow(w, r, c)
 	if !found {
 		return
@@ -576,7 +626,7 @@ func (s *Server) handleSharedMemberRemove(w http.ResponseWriter, r *http.Request
 	if !found {
 		return
 	}
-	if err := s.shared.Remove(c.vault.ID, u.ID, target); err != nil {
+	if err := s.shared.Remove(c.vault.ID, u.ID, target, time.Now()); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -622,7 +672,7 @@ func (s *Server) handleSharedDecline(w http.ResponseWriter, r *http.Request, u u
 		http.Error(w, "only an invitation can be declined", http.StatusConflict)
 		return
 	}
-	if err := s.shared.Remove(c.vault.ID, u.ID, u.ID); err != nil {
+	if err := s.shared.Remove(c.vault.ID, u.ID, u.ID, time.Now()); err != nil {
 		sharedErr(w, err)
 		return
 	}
@@ -638,17 +688,19 @@ func (s *Server) handleAdminSharedList(w http.ResponseWriter, r *http.Request, _
 		return
 	}
 	type row struct {
-		ID        string       `json:"id"`
-		Name      string       `json:"name"`
-		CreatedBy string       `json:"createdBy"`
-		CreatedAt time.Time    `json:"createdAt"`
-		KeyEpoch  int          `json:"keyEpoch"`
-		Ownerless bool         `json:"ownerless"`
-		Members   []memberView `json:"members"`
+		ID              string          `json:"id"`
+		Name            string          `json:"name"`
+		CreatedBy       string          `json:"createdBy"`
+		CreatedAt       time.Time       `json:"createdAt"`
+		KeyEpoch        int             `json:"keyEpoch"`
+		Ownerless       bool            `json:"ownerless"`
+		Members         []memberView    `json:"members"`
+		RotationPending *shared.Pending `json:"rotationPending,omitempty"`
 	}
 	out := make([]row, 0, len(vaults))
 	for _, v := range vaults {
-		out = append(out, row{ID: v.ID, Name: v.Name, CreatedBy: v.CreatedBy, CreatedAt: v.CreatedAt, KeyEpoch: v.KeyEpoch, Ownerless: ownerless(v), Members: s.memberViews(v)})
+		out = append(out, row{ID: v.ID, Name: v.Name, CreatedBy: v.CreatedBy, CreatedAt: v.CreatedAt, KeyEpoch: v.KeyEpoch,
+			Ownerless: ownerless(v), Members: s.memberViews(v), RotationPending: v.RotationPending})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -678,7 +730,7 @@ func (s *Server) handleAdminSharedMemberRemove(w http.ResponseWriter, r *http.Re
 		return
 	}
 	id, target := r.PathValue("id"), r.PathValue("userId")
-	if err := s.shared.Remove(id, "", target); err != nil {
+	if err := s.shared.Remove(id, "", target, time.Now()); err != nil {
 		sharedErr(w, err)
 		return
 	}

@@ -229,3 +229,26 @@ describe("vaults are interchangeable with KyAuth", () => {
     );
   });
 });
+
+// A shared-vault rotation re-keys the open database and exports under the new key. `rekey`
+// mutates the live object, so a rotation the server never accepted has to put the old key
+// back: otherwise this tab's next export and download are encrypted to a key nobody holds.
+describe("rekey moves the live database and can be undone", () => {
+  test("an export follows the current key, and rekeying back restores the old one", async () => {
+    const oldKey = vaultKey();
+    const newKey = new Uint8Array(32).fill(0x5a);
+    const vault = await KeePassVault.createNew(oldKey);
+    vault.createEntry({ title: "before", username: "u", password: "p", url: "", notes: "", groupUuid: "" });
+
+    vault.rekey(newKey);
+    const rotated = await vault.exportBinary();
+    assert.equal((await KeePassVault.open(rotated, newKey)).getEntries().length, 1);
+    await assert.rejects(KeePassVault.open(rotated, oldKey), (err) => err instanceof KdbxError && err.code === Consts.ErrorCodes.InvalidKey);
+
+    // The failure path: back to the key the server still has, and the export proves it.
+    vault.rekey(oldKey);
+    const restored = await vault.exportBinary();
+    assert.equal((await KeePassVault.open(restored, oldKey)).getEntries().length, 1);
+    await assert.rejects(KeePassVault.open(restored, newKey), (err) => err instanceof KdbxError && err.code === Consts.ErrorCodes.InvalidKey);
+  });
+});

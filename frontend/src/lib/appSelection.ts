@@ -1,4 +1,4 @@
-import { VaultSaveQueue, type SaveState } from "./vaultSave";
+import { VaultSaveQueue, ROTATION_REFUSAL, type SaveState } from "./vaultSave";
 import { resolveSelection, selectionBase, type Selected, type OpenedShared } from "./vaultSelection";
 import type { SharedVaultSummary } from "./sharedVaults";
 import type { KeePassVault } from "./kdbx";
@@ -18,6 +18,41 @@ export type SwitchDeps = {
 
 export const lostAccess = (selected: Selected, state: SaveState): boolean =>
   selected.kind === "shared" && state.kind === "error" && (state.status === 403 || state.status === 404);
+
+// A shared write refused over the key epoch: either the key was rotated elsewhere, so this
+// copy is sealed under a retired key, or the write never said which key it used. Neither has
+// anything to overwrite with, and both are answered by re-opening the vault. Every other 409
+// is an ordinary version conflict and keeps the overwrite/reload choice.
+export const rotatedElsewhere = (selected: Selected, state: SaveState): boolean =>
+  selected.kind === "shared" && state.kind === "error" && state.status === 409 &&
+  ROTATION_REFUSAL.test(state.message);
+
+// What the tab offers before a rotation elsewhere forces it to re-open the vault. The refused
+// save is itself the proof there are unsaved edits, and they can never be uploaded — they are
+// sealed under a retired key and the server is right to refuse them. A KDBX copy would be no
+// copy at all: a shared vault's file is credentialled with the shared vault key, which this
+// product never shows anyone and which this tab is about to zero, so nobody could ever open
+// it. The plain-text CSV is the only form the user can still read, which is why the question
+// says so in as many words. Losing the edits is destructive and is never done unasked.
+export const ROTATED_QUESTION = {
+  title: "This vault's key was rotated elsewhere",
+  message: "Your unsaved edits can no longer be saved: they are encrypted with the key that was just retired, " +
+    "and an encrypted copy of them would be unopenable by you or anyone else. The one copy you can still read " +
+    "is a plain-text CSV of this vault's entries — every password and TOTP secret in the clear. " +
+    "It does not include unapplied editor fields, recycled entries, custom fields, attachments or entry history. " +
+    "Save it only to a device you control and delete it when you are done.",
+  label: "Unsaved edits",
+  options: [
+    { value: "csv", label: "Export the entries as plain-text CSV, then re-open" },
+    { value: "discard", label: "Re-open the vault and lose them" },
+  ],
+  confirmLabel: "Continue",
+};
+
+// The answer, decided: a dismissed question (Escape, or a lock cancelling it) does neither, so
+// the edits stay on screen and the refusal banner stays with them.
+export const rotatedPlan = (answer: string | null): { csv: boolean; reopen: boolean } =>
+  ({ csv: answer === "csv", reopen: answer !== null });
 
 export type RestorePlan = { action: "wait" } | { action: "none" } | { action: "switch"; id: string } | { action: "notice"; text: string };
 
@@ -43,7 +78,7 @@ export async function switchTo(target: Selected, row: SharedVaultSummary | undef
       if (!row) throw new Error("That shared vault is no longer available.");
       const o = await deps.openShared(row);
       if (deps.generation() !== gen) { o.key.fill(0); return false; }
-      deps.apply({ selected: target, vault: o.vault, key: o.key, queue: new VaultSaveQueue(o.vault, o.version, undefined, selectionBase(target)), readOnly: o.readOnly });
+      deps.apply({ selected: target, vault: o.vault, key: o.key, queue: new VaultSaveQueue(o.vault, o.version, undefined, selectionBase(target), o.keyEpoch), readOnly: o.readOnly });
       return true;
     }
     const p = await deps.openPersonal();

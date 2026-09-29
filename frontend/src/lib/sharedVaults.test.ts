@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HttpError } from "./api";
-import { canOpen, stateLabel, SHARED_ID, sharedBase, sharedApi, type SharedVaultSummary } from "./sharedVaults";
+import { canOpen, stateLabel, optionLabel, SHARED_ID, sharedBase, sharedApi, type SharedVaultSummary } from "./sharedVaults";
 
 const row = (over: Partial<SharedVaultSummary>): SharedVaultSummary => ({
   id: "sv_abcdefghijklmnopqrstuv", name: "Finance", role: "editor", state: "active", keyEpoch: 1,
@@ -52,4 +52,39 @@ test("lookupUser rejects with HttpError on 500", async (t) => {
   browserCookie(t);
   t.mock.method(globalThis, "fetch", async () => new Response("boom", { status: 500, statusText: "Internal Server Error" }));
   await assert.rejects(() => sharedApi.lookupUser("alice"), HttpError);
+});
+
+test("rotate posts the kdbx part then the keys part, versioned, with no hand-set content type", async (t) => {
+  browserCookie(t);
+  const calls: { url: string; method: string; ifMatch: string | null; contentType: string | null; parts: string[]; keys: string }[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options: RequestInit = {}) => {
+    const headers = new Headers(options.headers);
+    const form = options.body as FormData;
+    calls.push({
+      url: String(url), method: options.method ?? "GET",
+      ifMatch: headers.get("If-Match"), contentType: headers.get("Content-Type"),
+      parts: [...form.keys()], keys: String(form.get("keys")),
+    });
+    return Response.json({ ok: true, metadata: { version: 9 }, keyEpoch: 3, leftBehind: ["u-4"], historyCleared: false });
+  });
+  const result = await sharedApi.rotate("sv_abcdefghijklmnopqrstuv", new Uint8Array([1, 2, 3, 4]).buffer, 2, 8,
+    [{ userId: "u-2", sealedKey: "AAAA", keyFingerprint: "FFFF" }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/api/shared/sv_abcdefghijklmnopqrstuv/rotate");
+  assert.equal(calls[0].method, "POST");
+  assert.equal(calls[0].ifMatch, '"8"');
+  assert.equal(calls[0].contentType, null, "the browser must supply the multipart boundary");
+  assert.deepEqual(calls[0].parts, ["kdbx", "keys"], "the server reads the parts positionally");
+  assert.deepEqual(JSON.parse(calls[0].keys), { epoch: 2, sealed: [{ userId: "u-2", sealedKey: "AAAA", keyFingerprint: "FFFF" }] });
+  assert.deepEqual(result, { ok: true, metadata: { version: 9 }, keyEpoch: 3, leftBehind: ["u-4"], historyCleared: false });
+});
+
+// Only an owner can rotate, so only an owner is told the vault needs it.
+test("the switcher label tells an owner a vault needs rotating", () => {
+  const pending = { since: "2026-09-27T10:00:00Z", userId: "u-9", reason: "removed" } as const;
+  assert.equal(optionLabel(row({})), "Finance");
+  assert.equal(optionLabel(row({ role: "owner", rotationPending: pending })), "Finance — Needs rotation");
+  assert.equal(optionLabel(row({ role: "reader", rotationPending: pending })), "Finance — Read-only",
+    "a reader can do nothing about it and is not nagged");
+  assert.equal(optionLabel(row({ role: "owner", state: "stale", rotationPending: pending })), "Finance — Key changed — Needs rotation");
 });

@@ -1,6 +1,6 @@
 // Dev-only stand-in for the Go API so the UI can run without KySignOn. Never built.
 import type { Plugin } from "vite";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 type VaultData = {
   version: number; bytes: Buffer | null;
@@ -20,7 +20,9 @@ type SharedMember = {
   userId: string; role: Role; state: MemberState; sealedKey: string; sealedBy: string; sealedByFingerprint: string;
   keyFingerprint: string; keyEpoch: number; addedAt: string; acceptedAt?: string;
 };
-type SharedVault = VaultData & { id: string; name: string; createdBy: string; createdAt: string; keyEpoch: number; members: SharedMember[] };
+type Pending = { since: string; userId: string; reason: "removed" | "left" | "declined" };
+type SharedVault = VaultData & { id: string; name: string; createdBy: string; createdAt: string; keyEpoch: number;
+  rotationPending?: Pending; members: SharedMember[] };
 
 export function mockApi(): Plugin {
   const endedSessions = new Set<string>();
@@ -74,14 +76,28 @@ export function mockApi(): Plugin {
   // published key in the browser is real HPKE rather than a stub.
   const fingerprintOf = (publicKey: Buffer) =>
     createHash("sha256").update(publicKey).digest("hex").toUpperCase().slice(0, 20).match(/.{4}/g)!.join(" ");
-  const dana = (async () => {
+  const hpke = (async () => {
     const [{ CipherSuite, HkdfSha256, Aes256Gcm }, { XWing }] = await Promise.all([import("@hpke/core"), import("@hpke/hybridkem-x-wing")]);
-    const suite = new CipherSuite({ kem: new XWing(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
+    return new CipherSuite({ kem: new XWing(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
+  })();
+  const dana = (async () => {
+    const suite = await hpke;
     const pair = await suite.kem.generateKeyPair();
     const publicKey = Buffer.from(new Uint8Array(await suite.kem.serializePublicKey(pair.publicKey)));
     return { publicKey: publicKey.toString("base64"), fingerprint: fingerprintOf(publicKey), createdAt: new Date().toISOString() };
   })();
-  const usernameOf = (id: string) => (id === user.id ? user.username : id === "u-2" ? "dana" : id);
+  const ab = (b: Buffer) => b.buffer.slice(b.byteOffset, b.byteOffset + b.length) as ArrayBuffer;
+  // Duplicates frontend/src/lib/userKey.ts seal() and sharedKey.ts SHARED_KEY_INFO by hand, so
+  // the mock can seal a shared vault key the browser really opens. It drifts if either changes.
+  const sealTo = async (publicKeyB64: string, key: Buffer): Promise<string> => {
+    const suite = await hpke;
+    const recipientPublicKey = await suite.kem.importKey("raw", ab(Buffer.from(publicKeyB64, "base64")), true);
+    const ctx = await suite.createSenderContext({ recipientPublicKey, info: new TextEncoder().encode("kyvault/shared-vault-key/1") });
+    const ct = new Uint8Array(await ctx.seal(ab(key)));
+    return Buffer.concat([Buffer.from(new Uint8Array(ctx.enc)), Buffer.from(ct)]).toString("base64");
+  };
+  const others: Record<string, string> = { "u-2": "dana", "u-3": "erin" };
+  const usernameOf = (id: string) => (id === user.id ? user.username : others[id] ?? id);
   const publishedKey = async (userId: string): Promise<{ publicKey: string; fingerprint: string; createdAt: string } | null> => {
     if (userId === "u-2") return await dana;
     if (userId !== user.id || !store.userKey) return null;
@@ -101,6 +117,7 @@ export function mockApi(): Plugin {
   // Accept dialog reads unknown, then pinned once her key is pinned), one sealed by a key she
   // no longer publishes (so it reads "changed" — the invitation drift).
   const seedShared = async () => {
+    await seedOwned();
     if (seeded) return;
     seeded = true;
     const d = await dana;
@@ -115,13 +132,58 @@ export function mockApi(): Plugin {
     sharedVaults.push(invitation("household", "Household", d.fingerprint));
     sharedVaults.push(invitation("legal", "Legal", "0000 1111 2222 3333 4444"));
   };
+  // The one vault the mock user owns, and the only one they can rotate: its key is really
+  // sealed to their published user key, so it can be seeded only once the browser has
+  // published one — hence the retry rather than a flag set up front. Its pending flag is
+  // already set and erin publishes no key, so the rotation banner and the left-behind report
+  // are both reachable without removing anyone first.
+  let ownedSeeded = false;
+  const seedOwned = async () => {
+    if (ownedSeeded) return;
+    const mine = await publishedKey(user.id);
+    if (!mine) return;
+    ownedSeeded = true;
+    const d = await dana;
+    const now = new Date().toISOString();
+    const key = randomBytes(32);
+    const member = (userId: string, role: Role, sealedKey: string, keyFingerprint: string): SharedMember => ({
+      userId, role, state: "active", sealedKey, sealedBy: user.id, sealedByFingerprint: mine.fingerprint,
+      keyFingerprint, keyEpoch: 1, addedAt: now, acceptedAt: now,
+    });
+    sharedVaults.push({
+      ...emptyData(), id: sid("team"), name: "Team", createdBy: user.id, createdAt: now, keyEpoch: 1,
+      rotationPending: { since: new Date(Date.now() - 3_600_000).toISOString(), userId: "u-4", reason: "removed" },
+      members: [
+        member(user.id, "owner", await sealTo(mine.publicKey, key), mine.fingerprint),
+        member("u-2", "editor", filler, d.fingerprint),
+        member("u-3", "reader", filler, "0000 1111 2222 3333 4444"),
+      ],
+    });
+  };
+  // Every departure flags a pending rotation, as shared.Store.Remove does: the row is gone,
+  // but the copy of the vault key it held is not, and only a rotation retires that.
+  const depart = (v: SharedVault, row: SharedMember, reason: Pending["reason"]) => {
+    v.members = v.members.filter((x) => x !== row);
+    v.rotationPending = { since: new Date().toISOString(), userId: row.userId, reason };
+  };
   const memberView = (m: SharedMember) => ({ userId: m.userId, username: usernameOf(m.userId), role: m.role, state: m.state,
     keyFingerprint: m.keyFingerprint, keyEpoch: m.keyEpoch, addedAt: m.addedAt, acceptedAt: m.acceptedAt });
   const activeOwners = (v: SharedVault) => v.members.filter((x) => x.role === "owner" && x.state === "active");
 
   // The nine vault data routes, served from whichever store the caller reached them through.
-  const vaultData = async (d: VaultData, sub: string, m: string, req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, canWrite: boolean): Promise<boolean> => {
+  const vaultData = async (d: VaultData, sub: string, m: string, req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, canWrite: boolean, keyEpoch: number): Promise<boolean> => {
     const readOnly = () => { fail(res, 403, "this shared vault is read-only for you"); return true; };
+    // withSharedWrite's epoch gate, by hand: a write must claim the vault's current key epoch,
+    // or it is ciphertext under a key the vault has retired. A missing header is NaN, so stale.
+    const wrongEpoch = () => {
+      const claimed = Number(req.headers["x-shared-key-epoch"]);
+      if (claimed === keyEpoch) return false;
+      // Two refusals, as the server has: a client that said nothing is not a rotation.
+      fail(res, 409, Number.isInteger(claimed)
+        ? "the shared vault key was rotated; reload the vault"
+        : "this write did not say which shared vault key it was made under; reload the vault");
+      return true;
+    };
     if (sub === "/metadata" && m === "GET") { json(res, 200, metaOf(d)); return true; }
     if (sub === "/kdbx" && m === "GET") {
       if (!d.bytes) { json(res, 404, { error: "vault does not exist yet" }); return true; }
@@ -130,6 +192,7 @@ export function mockApi(): Plugin {
     }
     if (sub === "/upload" && m === "POST") {
       if (!canWrite) return readOnly();
+      if (wrongEpoch()) return true;
       const expected = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));
       const body = await readBody(req);
       if (expected !== d.version) {
@@ -152,6 +215,7 @@ export function mockApi(): Plugin {
       if (!snap[2] && m === "GET") { binary(res, row.bytes); return true; }
       if (snap[2] && m === "POST") {
         if (!canWrite) return readOnly();
+        if (wrongEpoch()) return true;
         archive(d, "_before_rollback"); d.bytes = row.bytes; d.version++;
         json(res, 200, { ok: true, metadata: metaOf(d) });
         return true;
@@ -164,6 +228,7 @@ export function mockApi(): Plugin {
       if (m === "GET") { binary(res, row.bytes); return true; }
       if (m === "DELETE") {
         if (!canWrite) return readOnly();
+        if (wrongEpoch()) return true;
         d.conflicts = d.conflicts.filter((c) => c !== row);
         json(res, 200, { ok: true });
         return true;
@@ -302,6 +367,9 @@ export function mockApi(): Plugin {
             if (!me) return [];
             return [{
               id: v.id, name: v.name, role: me.role, state: me.state, keyEpoch: v.keyEpoch,
+              // Active owners only, as the server does: the flag names a departed member, and
+              // an invitation discloses nothing about the membership before it is accepted.
+              ...(me.role === "owner" && me.state === "active" ? { rotationPending: v.rotationPending } : {}),
               myKey: { sealedKey: me.sealedKey, keyFingerprint: me.keyFingerprint, keyEpoch: me.keyEpoch, sealedBy: me.sealedBy, sealedByFingerprint: me.sealedByFingerprint },
               ...(me.state === "invited" ? { invitedBy: { userId: me.sealedBy, username: usernameOf(me.sealedBy), fingerprint: me.sealedByFingerprint } } : {}),
             }];
@@ -340,12 +408,13 @@ export function mockApi(): Plugin {
         }
         if (sub === "/decline" && m === "POST") {
           if (!unaccepted) return fail(res, 409, "only an invitation can be declined");
-          v.members = v.members.filter((x) => x !== me);
+          depart(v, me, "declined");
           return json(res, 200, { ok: true });
         }
         if (sub === "" && m === "GET") {
           if (unaccepted) return fail(res, 404, "not found");
-          return json(res, 200, { id: v.id, name: v.name, createdBy: v.createdBy, createdAt: v.createdAt, keyEpoch: v.keyEpoch, members: v.members.map(memberView) });
+          return json(res, 200, { id: v.id, name: v.name, createdBy: v.createdBy, createdAt: v.createdAt, keyEpoch: v.keyEpoch,
+            rotationPending: v.rotationPending, members: v.members.map(memberView) });
         }
         if (sub === "" && m === "PATCH") {
           if (!owner) return fail(res, 403, "only an owner can rename a shared vault");
@@ -405,17 +474,58 @@ export function mockApi(): Plugin {
             if (!row) return fail(res, 404, "not found");
             if (targetId !== user.id && !owner) return fail(res, 403, "only an owner can remove members");
             if (row.role === "owner" && row.state === "active" && activeOwners(v).length === 1) return fail(res, 409, "a shared vault keeps at least one active owner");
-            v.members = v.members.filter((x) => x !== row);
+            depart(v, row, targetId !== user.id ? "removed" : row.state === "invited" ? "declined" : "left");
             return json(res, 200, { ok: true });
           }
         }
-        if (await vaultData(v, sub, m, req, res, me.role !== "reader")) return;
+        // The transitions of internal/api/shared_rotate.go and shared.Store.Rotate, by hand,
+        // so they can drift: two parts in order, every sealed copy checked against that user's
+        // current published key, the epoch and version proved, then the named members re-sealed,
+        // the rest left stale and the retired key's history and conflicts dropped. The real
+        // route also demands CSRF and a fresh sign-in, which the mock has no notion of.
+        if (sub === "/rotate" && m === "POST") {
+          if (!owner) return fail(res, 403, "only an owner can rotate a shared vault key");
+          const body = await readBody(req);
+          const form = await new Response(ab(body), { headers: { "content-type": String(req.headers["content-type"] ?? "") } }).formData().catch(() => null);
+          const parts = form ? [...form.keys()] : [];
+          if (!form || parts.length !== 2 || parts[0] !== "kdbx" || parts[1] !== "keys") return fail(res, 400, `rotate takes exactly two parts, "kdbx" then "keys"`);
+          const kdbx = Buffer.from(new Uint8Array(await (form.get("kdbx") as Blob).arrayBuffer()));
+          const keys = JSON.parse(String(form.get("keys")));
+          const sealed = (keys.sealed ?? []) as Array<{ userId: string; sealedKey: string; keyFingerprint: string }>;
+          if (!kdbx.length) return fail(res, 400, "empty vault payload");
+          if (!sealed.length) return fail(res, 400, "a rotation must seal the new key for at least the caller");
+          for (const sf of sealed) {
+            if (!v.members.some((x) => x.userId === sf.userId)) return fail(res, 400, `invalid shared vault input: ${sf.userId} is not a member`);
+            const target = await publishedKey(sf.userId);
+            if (!target || target.fingerprint !== sf.keyFingerprint) return fail(res, 400, "keyFingerprint does not match that user's current key");
+          }
+          const named = new Set(sealed.map((s) => s.userId));
+          if (!named.has(user.id)) return fail(res, 400, "a rotation must seal the new key for the caller's own row");
+          const want = Number((req.headers["if-match"] ?? '"0"').toString().replace(/"/g, ""));
+          if (keys.epoch !== v.keyEpoch || want !== v.version) return fail(res, 409, "the shared vault changed; reload it and rotate again");
+          const next = v.keyEpoch + 1;
+          const actorFingerprint = me.keyFingerprint; // read before the loop overwrites my own row
+          for (const sf of sealed) {
+            const row = v.members.find((x) => x.userId === sf.userId)!;
+            row.sealedKey = sf.sealedKey; row.keyFingerprint = sf.keyFingerprint;
+            row.sealedBy = user.id; row.sealedByFingerprint = actorFingerprint; row.keyEpoch = next;
+            if (row.state !== "suspended") row.state = row.acceptedAt ? "active" : "invited";
+          }
+          for (const row of v.members) if (!named.has(row.userId) && row.state !== "suspended") row.state = "stale";
+          v.keyEpoch = next; v.rotationPending = undefined;
+          v.bytes = kdbx; v.version++;
+          v.history = []; v.conflicts = [];
+          return json(res, 200, { ok: true, metadata: metaOf(v), keyEpoch: next, historyCleared: true, epochMarked: true,
+            leftBehind: v.members.filter((x) => x.keyEpoch !== next).map((x) => x.userId).sort() });
+        }
+        if (await vaultData(v, sub, m, req, res, me.role !== "reader", v.keyEpoch)) return;
         return fail(res, 404, `mock: no handler for ${m} ${p}`);
       }
       if (p === "/api/admin/shared" && m === "GET") {
         await seedShared();
         return json(res, 200, sharedVaults.map((v) => ({ id: v.id, name: v.name, createdBy: v.createdBy, createdAt: v.createdAt,
-          keyEpoch: v.keyEpoch, ownerless: activeOwners(v).length === 0, members: v.members.map(memberView) })));
+          keyEpoch: v.keyEpoch, ownerless: activeOwners(v).length === 0, rotationPending: v.rotationPending,
+          members: v.members.map(memberView) })));
       }
       if (p === "/api/admin/shared/settings" && m === "GET") return json(res, 200, sharedSettings);
       if (p === "/api/admin/shared/settings" && m === "PUT") {
@@ -432,8 +542,9 @@ export function mockApi(): Plugin {
         // link can be exercised: the real server needs a recent KySignOn sign-in here.
         if (!adminShared[2]) return fail(res, 403, "re-authenticate to continue: this action needs a recent sign-in");
         const targetId = decodeURIComponent(adminShared[2]);
-        if (!v.members.some((x) => x.userId === targetId)) return fail(res, 404, "not found");
-        v.members = v.members.filter((x) => x.userId !== targetId);
+        const row = v.members.find((x) => x.userId === targetId);
+        if (!row) return fail(res, 404, "not found");
+        depart(v, row, "removed");
         return json(res, 200, { ok: true });
       }
       // Dev-only, no server counterpart: the UI cannot demote its own user, so a reader's
@@ -446,7 +557,8 @@ export function mockApi(): Plugin {
         row.role = body.role as Role;
         return json(res, 200, { ok: true });
       }
-      if (p === "/api/admin/users") return json(res, 200, [user, { id: "u-2", username: "dana", role: "user", active: true, ssoSub: "sub-dana" }]);
+      if (p === "/api/admin/users") return json(res, 200, [user, { id: "u-2", username: "dana", role: "user", active: true, ssoSub: "sub-dana" },
+        { id: "u-3", username: "erin", role: "user", active: true, ssoSub: "sub-erin" }]);
       if (p === "/api/admin/sso" && m === "GET") return json(res, 200, { enabled: true, issuerUrl: "https://signon.mock", clientId: "kyvault", autoProvision: true, clientSecretSet: true });
       if (p === "/api/admin/sso" && m === "PUT") return json(res, 200, { ok: true });
       if (p === "/api/admin/provisioning") return json(res, 200, { configured: false, basePath: "/scim/v2" });

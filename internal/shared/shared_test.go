@@ -1,10 +1,13 @@
 package shared
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -130,17 +133,17 @@ func TestMembershipLifecycle(t *testing.T) {
 	if err := s.SetRole(v.ID, "u-1", "u-1", RoleReader); err != nil {
 		t.Fatalf("demote with another owner: %v", err)
 	}
-	if err := s.Remove(v.ID, "u-2", "u-2"); !errors.Is(err, ErrLastOwner) {
+	if err := s.Remove(v.ID, "u-2", "u-2", t0); !errors.Is(err, ErrLastOwner) {
 		t.Fatalf("remove last owner: %v", err)
 	}
-	if err := s.Remove(v.ID, "", "u-2"); err != nil {
+	if err := s.Remove(v.ID, "", "u-2", t0); err != nil {
 		t.Fatalf("admin removes last owner: %v", err)
 	}
 	got = mustGet(t, s, v.ID)
 	if _, ok := got.Members["u-2"]; ok {
 		t.Fatal("u-2 still present")
 	}
-	if err := s.Remove(v.ID, "", "u-9"); !errors.Is(err, ErrNotMember) {
+	if err := s.Remove(v.ID, "", "u-9", t0); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("remove non-member: %v", err)
 	}
 }
@@ -508,7 +511,7 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 	}
 
 	// Removed actor: every owner-only write is ErrNotMember.
-	if err := s.Remove(v.ID, "u-1", "u-2"); err != nil {
+	if err := s.Remove(v.ID, "u-1", "u-2", t0); err != nil {
 		t.Fatal(err)
 	}
 	for name, err := range map[string]error{
@@ -516,7 +519,7 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 		"invite": s.Invite(v.ID, "u-2", RoleOwner, sealed(), fp(2), "u-2", "SFP", t0),
 		"reseal": s.Reseal(v.ID, "u-3", sealed(), fp(3), "u-2", "SFP"),
 		"role":   s.SetRole(v.ID, "u-2", "u-3", RoleReader),
-		"remove": s.Remove(v.ID, "u-2", "u-3"),
+		"remove": s.Remove(v.ID, "u-2", "u-3", t0),
 		"delete": s.Delete(v.ID, "u-2", t0),
 	} {
 		if !errors.Is(err, ErrNotMember) {
@@ -533,7 +536,7 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 		"invite": s.Invite(v.ID, "u-9", RoleReader, sealed(), fp(9), "u-3", "SFP", t0),
 		"reseal": s.Reseal(v.ID, "u-4", sealed(), fp(4), "u-3", "SFP"),
 		"role":   s.SetRole(v.ID, "u-3", "u-3", RoleOwner),
-		"remove": s.Remove(v.ID, "u-3", "u-4"),
+		"remove": s.Remove(v.ID, "u-3", "u-4", t0),
 		"delete": s.Delete(v.ID, "u-3", t0),
 	} {
 		if !errors.Is(err, ErrForbidden) {
@@ -545,14 +548,14 @@ func TestActorAuthorityIsCheckedAtTheWrite(t *testing.T) {
 	}
 
 	// Self-remove needs no ownership.
-	if err := s.Remove(v.ID, "u-3", "u-3"); err != nil {
+	if err := s.Remove(v.ID, "u-3", "u-3", t0); err != nil {
 		t.Fatalf("reader leaves: %v", err)
 	}
 	// Admin "" bypasses: removes the last owners and deletes.
-	if err := s.Remove(v.ID, "", "u-4"); err != nil {
+	if err := s.Remove(v.ID, "", "u-4", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Remove(v.ID, "", "u-1"); err != nil {
+	if err := s.Remove(v.ID, "", "u-1", t0); err != nil {
 		t.Fatalf("admin removes last owner: %v", err)
 	}
 	if err := s.Rename(v.ID, "", "renamed"); err != nil {
@@ -572,7 +575,7 @@ func TestAcceptRefusesOwnerlessVault(t *testing.T) {
 	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(2), "u-1", "SFP", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Remove(v.ID, "", "u-1"); err != nil {
+	if err := s.Remove(v.ID, "", "u-1", t0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Accept(v.ID, "u-2", t0); !errors.Is(err, ErrState) {
@@ -623,8 +626,8 @@ func TestStaleSelfReseal(t *testing.T) {
 	}
 }
 
-// WithWriter re-checks the row under the lock and does not run fn for anyone but an
-// active owner or editor.
+// WithWriter re-checks the row and the key epoch under the lock and does not run fn for
+// anyone but an active owner or editor writing at the vault's current epoch.
 func TestWithWriter(t *testing.T) {
 	s := newStore(t)
 	v, err := s.Create("w", "u-1", sealed(), fp(1), t0)
@@ -636,26 +639,37 @@ func TestWithWriter(t *testing.T) {
 	}
 	ran := 0
 	fn := func() error { ran++; return nil }
-	if err := s.WithWriter(v.ID, "u-1", fn); err != nil || ran != 1 {
+	if err := s.WithWriter(v.ID, "u-1", 1, fn); err != nil || ran != 1 {
 		t.Fatalf("owner: %v ran=%d", err, ran)
 	}
-	if err := s.WithWriter(v.ID, "u-2", fn); !errors.Is(err, ErrForbidden) {
+	if err := s.WithWriter(v.ID, "u-2", 1, fn); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("invited reader: %v", err)
 	}
 	if err := s.Accept(v.ID, "u-2", t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithWriter(v.ID, "u-2", fn); !errors.Is(err, ErrForbidden) {
+	if err := s.WithWriter(v.ID, "u-2", 1, fn); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("active reader: %v", err)
 	}
-	if err := s.WithWriter(v.ID, "u-9", fn); !errors.Is(err, ErrNotMember) {
+	if err := s.WithWriter(v.ID, "u-9", 1, fn); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("stranger: %v", err)
 	}
 	if ran != 1 {
 		t.Fatalf("fn ran for a refused caller: %d", ran)
 	}
+	// A rotation that commits between the route's check and the write is ErrEpoch, and fn
+	// never runs: the write was prepared under a key the vault has retired.
+	if err := s.WithWriter(v.ID, "u-1", 0, fn); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("stale epoch: %v", err)
+	}
+	if err := s.WithWriter(v.ID, "u-1", 2, fn); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("future epoch: %v", err)
+	}
+	if ran != 1 {
+		t.Fatalf("fn ran at the wrong epoch: %d", ran)
+	}
 	sentinel := errors.New("vault write failed")
-	if err := s.WithWriter(v.ID, "u-1", func() error { return sentinel }); !errors.Is(err, sentinel) {
+	if err := s.WithWriter(v.ID, "u-1", 1, func() error { return sentinel }); !errors.Is(err, sentinel) {
 		t.Fatalf("fn error not returned: %v", err)
 	}
 }
@@ -740,5 +754,548 @@ func TestNewStoreFinishesInterruptedDelete(t *testing.T) {
 	// Idempotent: a second start with nothing left to move is fine.
 	if _, err := NewStore(dir, 90, mover); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func sealedForAll(t *testing.T, v Vault) []SealedFor {
+	t.Helper()
+	out := []SealedFor{}
+	for id, m := range v.Members {
+		out = append(out, SealedFor{UserID: id, SealedKey: sealed(), KeyFingerprint: m.KeyFingerprint})
+	}
+	return out
+}
+
+func TestDepartureFlagsARotation(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-3", RoleReader, sealed(), fp(2), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	// An owner removing an accepted member.
+	if err := s.Remove(v.ID, "u-1", "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGet(t, s, v.ID)
+	if got.RotationPending == nil || got.RotationPending.UserID != "u-2" || got.RotationPending.Reason != ReasonRemoved {
+		t.Fatalf("after removal: %+v", got.RotationPending)
+	}
+	// A role change does not flag.
+	if _, err := s.Rotate(v.ID, "u-1", got.KeyEpoch, sealedForAll(t, got), RotateSteps{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRole(v.ID, "u-1", "u-3", RoleEditor); err != nil {
+		t.Fatal(err)
+	}
+	if mustGet(t, s, v.ID).RotationPending != nil {
+		t.Fatal("a role change must not flag a rotation")
+	}
+	// An invited member removing their own row is a decline.
+	if err := s.Remove(v.ID, "u-3", "u-3", t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, s, v.ID); got.RotationPending == nil || got.RotationPending.Reason != ReasonDeclined {
+		t.Fatalf("invited self-removal: %+v", got.RotationPending)
+	}
+	// An admin removing an invited row is a removal, not that member's decline.
+	if err := s.Invite(v.ID, "u-4", RoleReader, sealed(), fp(4), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(v.ID, "", "u-4", t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, s, v.ID); got.RotationPending.UserID != "u-4" || got.RotationPending.Reason != ReasonRemoved {
+		t.Fatalf("admin removal: %+v", got.RotationPending)
+	}
+}
+
+func TestLeavingFlagsALeft(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	left := t0.Add(48 * time.Hour)
+	if err := s.Remove(v.ID, "u-2", "u-2", left); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGet(t, s, v.ID)
+	if got.RotationPending == nil || got.RotationPending.Reason != ReasonLeft || got.RotationPending.UserID != "u-2" {
+		t.Fatalf("leaving: %+v", got.RotationPending)
+	}
+	if !got.RotationPending.Since.Equal(left) {
+		t.Fatalf("Since must come from the caller's clock: %v", got.RotationPending.Since)
+	}
+	// Deactivation is not a departure.
+	if _, err := s.SetSuspended("u-1", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, s, v.ID); got.RotationPending == nil || got.RotationPending.Reason != ReasonLeft {
+		t.Fatal("suspension must not overwrite or set the flag")
+	}
+}
+
+func TestRotate(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []struct {
+		id   string
+		role Role
+		f    string
+	}{{"u-2", RoleEditor, fp(1)}, {"u-3", RoleReader, fp(2)}, {"u-4", RoleEditor, fp(3)}} {
+		if err := s.Invite(v.ID, m.id, m.role, sealed(), m.f, "u-1", fp(0), t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-3", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(v.ID, "u-1", "u-3", t0); err != nil {
+		t.Fatal(err)
+	}
+	before := mustGet(t, s, v.ID)
+	// u-4 is left behind: not named.
+	newKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, SealedKeyBytes))
+	sealed := []SealedFor{
+		{UserID: "u-1", SealedKey: newKey, KeyFingerprint: fp(0)},
+		{UserID: "u-2", SealedKey: newKey, KeyFingerprint: fp(1)},
+	}
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, sealed, RotateSteps{}); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGet(t, s, v.ID)
+	if got.KeyEpoch != before.KeyEpoch+1 {
+		t.Fatalf("epoch %d", got.KeyEpoch)
+	}
+	if got.RotationPending != nil {
+		t.Fatal("rotation must clear the flag")
+	}
+	for _, id := range []string{"u-1", "u-2"} {
+		m := got.Members[id]
+		if m.SealedKey != newKey || m.KeyEpoch != got.KeyEpoch || m.State != StateActive || m.SealedBy != "u-1" || m.SealedByFingerprint != fp(0) {
+			t.Fatalf("%s: %+v", id, m)
+		}
+	}
+	if m := got.Members["u-2"]; m.Role != RoleEditor {
+		t.Fatalf("rotation must keep roles: %+v", m)
+	}
+	if m := got.Members["u-4"]; m.State != StateStale || m.KeyEpoch != before.KeyEpoch {
+		t.Fatalf("u-4 should be left behind stale at the old epoch: %+v", m)
+	}
+	// A second rotation at the same epoch is refused (Review Focus 2).
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, sealed, RotateSteps{}); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("stale epoch = %v", err)
+	}
+}
+
+// A named member who had gone stale comes back with the new seal; only the unnamed are
+// left behind.
+func TestRotateKeepsInvitedAndSuspendedStates(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-3", RoleReader, sealed(), fp(2), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-3", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetSuspended("u-3", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-4", RoleEditor, sealed(), fp(4), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-4", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkStale("u-4", fp(9)); err != nil {
+		t.Fatal(err)
+	}
+	cur := mustGet(t, s, v.ID)
+	if m := cur.Members["u-4"]; m.State != StateStale {
+		t.Fatalf("u-4 should be stale before the rotation: %+v", m)
+	}
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, SealedKeyBytes))
+	_, err = s.Rotate(v.ID, "u-1", cur.KeyEpoch, []SealedFor{
+		{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)},
+		{UserID: "u-2", SealedKey: key, KeyFingerprint: fp(1)},
+		// u-4 replaced their user key, so the value that reaches the store is their new
+		// published fingerprint, not the retired one still on the row.
+		{UserID: "u-4", SealedKey: key, KeyFingerprint: fp(9)},
+	}, RotateSteps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := mustGet(t, s, v.ID)
+	if m := got.Members["u-2"]; m.State != StateInvited || m.SealedKey != key {
+		t.Fatalf("an invited member is re-sealed and stays invited: %+v", m)
+	}
+	if m := got.Members["u-3"]; m.State != StateSuspended || m.SuspendedFrom != StateStale {
+		t.Fatalf("a suspended member left behind: %+v", m)
+	}
+	if m := got.Members["u-4"]; m.State != StateActive || m.SealedKey != key || m.KeyFingerprint != fp(9) || m.KeyEpoch != got.KeyEpoch {
+		t.Fatalf("a re-sealed stale member comes back on their new key: %+v", m)
+	}
+}
+
+// A suspended member who is named keeps suspended, but resumes from the state the fresh
+// seal lands on rather than stale.
+func TestRotateNamingASuspendedMember(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetSuspended("u-2", true); err != nil {
+		t.Fatal(err)
+	}
+	cur := mustGet(t, s, v.ID)
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, SealedKeyBytes))
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, []SealedFor{
+		{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)},
+		{UserID: "u-2", SealedKey: key, KeyFingerprint: fp(1)},
+	}, RotateSteps{}); err != nil {
+		t.Fatal(err)
+	}
+	m := mustGet(t, s, v.ID).Members["u-2"]
+	if m.State != StateSuspended || m.SuspendedFrom != StateActive || m.SealedKey != key {
+		t.Fatalf("a named suspended member: %+v", m)
+	}
+}
+
+func TestRotateRefusals(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	cur := mustGet(t, s, v.ID)
+	ok := []SealedFor{{UserID: "u-1", SealedKey: sealed(), KeyFingerprint: fp(0)}}
+	// Not an owner, and not a member at all.
+	if _, err := s.Rotate(v.ID, "u-2", cur.KeyEpoch, ok, RotateSteps{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("editor = %v", err)
+	}
+	if _, err := s.Rotate(v.ID, "u-9", cur.KeyEpoch, ok, RotateSteps{}); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("stranger = %v", err)
+	}
+	// A stale epoch.
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch+1, ok, RotateSteps{}); !errors.Is(err, ErrEpoch) {
+		t.Fatalf("wrong epoch = %v", err)
+	}
+	// Sealing for a non-member aborts everything (Review Focus 4).
+	bad := append([]SealedFor{}, ok...)
+	bad = append(bad, SealedFor{UserID: "u-9", SealedKey: sealed(), KeyFingerprint: fp(9)})
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, bad, RotateSteps{}); !errors.Is(err, ErrShape) {
+		t.Fatalf("non-member = %v", err)
+	}
+	// A missing fingerprint: the row must always record which key its copy was sealed to.
+	noFP := []SealedFor{{UserID: "u-1", SealedKey: sealed(), KeyFingerprint: ""}}
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, noFP, RotateSteps{}); !errors.Is(err, ErrShape) {
+		t.Fatalf("empty fingerprint = %v", err)
+	}
+	// The caller must seal for their own row, or they lock themselves out of their vault.
+	notSelf := []SealedFor{{UserID: "u-2", SealedKey: sealed(), KeyFingerprint: fp(1)}}
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, notSelf, RotateSteps{}); !errors.Is(err, ErrShape) {
+		t.Fatalf("owner not named = %v", err)
+	}
+	// A malformed sealed key.
+	short := []SealedFor{{UserID: "u-1", SealedKey: "AAAA", KeyFingerprint: fp(0)}}
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, short, RotateSteps{}); !errors.Is(err, ErrShape) {
+		t.Fatalf("short key = %v", err)
+	}
+	// Every refusal above left the whole record untouched: epoch, sealed keys, states,
+	// fingerprints and the pending flag.
+	if after := mustGet(t, s, v.ID); !reflect.DeepEqual(after, cur) {
+		t.Fatalf("a refused rotation must change nothing:\n%+v\n%+v", after, cur)
+	}
+	// An ownerless vault cannot rotate, by an owner-only actor or by an admin.
+	if err := s.Remove(v.ID, "", "u-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	epoch := mustGet(t, s, v.ID).KeyEpoch
+	if _, err := s.Rotate(v.ID, "u-2", epoch, ok, RotateSteps{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ownerless, editor = %v", err)
+	}
+	if _, err := s.Rotate(v.ID, "", epoch, ok, RotateSteps{}); !errors.Is(err, ErrState) {
+		t.Fatalf("ownerless, admin = %v", err)
+	}
+}
+
+// The re-key is only durable once the vault has been written under the new key: a refused
+// write leaves the record exactly as it was, flag included, so the rotation can be retried.
+func TestRotateChangesNothingWhenTheVaultWriteFails(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(v.ID, "u-1", "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	before := mustGet(t, s, v.ID)
+	boom := errors.New("the vault write failed")
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, SealedKeyBytes))
+	_, err = s.Rotate(v.ID, "u-1", before.KeyEpoch,
+		[]SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}},
+		RotateSteps{WriteVault: func() error { return boom }})
+	if !errors.Is(err, boom) {
+		t.Fatalf("vault write error = %v", err)
+	}
+	after := mustGet(t, s, v.ID)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("a failed vault write must change nothing:\n%+v\n%+v", after, before)
+	}
+	if after.RotationPending == nil || after.RotationPending.UserID != "u-2" || after.RotationPending.Reason != ReasonRemoved {
+		t.Fatalf("the pending flag must survive: %+v", after.RotationPending)
+	}
+}
+
+// A Verify refusal is ErrShape and happens before anything is written: the vault write never
+// runs, the record is untouched and AfterCommit is skipped. It runs after the store's own
+// checks, so a rotation at a retired epoch never reaches it.
+func TestRotateVerifyRefusalWritesNothing(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := mustGet(t, s, v.ID)
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, SealedKeyBytes))
+	ok := []SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}}
+	var verified, wrote, committed bool
+	steps := RotateSteps{
+		Verify:      func([]SealedFor) error { verified = true; return errors.New("superseded fingerprint") },
+		WriteVault:  func() error { wrote = true; return nil },
+		AfterCommit: func() { committed = true },
+	}
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch+1, ok, steps); !errors.Is(err, ErrEpoch) || verified {
+		t.Fatalf("retired epoch = %v, verify ran %v", err, verified)
+	}
+	if _, err := s.Rotate(v.ID, "u-1", before.KeyEpoch, ok, steps); !errors.Is(err, ErrShape) {
+		t.Fatalf("verify refusal = %v", err)
+	}
+	if !verified || wrote || committed {
+		t.Fatalf("verify %v, write %v, afterCommit %v", verified, wrote, committed)
+	}
+	if after := mustGet(t, s, v.ID); !reflect.DeepEqual(after, before) {
+		t.Fatalf("a refused rotation changed the record:\n%+v\n%+v", after, before)
+	}
+}
+
+// AfterCommit runs once the record is on disk and before the store lock is released, so no
+// shared writer can land between the commit and the history clear it performs.
+func TestRotateAfterCommitRunsUnderTheLockAfterTheCommit(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, SealedKeyBytes))
+	ran := false
+	_, err = s.Rotate(v.ID, "u-1", v.KeyEpoch, []SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}}, RotateSteps{
+		AfterCommit: func() {
+			ran = true
+			if s.mu.TryLock() {
+				s.mu.Unlock()
+				t.Error("AfterCommit ran without the store lock")
+			}
+			onDisk, err := s.loadLocked(v.ID)
+			if err != nil || onDisk.KeyEpoch != v.KeyEpoch+1 {
+				t.Errorf("AfterCommit ran before the commit: %+v %v", onDisk, err)
+			}
+		},
+	})
+	if err != nil || !ran {
+		t.Fatalf("rotate = %v, afterCommit ran %v", err, ran)
+	}
+}
+
+// A record commit that fails skips AfterCommit: marking the epoch or clearing the history
+// then would retire the only snapshot the members' keys still open.
+func TestRotateSkipsAfterCommitWhenTheCommitFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(s.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(s.dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, SealedKeyBytes))
+	wrote, committed := false, false
+	_, err = s.Rotate(v.ID, "u-1", v.KeyEpoch, []SealedFor{{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}}, RotateSteps{
+		WriteVault:  func() error { wrote = true; return nil },
+		AfterCommit: func() { committed = true },
+	})
+	if err == nil || !wrote || committed {
+		t.Fatalf("rotate = %v, write %v, afterCommit %v", err, wrote, committed)
+	}
+}
+
+// A rotationPending on disk must name a user and one of the three reasons.
+func TestRotationPendingOnDiskIsValidated(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("x", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleReader, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove(v.ID, "u-1", "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(s.path(v.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	badReason := strings.Replace(string(original), `"reason": "removed"`, `"reason": "bored"`, 1)
+	if badReason == string(original) {
+		t.Fatal("reason replacement did not match record contents")
+	}
+	if err := os.WriteFile(s.path(v.ID), []byte(badReason), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("unknown reason: %v", err)
+	}
+
+	noUser := strings.Replace(string(original), `"userId": "u-2"`, `"userId": ""`, 1)
+	if noUser == string(original) {
+		t.Fatal("userId replacement did not match record contents")
+	}
+	if err := os.WriteFile(s.path(v.ID), []byte(noUser), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(v.ID); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("empty userId: %v", err)
+	}
+}
+
+// A rotation that did not seal for an active owner would leave a vault nobody can invite
+// to, accept into or re-seal: refused, and nothing written.
+func TestRotateKeepsAnActiveOwner(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-2", RoleEditor, sealed(), fp(1), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-2", t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Invite(v.ID, "u-3", RoleReader, sealed(), fp(2), "u-1", fp(0), t0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Accept(v.ID, "u-3", t0); err != nil {
+		t.Fatal(err)
+	}
+	cur := mustGet(t, s, v.ID)
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, SealedKeyBytes))
+	// The owner rotates but seals only for the others.
+	others := []SealedFor{
+		{UserID: "u-2", SealedKey: key, KeyFingerprint: fp(1)},
+		{UserID: "u-3", SealedKey: key, KeyFingerprint: fp(2)},
+	}
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, others, RotateSteps{}); !errors.Is(err, ErrShape) {
+		t.Fatalf("owner not named = %v", err)
+	}
+	if after := mustGet(t, s, v.ID); !reflect.DeepEqual(after, cur) {
+		t.Fatal("a refused rotation must change nothing")
+	}
+	// Naming the owner is enough.
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, append(others, SealedFor{UserID: "u-1", SealedKey: key, KeyFingerprint: fp(0)}), RotateSteps{}); err != nil {
+		t.Fatal(err)
+	}
+	if m := mustGet(t, s, v.ID).Members["u-1"]; m.Role != RoleOwner || m.State != StateActive {
+		t.Fatalf("the owner must survive their own rotation: %+v", m)
+	}
+}
+
+// The last-owner guard reads the state the rotation would land on, not the one on the row:
+// an owner row that was never accepted lands on invited, which is not an active owner.
+func TestRotateRefusesWhenTheOwnerWouldNotLandActive(t *testing.T) {
+	s := newStore(t)
+	v, err := s.Create("Finance", "u-1", sealed(), fp(0), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := os.ReadFile(s.path(v.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := regexp.MustCompile(`,\n\s*"acceptedAt": "[^"]*"`).ReplaceAllString(string(record), "")
+	if stripped == string(record) {
+		t.Fatal("acceptedAt removal did not match record contents")
+	}
+	if err := os.WriteFile(s.path(v.ID), []byte(stripped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cur := mustGet(t, s, v.ID)
+	if cur.Members["u-1"].AcceptedAt != nil {
+		t.Fatal("acceptedAt should be gone")
+	}
+	ok := []SealedFor{{UserID: "u-1", SealedKey: sealed(), KeyFingerprint: fp(0)}}
+	if _, err := s.Rotate(v.ID, "u-1", cur.KeyEpoch, ok, RotateSteps{}); !errors.Is(err, ErrLastOwner) {
+		t.Fatalf("owner landing on invited = %v", err)
+	}
+	if after := mustGet(t, s, v.ID); !reflect.DeepEqual(after, cur) {
+		t.Fatal("a refused rotation must change nothing")
 	}
 }

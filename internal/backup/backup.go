@@ -57,12 +57,18 @@ func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, er
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	vaultFiles, err := c.Vault.Snapshot()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	sharedFiles, err := c.Shared.Snapshot()
-	if err != nil {
+	// One hold of the shared store's lock covers both reads. A shared key rotation writes the
+	// re-encrypted ciphertext and commits every member's copy of the new key under that lock,
+	// so a capsule that caught one without the other would restore a vault whose sealed keys
+	// and bytes disagree — unopenable by anyone, and indistinguishable from a good capsule.
+	var vaultFiles []vault.SnapshotFile
+	var sharedFiles []shared.SnapshotFile
+	if err := c.Shared.WithSnapshot(func(files []shared.SnapshotFile) error {
+		sharedFiles = files
+		var err error
+		vaultFiles, err = c.Vault.Snapshot()
+		return err
+	}); err != nil {
 		return nil, nil, nil, err
 	}
 

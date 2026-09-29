@@ -41,6 +41,11 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
   The directory must not overlap CONFIG_DIR or DATA_DIR/{vaults,shared,audit,drill},
   including existing symlink ancestors. Interval defaults from KYVAULT_BACKUP_DEPOSIT_INTERVAL, overridden by admin settings:
   off or 900–31622400 whole seconds. Runs count from last attempt, including failures.
+- Collect reads the shared records and the vault tree inside one `shared.Store.WithSnapshot`,
+  which is the lock a shared key rotation commits under: a capsule holding pre-rotation
+  ciphertext beside post-rotation sealed keys restores as a vault nobody can open and no drill
+  can detect. Lock order is `shared.mu` then `vault.mu`, as everywhere else
+  (`TestCollectCannotCaptureATornRotation`).
 - The Collector also snapshots `internal/shared`'s store (`Shared`, files under `data/shared/`,
   including the `deleted/<id>/` retention area), required for Collect like the other sources
   (Shared nil fails the same way), and, only when `CONFIG_DIR/shared.json` exists, includes it

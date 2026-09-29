@@ -34,6 +34,10 @@ var (
 	ErrConflict        = errors.New("vault version conflict: a newer version exists on the server")
 	// ErrRetired refuses writes to a key MoveOut took away; it is an ErrNotFound.
 	ErrRetired = fmt.Errorf("%w: vault was deleted", ErrNotFound)
+	// ErrArchive refuses a re-key that cannot preserve the version it replaces. That snapshot
+	// is the only recovery from a crash between the ciphertext and the membership record, so
+	// the write is refused rather than left with no way back.
+	ErrArchive = errors.New("the version being replaced could not be archived")
 )
 
 // ConflictError conveys details about a rejected upload.
@@ -387,7 +391,7 @@ func (s *Store) saveMetadataLocked(userID string, meta Metadata) error {
 
 // SaveVault saves a new encrypted KDBX version atomically.
 func (s *Store) SaveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string) (Metadata, error) {
-	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, false, nil)
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, false, false, nil)
 }
 
 // RotateVault saves a vault re-encrypted under a new key with both new envelopes, and
@@ -403,10 +407,53 @@ func (s *Store) RotateVault(userID string, expectedVersion int64, kdbxData []byt
 			return Metadata{}, err
 		}
 	}
-	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true, userKey)
+	return s.saveVault(userID, expectedVersion, kdbxData, passwordEnvelope, recoveryEnvelope, deviceID, true, false, userKey)
 }
 
-func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated bool, userKey *userkey.Record) (Metadata, error) {
+// SaveRekeyed writes the re-encrypted vault of a shared key rotation. It is an ordinary save
+// otherwise: the new epoch is marked afterwards by MarkKeyEpoch, once the record holding every
+// member's copy of the new key has committed, so a crash between the two leaves the
+// pre-rotation snapshot restorable with the key the members still hold. That snapshot is the
+// only way back from such a crash, so unlike an ordinary save this one fails when it cannot
+// archive it rather than re-keying the vault with no way back.
+func (s *Store) SaveRekeyed(key string, expectedVersion int64, kdbxData []byte, deviceID string) (Metadata, error) {
+	return s.saveVault(key, expectedVersion, kdbxData, "", "", deviceID, false, true, nil)
+}
+
+// MarkKeyEpoch marks version as the start of a new key epoch: ListHistory flags every older
+// snapshot staleKey and RestoreHistory refuses it with ErrStaleKey, so no client can roll
+// ciphertext under a retired key onto the live vault. It is separate from the write that
+// re-encrypted the vault so a shared rotation marks the epoch only once the new sealed keys
+// have committed — which is why the caller passes the version its own re-key wrote and not
+// the current one: a save landing in between is under the *new* key and must stay
+// restorable. An existing marker is never lowered, and a version the vault has not reached
+// is refused.
+func (s *Store) MarkKeyEpoch(key string, version int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retired[key] {
+		return ErrRetired
+	}
+	current, err := s.getMetadataLocked(key)
+	if err != nil {
+		return err
+	}
+	if current.Version == 0 {
+		return ErrNotFound
+	}
+	if version <= 0 || version > current.Version {
+		return fmt.Errorf("key epoch %d is not a version this vault has reached (%d)", version, current.Version)
+	}
+	if version <= current.KeyEpochSince {
+		return nil
+	}
+	current.KeyEpochSince = version
+	return s.saveMetadataLocked(key, current)
+}
+
+// mustArchive fails the write when the version it replaces cannot be preserved in history;
+// rotated marks a new key epoch in this same write, which only a personal rotation does.
+func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte, passwordEnvelope, recoveryEnvelope string, deviceID string, rotated, mustArchive bool, userKey *userkey.Record) (Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.retired[userID] {
@@ -454,7 +501,10 @@ func (s *Store) saveVault(userID string, expectedVersion int64, kdbxData []byte,
 		historyID := fmt.Sprintf("%d_v%d", current.UpdatedAt.Unix(), current.Version)
 		currentKdbx, err := os.ReadFile(s.kdbxPath(userID))
 		if err == nil {
-			_ = os.WriteFile(filepath.Join(s.historyDir(userID), historyID+".kdbx"), currentKdbx, 0600)
+			err = os.WriteFile(filepath.Join(s.historyDir(userID), historyID+".kdbx"), currentKdbx, 0600)
+		}
+		if err != nil && mustArchive {
+			return Metadata{}, fmt.Errorf("%w: version %d: %v", ErrArchive, current.Version, err)
 		}
 	}
 
@@ -770,6 +820,37 @@ func (s *Store) DiscardConflict(userID, conflictID string) error {
 
 	conflictFile := filepath.Join(s.conflictsDir(userID), conflictID+".kdbx")
 	return os.Remove(conflictFile)
+}
+
+// ClearHistory removes every snapshot and preserved conflict for key, leaving the current
+// vault and its metadata intact. A shared vault's rotation calls it after the new record
+// commits: those files are still encrypted under the retired key, so they are unreadable
+// to every remaining member and readable only by whoever kept the old key, which is the
+// member the rotation locked out.
+func (s *Store) ClearHistory(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.retired[key] {
+		return ErrRetired
+	}
+	for _, dir := range []string{s.historyDir(key), s.conflictsDir(key)} {
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".kdbx") {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Caller holds s.mu; bound history before the next writer can archive another copy.

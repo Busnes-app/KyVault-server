@@ -30,7 +30,7 @@ vault:
 | Path in the capsule | What it is |
 |---|---|
 | `data/vaults/<user>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Every user's encrypted KDBX file with its checksum, size and version, plus history and conflict copies. Still encrypted under the user's master password |
-| `data/vaults/shared/<id>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Each shared vault's encrypted KDBX with its version history. Encrypted under a key only its members hold |
+| `data/vaults/shared/<id>/vault.kdbx`, `metadata.json`, `history/`, `conflicts/` | Each shared vault's encrypted KDBX with its version history. Encrypted under a key only its members hold. Rotating deletes the snapshots and preserved conflicts under the retired key, since nobody left in the vault holds the key that opens them, but that delete is best effort: a rotation that answered `historyCleared:false` leaves them on disk, flagged `staleKey` and refused for rollback, until the owner rotates again |
 | `data/shared/<id>.json` | Shared vault membership: name, members, roles, states and each member's copy of the vault key sealed to that member's user key. The server cannot open these |
 | `data/shared/deleted/<id>/` | Shared vaults deleted within the retention window (record and vault data), kept for operator recovery |
 | `data/audit/audit.jsonl` | The append-only audit log |
@@ -304,6 +304,34 @@ history, and the audit log. Anything changed after that moment is undone.
 
    Confirm with **Deposit now** so the recovered server has a capsule that reflects the
    rotation.
+
+## Recovering a shared vault whose rotation was interrupted
+
+A shared key rotation writes the re-encrypted vault first and commits every member's copy of
+the new key second. If the server dies between the two — a restart, a kill, a full disk — the
+vault's bytes are under the new key while every member still holds the old one, and nobody can
+open it. Nothing is lost: the rotation archived the version it replaced, and that snapshot is
+under the key the members hold. Rolling back to it is a host-side file operation, because no
+screen in the product can reach the version history of a vault it cannot open.
+
+Recognise it by: every member reports the vault will not open (not "ask an owner to re-seal"),
+the audit log has **no** `shared.key_rotated` row for that vault, and
+`data/vaults/shared/<id>/metadata.json` has an `updatedAt` from the moment of the crash.
+
+1. Stop the server.
+2. `cd data/vaults/shared/<id>`. Read `version` from `metadata.json`; the pre-rotation copy is
+   `history/<timestamp>_v<version - 1>.kdbx`. (`keyEpochSince` is unchanged and below that
+   version, which is why the snapshot is not flagged.)
+3. `cp history/<timestamp>_v<version-1>.kdbx vault.kdbx`
+4. In `metadata.json`, set `checksum` to `sha256sum vault.kdbx` and `sizeBytes` to
+   `stat -c %s vault.kdbx`. Leave `version`, `keyEpochSince` and everything else alone: the
+   rotated bytes were never openable, so no client holds anything built on them.
+5. Start the server. The vault opens again for every member, and an owner can rotate again.
+
+If the server is running and an owner still has a session, the same rollback is reachable
+through the API without stopping anything: `GET /api/shared/<id>/history` and
+`POST /api/shared/<id>/history/<snapshot-id>/restore` with `X-Shared-Key-Epoch` set to the
+record's unchanged `keyEpoch` and the session's CSRF token. There is no screen for it.
 
 ## Recovering a deleted shared vault
 

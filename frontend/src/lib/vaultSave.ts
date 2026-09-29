@@ -8,11 +8,30 @@ export type SaveState =
 
 export const PERSONAL_BASE = "/api/vault";
 
-export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string, basePath = PERSONAL_BASE): Promise<number> {
+// What the save banner may offer. A retired-epoch 409 can only be answered by the server's
+// copy: `save()` is a no-op for it, so a Retry button there would do nothing at all.
+export const saveAction = (state: SaveState): "overwrite" | "reload" | "retry" | null =>
+  state.kind !== "error" ? null : state.conflict ? "overwrite" : state.status === 409 ? "reload" : "retry";
+
+// The server's two epoch refusals: the key was rotated under this tab, or the write never said
+// which key it used at all (a tab left open across a deploy, or a client that sends no epoch
+// header). Both share their status code with a version conflict and mean the opposite of one:
+// this copy cannot be the basis of an overwrite, and the only answer is to re-open the vault.
+export const ROTATION_REFUSAL = /was rotated|did not say which shared vault key/;
+
+// A shared write the server refused for either of those reasons. Overwriting is the one thing
+// that must not happen; callers re-open the vault.
+export const isRotationRefusal = (err: unknown): boolean =>
+  err instanceof HttpError && err.status === 409 && ROTATION_REFUSAL.test(err.message);
+
+export async function uploadVault(binary: ArrayBuffer, version: number, passwordEnvelope?: string, recoveryEnvelope?: string, signal?: AbortSignal, keyRotated = false, userKeyHeader?: string, basePath = PERSONAL_BASE, keyEpoch?: number): Promise<number> {
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     "If-Match": `"${version}"`,
   };
+  // Every shared write proves which key epoch it sealed its ciphertext under; a personal
+  // vault has no epoch, and sending one there would be a header the server never reads.
+  if (basePath !== PERSONAL_BASE && keyEpoch !== undefined) headers["X-Shared-Key-Epoch"] = String(keyEpoch);
   if (keyRotated) headers["X-Vault-Key-Rotated"] = "1";
   if (passwordEnvelope) headers["X-Password-Envelope"] = passwordEnvelope;
   if (recoveryEnvelope) headers["X-Recovery-Envelope"] = recoveryEnvelope;
@@ -45,9 +64,14 @@ export class VaultSaveQueue {
 
   // passwordEnvelope is the one this vault was unlocked against: a different stored one
   // means another session rotated the key, and this copy must not overwrite the server's.
-  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string, private basePath = PERSONAL_BASE) {
+  constructor(private vault: KeePassVault | null, version: number, private passwordEnvelope?: string, private basePath = PERSONAL_BASE, private epoch?: number) {
     this.state = { kind: "saved", version };
   }
+
+  // The epoch this queue's ciphertext is sealed under; undefined for the personal vault.
+  get keyEpoch(): number | undefined { return this.epoch; }
+  // A rotation this tab committed re-keyed the vault; later saves belong to the new epoch.
+  setKeyEpoch = (epoch: number): void => { this.epoch = epoch; };
 
   // Downloads, uploads and key rotation share the same mutable KDBX serializer.
   exclusive = <T>(run: (vault: KeePassVault) => Promise<T>): Promise<T> => {
@@ -101,6 +125,9 @@ export class VaultSaveQueue {
     this.clearOnlineRetry();
     if (this.controller.signal.aborted || this.running || this.revision === this.savedRevision) return;
     if (this.state.kind === "error" && this.state.conflict && !options.overwrite) return;
+    // A 409 that is not a version conflict is the retired-epoch refusal: this copy is sealed
+    // under a key the server no longer accepts, so no retry and no overwrite can land it.
+    if (this.state.kind === "error" && !this.state.conflict && this.state.status === 409) return;
     this.running = true;
     this.publish({ kind: "saving", version: this.state.version });
     try {
@@ -116,20 +143,23 @@ export class VaultSaveQueue {
         const revision = this.revision;
         const binary = await this.exportBinary();
         if (this.controller.signal.aborted) return;
-        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal, false, undefined, this.basePath);
+        const version = await uploadVault(binary, this.state.version, undefined, undefined, this.controller.signal, false, undefined, this.basePath, this.epoch);
         if (this.controller.signal.aborted) return;
         this.savedRevision = revision;
         this.publish({ kind: this.savedRevision === this.revision ? "saved" : "saving", version });
       }
     } catch (err) {
       if (this.controller.signal.aborted) return;
-      const conflict = err instanceof HttpError && err.status === 409;
-      if (!conflict && typeof window !== "undefined") {
+      const rotated = isRotationRefusal(err);
+      const conflict = err instanceof HttpError && err.status === 409 && !rotated;
+      // A 409 of either kind is answered by the user, never by a retry when the link returns.
+      if (!(err instanceof HttpError && err.status === 409) && typeof window !== "undefined") {
         this.onlineRetry = () => { this.clearOnlineRetry(); void this.save(); };
         window.addEventListener("online", this.onlineRetry);
       }
       this.publish({ kind: "error", version: this.state.version, conflict, status: err instanceof HttpError ? err.status : undefined, message: conflict
         ? "A newer vault exists on the server. Overwrite it with this copy (the server copy stays in Version History) or reload the server copy and lose these edits."
+        // The server's words, so appSelection.rotatedElsewhere can act on them.
         : toErrorMessage(err, "Unable to save vault. Your edits are still here.") });
     } finally {
       this.running = false;

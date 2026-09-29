@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { toErrorMessage } from "../lib/api";
 import { adminSharedApi, type AdminSharedVault } from "../lib/sharedVaults";
+import { adminRotationNote } from "../lib/sharedRotation";
 import { formatWhen } from "../lib/format";
 import { useDialogs } from "./DialogHost";
 import { ErrorLine } from "./ErrorLine";
@@ -58,11 +59,14 @@ export function VaultRow({ vault, expanded, busy, onToggle, onDelete, onRemoveMe
           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           <span style={{ fontWeight: 600 }}>{vault.name}</span>
           {vault.ownerless ? <span className="badge" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>Ownerless</span> : null}
+          {vault.rotationPending ? <span className="badge" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>Rotation pending</span> : null}
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: "1rem", fontSize: "0.85rem", color: "var(--ink-muted)", flexWrap: "wrap" }}>
           <span>Created by {vault.createdBy}</span>
           <span>{formatWhen(vault.createdAt)}</span>
           <span>{vault.members.length} member{vault.members.length === 1 ? "" : "s"}</span>
+          {/* Only an owner can rotate, so this line is a diagnosis, not an action an admin has. */}
+          {vault.rotationPending ? <span style={{ color: "var(--danger)" }}>{adminRotationNote(vault.rotationPending, vault.members)}</span> : null}
           <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={onDelete}>
             Delete vault
           </button>

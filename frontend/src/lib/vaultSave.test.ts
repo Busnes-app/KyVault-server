@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { VaultSaveQueue, uploadVault, canDiscardVault, PERSONAL_BASE, type SaveState } from "./vaultSave";
+import { VaultSaveQueue, uploadVault, canDiscardVault, isRotationRefusal, saveAction, PERSONAL_BASE, type SaveState } from "./vaultSave";
+import { HttpError } from "./api";
 import { KeePassVault } from "./kdbx";
 
 function settled(queue: VaultSaveQueue): Promise<SaveState> {
@@ -325,4 +326,105 @@ test("overwrite refuses when the key was rotated in another session", async (t) 
   assert.equal(state.kind, "error");
   assert.equal(state.kind === "error" && state.message, "The vault key was rotated in another session. Download this copy, then lock and unlock with your master password.");
   assert.equal(state.version, 2);
+});
+
+const SHARED_BASE = "/api/shared/sv_abcdefghijklmnopqrstuv";
+
+test("a shared upload carries the key epoch and a personal one does not", async (t) => {
+  browserCookie(t);
+  const seen: { url: string; epoch: string | null }[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options: RequestInit = {}) => {
+    seen.push({ url: String(url), epoch: new Headers(options.headers).get("X-Shared-Key-Epoch") });
+    return Response.json({ metadata: { version: 4 } });
+  });
+  await uploadVault(new ArrayBuffer(4), 3, undefined, undefined, undefined, false, undefined, SHARED_BASE, 2);
+  // A record written before rotation existed loads at epoch 0: the header still has to say so.
+  await uploadVault(new ArrayBuffer(4), 3, undefined, undefined, undefined, false, undefined, SHARED_BASE, 0);
+  await uploadVault(new ArrayBuffer(4), 3);
+  assert.deepEqual(seen.map((s) => s.epoch), ["2", "0", null]);
+  assert.deepEqual(seen.map((s) => s.url), [`${SHARED_BASE}/upload`, `${SHARED_BASE}/upload`, `${PERSONAL_BASE}/upload`]);
+});
+
+test("the queue sends the epoch it was built with, and the one a rotation moved it to", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(8));
+  const epochs: (string | null)[] = [];
+  let version = 8;
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, options: RequestInit = {}) => {
+    epochs.push(new Headers(options.headers).get("X-Shared-Key-Epoch"));
+    return Response.json({ metadata: { version: ++version } });
+  });
+  const queue = new VaultSaveQueue(vault, 8, undefined, SHARED_BASE, 1);
+  queue.changed();
+  await queue.save();
+  queue.setKeyEpoch(2);
+  assert.equal(queue.keyEpoch, 2);
+  queue.changed();
+  await queue.save();
+  assert.deepEqual(epochs, ["1", "2"]);
+  queue.discard();
+});
+
+test("a personal queue sends no epoch at all", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(6));
+  const epochs: (string | null)[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, options: RequestInit = {}) => {
+    epochs.push(new Headers(options.headers).get("X-Shared-Key-Epoch"));
+    return Response.json({ metadata: { version: 3 } });
+  });
+  const queue = new VaultSaveQueue(vault, 2);
+  queue.changed();
+  await queue.save();
+  assert.deepEqual(epochs, [null]);
+  assert.equal(queue.keyEpoch, undefined);
+  queue.discard();
+});
+
+// A retired-epoch refusal shares its status code with a version conflict and means the
+// opposite: there is nothing on the server this copy may overwrite. The server's own words
+// have to survive, because appSelection.rotatedElsewhere reads them to re-open the vault.
+test("a shared write refused for a rotated key is not an overwritable conflict", async (t) => {
+  browserCookie(t);
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(3));
+  const queue = new VaultSaveQueue(vault, 2, undefined, SHARED_BASE, 1);
+  let uploads = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    uploads++;
+    return new Response("the shared vault key was rotated; reload the vault\n", { status: 409 });
+  });
+  const done = settled(queue);
+  queue.changed();
+  void queue.save();
+  const state = await done;
+  assert.equal(state.kind, "error");
+  assert.equal(state.kind === "error" && state.status, 409);
+  assert.equal(state.kind === "error" && state.conflict, false, "overwrite would upload ciphertext nobody can open");
+  assert.match(state.kind === "error" ? state.message : "", /was rotated/);
+  await queue.save({ overwrite: true });
+  assert.equal(uploads, 1, "not even an explicit overwrite re-sends a retired-epoch copy");
+  queue.discard();
+});
+
+test("a rotation refusal is told apart from every other 409", () => {
+  assert.equal(isRotationRefusal(new HttpError(409, "the shared vault key was rotated; reload the vault")), true);
+  // The server's other epoch refusal, word for word. A tab left open across a deploy sends no
+  // epoch header; routing it to the overwrite button would re-fail forever.
+  assert.equal(isRotationRefusal(new HttpError(409, "this write did not say which shared vault key it was made under; reload the vault")), true);
+  assert.equal(isRotationRefusal(new HttpError(409, "conflict")), false);
+  assert.equal(isRotationRefusal(new HttpError(403, "the shared vault key was rotated")), false);
+  assert.equal(isRotationRefusal(new Error("the shared vault key was rotated")), false);
+});
+
+// The banner's three answers. A retired-epoch 409 is the one the queue refuses outright, so
+// offering Retry there would render a button that does nothing at all.
+test("the save banner offers reload, not retry, for a rotation refusal", () => {
+  const err = (over: Partial<Extract<SaveState, { kind: "error" }>>): SaveState =>
+    ({ kind: "error", version: 3, message: "x", ...over });
+  assert.equal(saveAction({ kind: "saved", version: 3 }), null);
+  assert.equal(saveAction({ kind: "saving", version: 3 }), null);
+  assert.equal(saveAction(err({ conflict: true, status: 409 })), "overwrite");
+  assert.equal(saveAction(err({ status: 409 })), "reload");
+  assert.equal(saveAction(err({ status: 500 })), "retry");
+  assert.equal(saveAction(err({})), "retry", "a network failure is still worth a retry");
 });
