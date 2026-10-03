@@ -4,6 +4,7 @@ import { buildWatchtowerReport, runBreachCheck, CATEGORIES, type BreachResults, 
 import { loadStrengthChecker, type StrengthChecker } from "../lib/passwordStrength";
 import { HIBP_DISCLOSURE } from "../lib/hibp";
 import { toErrorMessage } from "../lib/api";
+import { ShareAdminReport, type ReportSharing } from "../components/ShareAdminReport";
 import { useDialogs } from "../components/DialogHost";
 
 const autoBreachKey = (userId: string) => `kyvault.watchtower.autoBreach:${userId}`;
@@ -16,7 +17,7 @@ const SEVERITY: Record<Category, string> = {
   missing2fa: "var(--warning)", expired: "var(--warning)", expiring: "var(--ink-muted)",
 };
 
-type Props = { vault: KeePassVault; hidden: boolean; userId: string; onOpenEntry: (uuid: string) => void };
+type Props = { vault: KeePassVault; hidden: boolean; userId: string; sharing?: ReportSharing; onOpenEntry: (uuid: string) => void };
 type Deps = { strength: StrengthChecker; twoFactorDomains: ReadonlySet<string> };
 
 function verdict(score: number | null): string {
@@ -32,7 +33,7 @@ function readAutoBreach(userId: string): boolean {
 }
 
 // Stays mounted while unlocked so the cache and breach results last the session; lock unmounts it.
-export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
+export function WatchtowerPage({ vault, hidden, userId, onOpenEntry, sharing }: Props) {
   const dialogs = useDialogs();
   const [deps, setDeps] = useState<Deps | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -40,6 +41,7 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
   const [report, setReport] = useState<WatchtowerReport | null>(null);
   const [selected, setSelected] = useState<Category>("breached");
   const [breached, setBreached] = useState<BreachResults | null>(null);
+  const [checkedVersion, setCheckedVersion] = useState<number | null>(null);
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [breachError, setBreachError] = useState<string | null>(null);
@@ -74,11 +76,14 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
   const runCheck = async () => {
     breachAbort.current?.abort();
     const controller = new AbortController();
+    const sourceVersion = sharing?.queue.getSnapshot();
     breachAbort.current = controller;
     setBreachError(null);
     try {
       const result = await runBreachCheck(vault, controller.signal, (done, total) => setProgress({ done, total }));
       setBreached(result);
+      const after = sharing?.queue.getSnapshot();
+      setCheckedVersion(sourceVersion?.kind === "saved" && after?.kind === "saved" && after.version === sourceVersion.version ? after.version : null);
       setCheckedAt(new Date());
     } catch (err) {
       if (!controller.signal.aborted) setBreachError(toErrorMessage(err, "Have I Been Pwned check failed."));
@@ -135,6 +140,8 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
           </label>
         </div>
       </section>
+
+      {sharing && <ShareAdminReport {...sharing} breachResults={breached} breachVersion={checkedVersion} />}
 
       {error ? (
         <p role="alert" style={{ color: "var(--danger)" }}>

@@ -118,3 +118,35 @@ Not exercised: a real KyVault server (everything here is the mock), dark mode an
 | Members with a pending rotation and the Rotate key button | ![Rotate](docs/shared-rotate.png) |
 | The report after a rotation that left a member behind | ![Rotated](docs/shared-rotated.png) |
 | Members, re-captured after the rotation | ![Members](docs/shared-members.png) |
+
+## Encrypted admin personal-vault reports
+
+Verified 2026-10-03 through the T3 collaborative browser at 1280×800, System (Busnes) following the dark OS appearance,
+using `npm run dev:mock` on :5879. The mock uses real published X-Wing keys and real
+KDBX encryption; it does not implement KySignOn or production storage/auth gates.
+
+Created a personal vault, added a weak-password login through Apply Edits, enabled
+mock-admin as the designated report recipient after its fingerprint confirmation,
+and shared counts from Watchtower after the separate disclosure. First-use pinning
+saved to the personal vault before the immutable reporting snapshot. Admin →
+Security reports decrypted one report with 1 live entry, weak=1, score=50 and breaches
+"Not checked". The seeded dana row remained "not-submitted" and counted as missing
+coverage. Category totals overlap; no server-wide score was displayed. Lock removed
+all displayed counts and showed the recipient unlock prompt. A subsequent complete
+setup/share pass confirmed the final formatted UI; the screenshot shows counts and
+coverage. The table and controls use existing palette/font tokens and scroll areas.
+
+![Encrypted report counts and incomplete coverage](docs/admin-report-counts.png)
+
+No reporting JavaScript exceptions were observed. The pre-existing directory key
+probes for a mock user with no key returned 404. Vite restarted when the mock's
+imported reporting module was formatted, resetting its in-memory fixtures; evidence
+was captured again with stable code afterward.
+
+Limits: no live KySignOn or multi-user deployed-server browser session; no mobile or
+light screenshot in this pass. Real Go route tests cover browser/device/admin/CSRF/
+fresh-session gates, stale-version refusal, recipient role/key changes and storage
+failure. Unit tests cover real KDBX summary projection, ciphertext/context/tampering,
+canonical parser boundaries and incomplete aggregate coverage. Backup collection
+explicitly excludes the reporting cache. Production readiness still requires the
+PR's CI and autonomous review gates.

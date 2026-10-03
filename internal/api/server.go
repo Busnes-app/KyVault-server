@@ -23,6 +23,7 @@ import (
 	"github.com/Busnes-app/kyvault-server/internal/audit"
 	"github.com/Busnes-app/kyvault-server/internal/backup"
 	"github.com/Busnes-app/kyvault-server/internal/devices"
+	"github.com/Busnes-app/kyvault-server/internal/reporting"
 	"github.com/Busnes-app/kyvault-server/internal/shared"
 	"github.com/Busnes-app/kyvault-server/internal/sso"
 	kysync "github.com/Busnes-app/kyvault-server/internal/sync"
@@ -46,6 +47,7 @@ type Session struct {
 }
 
 type Server struct {
+	reporting     *reporting.Store
 	users         *users.Store
 	vault         *vault.Store
 	devices       *devices.Store
@@ -154,6 +156,11 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("init shared store: %w", err)
 	}
 
+	reportStore, err := reporting.New(cfg.DataDir + "/reporting")
+	if err != nil {
+		return nil, fmt.Errorf("init reporting store: %w", err)
+	}
+
 	dStore, err := devices.NewStore(cfg.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("init devices store: %w", err)
@@ -178,6 +185,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
+		reporting:      reportStore,
 		users:          uStore,
 		vault:          vStore,
 		devices:        dStore,
@@ -242,6 +250,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/logout", s.withAuth(s.handleLogout))
 	mux.HandleFunc("GET /api/auth/sessions", s.withAuth(s.handleSessionsList))
 	mux.HandleFunc("DELETE /api/auth/sessions/{id}", s.withAuth(s.handleSessionEnd))
+
+	mux.HandleFunc("GET /api/reporting/config", s.withAuth(s.reportBrowser(s.handleReportConfig)))
+	mux.HandleFunc("PUT /api/reporting/report", s.withAuth(s.reportBrowser(s.handleReportPut)))
+	mux.HandleFunc("DELETE /api/reporting/report", s.withAuth(s.reportBrowser(s.handleReportDelete)))
+	mux.HandleFunc("PUT /api/admin/reporting/config", s.withFreshAdmin(s.reportBrowser(s.handleReportConfigure)))
+	mux.HandleFunc("GET /api/admin/reporting", s.withAdmin(s.reportBrowser(s.handleReportList)))
 
 	// Vault Operations
 	mux.HandleFunc("GET /api/vault/metadata", s.withAuth(s.handleVaultMetadata))

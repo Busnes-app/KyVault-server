@@ -1155,13 +1155,14 @@ export function App() {
             />}
           />
           <WatchtowerPage key={`watchtower:${selectionScope(selected)}`} vault={vault} hidden={navTab !== "watchtower"} userId={user.id}
+            sharing={{vault, vaultKey, queue: saveQueue, userId: user.id, enabled: selected.kind === "personal" && !unsaved && !switching && !rotating, isCurrent: () => personalRef.current?.key === vaultKey && queueRef.current === saveQueue && selectedRef.current.kind === "personal" && !draft.current && !switchingRef.current && !rotatingRef.current}}
             onOpenEntry={(uuid) => navigate({ tab: "vault", shared: selected.kind === "shared" ? selected.id : undefined, entry: uuid })} />
         </>
       ) : vault && navTab === "vault" ? (
         <p role="status" style={{ padding: "2rem", textAlign: "center", color: "var(--ink-muted)" }}>Opening vault…</p>
       ) : null}
       {navTab === "admin" && user.role === "admin" ? (
-        <AdminPanel currentUserId={user.id} route={route} navigate={navigate} />
+        <AdminPanel currentUserId={user.id} route={route} navigate={navigate} userKey={userKey} />
       ) : vault ? (
         navTab === "security" ? <SecuritySettings
           user={user}

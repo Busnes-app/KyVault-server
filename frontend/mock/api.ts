@@ -1,5 +1,6 @@
 // Dev-only stand-in for the Go API so the UI can run without KySignOn. Never built.
 import type { Plugin } from "vite";
+import { keyDigest, type ReportConfig, type ReportRecord } from "../src/lib/adminReport";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 type VaultData = {
@@ -25,6 +26,8 @@ type SharedVault = VaultData & { id: string; name: string; createdBy: string; cr
   rotationPending?: Pending; members: SharedMember[] };
 
 export function mockApi(): Plugin {
+  let reporting: ReportConfig = {instanceId: [...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,"0")).join(""), generation: [...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,"0")).join(""), enabled:false};
+  const reports = new Map<string,ReportRecord>();
   const endedSessions = new Set<string>();
   const sessions = () => {
     const now = Date.now();
@@ -245,6 +248,34 @@ export function mockApi(): Plugin {
       res.setHeader("Set-Cookie", "csrf_token=mock-csrf; Path=/");
       const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
       if (bearer !== undefined && !store.devices.some((d) => d.id === tokens.get(bearer))) return json(res, 401, { error: "unauthorized" });
+      if(p.startsWith("/api/reporting/")||p.startsWith("/api/admin/reporting")) {
+        if(bearer!==undefined)return json(res,403,{error:"this action needs a browser session"});
+        res.setHeader("Cache-Control","no-store");
+        if(reporting.enabled&&reporting.publicKey!==store.userKey?.publicKey){reporting={instanceId:reporting.instanceId,generation:[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,"0")).join(""),enabled:false};reports.clear()}
+        if(p==="/api/reporting/config"&&m==="GET")return json(res,200,reporting);
+        if(p==="/api/admin/reporting/config"&&m==="PUT") {
+          const b=JSON.parse((await readBody(req)).toString());
+          if(b.generation!==reporting.generation)return json(res,409,{error:"report settings changed"});
+          if(b.enabled) {
+            if(b.recipientId!==user.id||typeof store.userKey?.publicKey!=="string")return json(res,400,{error:"recipient needs a published admin key"});
+            const digest=await keyDigest(new Uint8Array(Buffer.from(store.userKey.publicKey,"base64")));
+            if(digest!==b.keyDigest)return json(res,400,{error:"recipient key changed"});
+            reporting={instanceId:reporting.instanceId,generation:[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,"0")).join(""),enabled:true,recipientId:user.id,recipientName:user.username,publicKey:store.userKey.publicKey,keyDigest:digest};
+          }else reporting={instanceId:reporting.instanceId,generation:[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,"0")).join(""),enabled:false};
+          reports.clear();return json(res,200,reporting);
+        }
+        if(p==="/api/reporting/report"&&m==="PUT") {
+          const b=JSON.parse((await readBody(req)).toString());
+          if(!reporting.enabled||b.generation!==reporting.generation||b.version!==store.version||b.sourceId!==user.id||b.keyDigest!==reporting.keyDigest)return json(res,409,{error:"report settings or vault changed; refresh and share again"});
+          reports.set(user.id,{...b,receivedAt:new Date().toISOString()});return json(res,200,{ok:true});
+        }
+        if(p==="/api/reporting/report"&&m==="DELETE"){reports.delete(user.id);return json(res,200,{ok:true})}
+        if(p==="/api/admin/reporting"&&m==="GET") {
+          const r=reports.get(user.id),status=!store.version?"no-vault":!r?"not-submitted":r.version!==store.version?"stale-version":"current";
+          const record=r?{...r,sealed:status==="current"?r.sealed:undefined}:undefined;
+          return json(res,200,{config:reporting,rows:[{userId:user.id,username:user.username,status,record},{userId:"u-2",username:"dana",status:"not-submitted"}],next:""});
+        }
+      }
       if (p === "/api/auth/me") return json(res, 200, { authenticated: true, user });
       if (p === "/api/auth/sso-config") return json(res, 200, { enabled: true, issuerUrl: "https://signon.mock" });
       if (p === "/api/auth/logout") return json(res, 200, { ok: true });

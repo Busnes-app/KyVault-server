@@ -371,3 +371,12 @@ Run Steps 1 and 2 against the latest capsule on a scratch machine once a quarter
 real custodians and their real cards, and then delete the output. The in-app drill and
 `kyvault-server backup-drill` prove the capsule format restores; only this proves the
 cards do.
+
+## Encrypted admin reports after restore
+
+The disposable `DATA_DIR/reporting/` cache and its recipient configuration are not
+part of a sealed capsule. A restored instance starts reporting disabled. An admin
+must select and confirm the recipient again; users must voluntarily share fresh
+counts from their unlocked personal vaults. Restarting the same installation keeps
+its cache and revalidates the recipient's role/key. No reporting private key is
+held server-side, and restoring cannot recall copies a recipient downloaded.

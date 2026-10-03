@@ -2,6 +2,8 @@ import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
 import { Users, Users2, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore, Copy, Check } from "lucide-react";
 import { AdminBackup } from "../components/AdminBackup";
+import { AdminReporting } from "../components/AdminReporting";
+import type { UserKeyState } from "../lib/userKeyState";
 import { AdminShared } from "../components/AdminShared";
 import { formatWhen } from "../lib/format";
 import { useDialogs } from "../components/DialogHost";
@@ -40,7 +42,7 @@ type AuditEntry = {
 
 type AuditVerify = { valid: boolean; writeFailures: number; error: string };
 
-export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: string; route: Route; navigate: (next: Route) => void }) {
+export function AdminPanel({ currentUserId, route, navigate, userKey }: { currentUserId: string; userKey: UserKeyState | null; route: Route; navigate: (next: Route) => void }) {
   const dialogs = useDialogs();
   const activeTab = route.admin ?? "sso";
   const [usersList, setUsersList] = useState<User[]>([]);
@@ -222,6 +224,7 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
         >
           <Users2 size={16} /> Shared vaults
         </button>
+        <button className={`nav-link-btn ${activeTab === "reporting" ? "active" : ""}`} onClick={() => navigate({ tab: "admin", admin: "reporting" })}><ShieldCheck size={16} /> Security reports</button>
       </div>
 
       {message ? (
@@ -453,6 +456,8 @@ export function AdminPanel({ currentUserId, route, navigate }: { currentUserId: 
         </div>
       ) : activeTab === "backup" ? (
         <AdminBackup />
+      ) : activeTab === "reporting" ? (
+        <AdminReporting userId={currentUserId} userKey={userKey} users={usersList} />
       ) : activeTab === "shared" ? (
         <AdminShared />
       ) : (

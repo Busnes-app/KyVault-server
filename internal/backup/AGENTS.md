@@ -66,3 +66,7 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
 `go test -race ./internal/backup ./internal/api ./cmd/server ./internal/audit` covers old
 state, both destinations, partial failures, restore CLI, malformed recipes and the decrypt
 guard. Run the root CI gates before opening a PR.
+
+- Reporting is disposable: exclude all of DATA_DIR/reporting from capsules.
+  Restore starts reporting disabled with no reports, even if the source instance
+  had it enabled. TestReportingCacheIsExcludedFromCapsules pins collection.
