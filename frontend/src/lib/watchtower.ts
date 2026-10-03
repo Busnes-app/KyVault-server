@@ -59,6 +59,11 @@ export function twoFactorDomainFor(raw: string, domains: ReadonlySet<string>): s
 
 export const CATEGORIES = ["breached", "reused", "weak", "insecureUrl", "missing2fa", "expired", "expiring"] as const;
 export type Category = (typeof CATEGORIES)[number];
+export const CATEGORY_LABELS: Record<Category, string> = {
+  breached: "Breached", reused: "Reused", weak: "Weak", insecureUrl: "Insecure URL",
+  missing2fa: "Missing 2FA", expired: "Expired", expiring: "Expiring soon",
+};
+
 export type Finding = { uuid: string; title: string; detail: string };
 export type WatchtowerReport = { score: number | null; breachChecked: boolean; categories: Record<Category, Finding[]> };
 

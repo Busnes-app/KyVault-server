@@ -12,9 +12,14 @@ import {
   type ReportPage,
   type ReportConfig,
 } from "../lib/adminReport";
-import { CATEGORIES } from "../lib/watchtower";
+import { CATEGORIES, CATEGORY_LABELS } from "../lib/watchtower";
 import { useDialogs } from "./DialogHost";
 
+const COVERAGE_LABELS: Record<string, string> = {
+ "current": "Current", "not-submitted": "Not submitted", "no-vault": "No vault",
+ "stale-version": "Vault changed", "stale-time": "More than 24 hours old",
+ "unreadable": "Unreadable", "unavailable": "Storage unavailable",
+};
 type User = { id: string; username: string; active: boolean; role: string };
 type Row = CoverageRow & { summary?: Summary };
 export function AdminReporting({
@@ -256,7 +261,7 @@ export function AdminReporting({
                     ? "Not checked"
                     : totals.counts[c]}
                 </strong>
-                <span>{c}</span>
+                <span>{CATEGORY_LABELS[c]}</span>
               </div>
             ))}
           </div>
@@ -281,7 +286,7 @@ export function AdminReporting({
             {rows.map((r) => (
               <tr key={r.userId}>
                 <td>{r.username}</td>
-                <td>{r.status}</td>
+                <td>{COVERAGE_LABELS[r.status] ?? "Unsupported"}</td>
                 <td>{canSee ? (r.summary?.liveEntries ?? "—") : "—"}</td>
                 <td>{canSee ? (r.summary?.score ?? "—") : "—"}</td>
                 <td>

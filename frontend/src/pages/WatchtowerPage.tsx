@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeePassVault } from "../lib/kdbx";
-import { buildWatchtowerReport, runBreachCheck, CATEGORIES, type BreachResults, type Category, type StrengthCache, type WatchtowerReport } from "../lib/watchtower";
+import { buildWatchtowerReport, runBreachCheck, CATEGORIES, CATEGORY_LABELS, type BreachResults, type Category, type StrengthCache, type WatchtowerReport } from "../lib/watchtower";
 import { loadStrengthChecker, type StrengthChecker } from "../lib/passwordStrength";
 import { HIBP_DISCLOSURE } from "../lib/hibp";
 import { toErrorMessage } from "../lib/api";
@@ -8,10 +8,7 @@ import { ShareAdminReport, type ReportSharing } from "../components/ShareAdminRe
 import { useDialogs } from "../components/DialogHost";
 
 const autoBreachKey = (userId: string) => `kyvault.watchtower.autoBreach:${userId}`;
-const LABELS: Record<Category, string> = {
-  breached: "Breached", reused: "Reused", weak: "Weak", insecureUrl: "Insecure URL",
-  missing2fa: "Missing 2FA", expired: "Expired", expiring: "Expiring soon",
-};
+
 const SEVERITY: Record<Category, string> = {
   breached: "var(--danger)", reused: "var(--danger)", weak: "var(--warning)", insecureUrl: "var(--warning)",
   missing2fa: "var(--warning)", expired: "var(--warning)", expiring: "var(--ink-muted)",
@@ -158,13 +155,13 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry, sharing }: 
                   <span className="font-mono watchtower-count" style={{ color: count ? SEVERITY[c] : "var(--ink-muted)" }}>
                     {c === "breached" && !report.breachChecked ? "?" : count}
                   </span>
-                  <span>{LABELS[c]}</span>
+                  <span>{CATEGORY_LABELS[c]}</span>
                 </button>
               );
             })}
           </div>
-          <section className="field-card" aria-label={LABELS[selected]}>
-            <h3 style={{ marginTop: 0 }}>{LABELS[selected]}</h3>
+          <section className="field-card" aria-label={CATEGORY_LABELS[selected]}>
+            <h3 style={{ marginTop: 0 }}>{CATEGORY_LABELS[selected]}</h3>
             {selected === "breached" && !report.breachChecked ? (
               <p style={{ color: "var(--ink-muted)", margin: 0 }}>Not checked yet.</p>
             ) : findings.length === 0 ? (
