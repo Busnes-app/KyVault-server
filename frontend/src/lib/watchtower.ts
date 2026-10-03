@@ -59,6 +59,11 @@ export function twoFactorDomainFor(raw: string, domains: ReadonlySet<string>): s
 
 export const CATEGORIES = ["breached", "reused", "weak", "insecureUrl", "missing2fa", "expired", "expiring"] as const;
 export type Category = (typeof CATEGORIES)[number];
+export const CATEGORY_LABELS: Record<Category, string> = {
+  breached: "Breached", reused: "Reused", weak: "Weak", insecureUrl: "Insecure URL",
+  missing2fa: "Missing 2FA", expired: "Expired", expiring: "Expiring soon",
+};
+
 export type Finding = { uuid: string; title: string; detail: string };
 export type WatchtowerReport = { score: number | null; breachChecked: boolean; categories: Record<Category, Finding[]> };
 
@@ -77,10 +82,13 @@ export type ReportDeps = {
   now?: Date;
 };
 
-export function scoreReport(categories: Record<Category, Finding[]>, liveEntries: number): number | null {
+export function scoreCounts(counts: Record<Category, number>, liveEntries: number): number | null {
   if (liveEntries === 0) return null;
-  const penalty = CATEGORIES.reduce((sum, c) => sum + WEIGHTS[c] * categories[c].length, 0);
+  const penalty = CATEGORIES.reduce((sum, c) => sum + WEIGHTS[c] * counts[c], 0);
   return Math.round(100 * (1 - Math.min(1, penalty / (liveEntries * 4))));
+}
+export function scoreReport(categories: Record<Category, Finding[]>, liveEntries: number): number | null {
+  return scoreCounts(Object.fromEntries(CATEGORIES.map(c => [c, categories[c].length])) as Record<Category, number>, liveEntries);
 }
 
 function weakness(entry: VaultEntry, updatedAt: number, deps: ReportDeps): string | null {

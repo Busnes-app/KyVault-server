@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -503,5 +504,25 @@ func TestCollectCannotCaptureATornRotation(t *testing.T) {
 	}
 	if v, err := c.Shared.Get(sv.ID); err != nil || v.KeyEpoch != rotations+1 {
 		t.Fatalf("the rotations did not all run: %+v, %v", v, err)
+	}
+}
+
+func TestReportingCacheIsExcludedFromCapsules(t *testing.T) {
+	c := testCollector(t)
+	dir := filepath.Join(c.DataDir, "reporting")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"config":{"enabled":true},"records":{"u":{"sealed":"opaque"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	files, _, _, err := c.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.Contains(f.Path, "reporting") {
+			t.Fatalf("reporting cache included: %s", f.Path)
+		}
 	}
 }

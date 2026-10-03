@@ -905,3 +905,34 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Breach results and the strength cache are stamped with each entry's `updatedAt` and live in the
   mounted page until lock. No password-age check (NIST SP 800-63B: rotate on evidence of compromise)
   and no duplicate-login check, by decision.
+
+- `internal/reporting/` and `internal/api/reporting_handlers.go`: opaque encrypted
+  personal-vault Watchtower cache. One designated active admin's exact published
+  X-Wing key; every access revalidates recipient role/active/key. A key or role
+  change disables reporting and deletes cached records atomically. All routes are
+  browser-only, writes explicitly check CSRF, and configuration requires fresh
+  admin authentication plus conditional generation. Client source is bound to the
+  authenticated account and version to If-Match/current personal metadata.
+  `DATA_DIR/reporting/state.json` (0600) commits config and records together under
+  one mutex; failed writes do not change memory or acknowledge success. Keep one
+  current opaque 3184-byte sealed report per user, expire after seven days, and
+  show current coverage only at the current version within 24 hours. Other admins
+  see coverage without ciphertext; inactive sources are removed on list access.
+  GET responses are no-store. This disposable cache is excluded from capsules.
+  Store/API/backup regressions pin persistence, expiry, context metadata, access
+  gates, recipient invalidation, version checks and backup exclusion.
+- `frontend/src/lib/adminReport.ts`, `components/ShareAdminReport.tsx` and
+  `components/AdminReporting.tsx`: project Watchtower into counts only, canonical
+  strictly validated JSON padded to 2048 bytes and X-Wing HPKE single-shot sealing
+  with all routing metadata in info. No password-derived tokens or entry data.
+  Personal Watchtower offers voluntary share/withdraw; first-use pins are saved
+  in the personal KDBX and changed pins refuse sharing. Snapshot construction uses
+  the save queue and an independent reopened KDBX; generation/queue/version and
+  dirty/draft checks prevent late submission after lock or edits. HIBP results
+  qualify only for the exact saved version; otherwise breaches are not checked.
+  Admin → Security reports (#/admin/reporting) decrypts in memory for the current
+  recipient, shows missing/stale coverage and overlapping totals, and never
+  calculates a server-wide score. Lock/key change/unmount clears rendered counts
+  and invalidates pending loads. Refresh on focus and every foreground minute.
+  `adminReport.test.ts` covers strict payload validation, real encrypted KDBX
+  projection, HPKE/context/tamper refusals and aggregate coverage.

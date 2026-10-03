@@ -1,22 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeePassVault } from "../lib/kdbx";
-import { buildWatchtowerReport, runBreachCheck, CATEGORIES, type BreachResults, type Category, type StrengthCache, type WatchtowerReport } from "../lib/watchtower";
+import { buildWatchtowerReport, runBreachCheck, CATEGORIES, CATEGORY_LABELS, type BreachResults, type Category, type StrengthCache, type WatchtowerReport } from "../lib/watchtower";
 import { loadStrengthChecker, type StrengthChecker } from "../lib/passwordStrength";
 import { HIBP_DISCLOSURE } from "../lib/hibp";
 import { toErrorMessage } from "../lib/api";
+import { ShareAdminReport, type ReportSharing } from "../components/ShareAdminReport";
 import { useDialogs } from "../components/DialogHost";
 
 const autoBreachKey = (userId: string) => `kyvault.watchtower.autoBreach:${userId}`;
-const LABELS: Record<Category, string> = {
-  breached: "Breached", reused: "Reused", weak: "Weak", insecureUrl: "Insecure URL",
-  missing2fa: "Missing 2FA", expired: "Expired", expiring: "Expiring soon",
-};
+
 const SEVERITY: Record<Category, string> = {
   breached: "var(--danger)", reused: "var(--danger)", weak: "var(--warning)", insecureUrl: "var(--warning)",
   missing2fa: "var(--warning)", expired: "var(--warning)", expiring: "var(--ink-muted)",
 };
 
-type Props = { vault: KeePassVault; hidden: boolean; userId: string; onOpenEntry: (uuid: string) => void };
+type Props = { vault: KeePassVault; hidden: boolean; userId: string; sharing?: ReportSharing; onOpenEntry: (uuid: string) => void };
 type Deps = { strength: StrengthChecker; twoFactorDomains: ReadonlySet<string> };
 
 function verdict(score: number | null): string {
@@ -32,7 +30,7 @@ function readAutoBreach(userId: string): boolean {
 }
 
 // Stays mounted while unlocked so the cache and breach results last the session; lock unmounts it.
-export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
+export function WatchtowerPage({ vault, hidden, userId, onOpenEntry, sharing }: Props) {
   const dialogs = useDialogs();
   const [deps, setDeps] = useState<Deps | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -40,6 +38,7 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
   const [report, setReport] = useState<WatchtowerReport | null>(null);
   const [selected, setSelected] = useState<Category>("breached");
   const [breached, setBreached] = useState<BreachResults | null>(null);
+  const [checkedVersion, setCheckedVersion] = useState<number | null>(null);
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [breachError, setBreachError] = useState<string | null>(null);
@@ -74,11 +73,14 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
   const runCheck = async () => {
     breachAbort.current?.abort();
     const controller = new AbortController();
+    const sourceVersion = sharing?.queue.getSnapshot();
     breachAbort.current = controller;
     setBreachError(null);
     try {
       const result = await runBreachCheck(vault, controller.signal, (done, total) => setProgress({ done, total }));
       setBreached(result);
+      const after = sharing?.queue.getSnapshot();
+      setCheckedVersion(sourceVersion?.kind === "saved" && after?.kind === "saved" && after.version === sourceVersion.version ? after.version : null);
       setCheckedAt(new Date());
     } catch (err) {
       if (!controller.signal.aborted) setBreachError(toErrorMessage(err, "Have I Been Pwned check failed."));
@@ -136,6 +138,8 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
         </div>
       </section>
 
+      {sharing && <ShareAdminReport {...sharing} breachResults={breached} breachVersion={checkedVersion} />}
+
       {error ? (
         <p role="alert" style={{ color: "var(--danger)" }}>
           {error} <button type="button" className="btn btn-quiet btn-sm" onClick={() => { setDeps(null); setAttempt((n) => n + 1); }}>Retry</button>
@@ -151,13 +155,13 @@ export function WatchtowerPage({ vault, hidden, userId, onOpenEntry }: Props) {
                   <span className="font-mono watchtower-count" style={{ color: count ? SEVERITY[c] : "var(--ink-muted)" }}>
                     {c === "breached" && !report.breachChecked ? "?" : count}
                   </span>
-                  <span>{LABELS[c]}</span>
+                  <span>{CATEGORY_LABELS[c]}</span>
                 </button>
               );
             })}
           </div>
-          <section className="field-card" aria-label={LABELS[selected]}>
-            <h3 style={{ marginTop: 0 }}>{LABELS[selected]}</h3>
+          <section className="field-card" aria-label={CATEGORY_LABELS[selected]}>
+            <h3 style={{ marginTop: 0 }}>{CATEGORY_LABELS[selected]}</h3>
             {selected === "breached" && !report.breachChecked ? (
               <p style={{ color: "var(--ink-muted)", margin: 0 }}>Not checked yet.</p>
             ) : findings.length === 0 ? (

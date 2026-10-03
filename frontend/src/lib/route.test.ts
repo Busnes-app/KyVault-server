@@ -29,3 +29,5 @@ test("shared vault routes", () => {
   assert.deepEqual(parseRoute("#/admin/shared"), { tab: "admin", admin: "shared" });
   assert.equal(formatRoute({ tab: "admin", admin: "shared" }), "#/admin/shared");
 });
+
+test("admin reporting route", () => { assert.deepEqual(parseRoute("#/admin/reporting"), {tab:"admin",admin:"reporting"}); assert.equal(formatRoute({tab:"admin",admin:"reporting"}),"#/admin/reporting"); });
